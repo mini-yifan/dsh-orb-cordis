@@ -54,6 +54,10 @@ export interface OrbContext {
     create(request: { readonly path: string }): Promise<{
       readonly workspace: { readonly workspaceId: string }
     }>
+    archiveSession?(request: {
+      readonly sessionId: string
+      readonly stopActivity?: boolean
+    }): Promise<{ readonly archivedSessionIds: readonly string[] }>
   }
   readonly sessionController: {
     create(request: {
@@ -69,6 +73,10 @@ export interface OrbContext {
       readonly clientTimeZone?: string
     }, signal: AbortSignal): Promise<{ readonly accepted: true }>
     list(request: object, signal: AbortSignal): Promise<{ readonly items?: readonly unknown[] } | readonly unknown[]>
+    rename?(request: {
+      readonly sessionId: string
+      readonly title: string
+    }): Promise<{ readonly title: string; readonly seq?: number }>
     selectModel(request: {
       readonly sessionId: string
       readonly provider: string
@@ -1324,6 +1332,17 @@ export class OrbRuntime {
       this.run('new', () => this.newSession())
       return
     }
+    if (record.type === 'rename' && typeof record.sessionId === 'string' && typeof record.title === 'string') {
+      const sessionId = record.sessionId
+      const title = record.title
+      this.run('rename', () => this.renameSession(sessionId, title))
+      return
+    }
+    if (record.type === 'delete' && typeof record.sessionId === 'string') {
+      const sessionId = record.sessionId
+      this.run('delete', () => this.deleteSession(sessionId))
+      return
+    }
     const preset = record.preset
     if (record.type === 'permission' && isPermissionPreset(preset)) {
       this.run('permission', () => this.setPermission(preset))
@@ -1411,6 +1430,7 @@ export class OrbRuntime {
     await this.adopt(session.sessionId)
     this.resetTranscript()
     await this.publishChrome()
+    await this.sendHistory()
   }
 
   private async openSession(sessionId: string): Promise<void> {
@@ -1435,6 +1455,54 @@ export class OrbRuntime {
       this.broadcast({ type: 'turn', running: true })
       this.watch()
     }
+    await this.sendHistory()
+  }
+
+  private async renameSession(sessionId: string, rawTitle: string): Promise<void> {
+    if (!sessionId.startsWith('session-') || sessionId.length > 80) return
+    const title = rawTitle.trim().slice(0, 200)
+    if (title.length === 0) {
+      this.status('title required')
+      return
+    }
+    const rename = this.ctx.sessionController.rename
+    if (typeof rename !== 'function') {
+      this.status('rename unsupported')
+      return
+    }
+    // Official rename requires an explicit resume first.
+    await this.ctx.sessionController.create({
+      workspaceId: await this.workspaceId(),
+      agentPreset: 'computer-use',
+      sessionId,
+    })
+    await rename.call(this.ctx.sessionController, { sessionId, title })
+    if (this.sessionId === sessionId) await this.publishChrome()
+    await this.sendHistory()
+  }
+
+  private async deleteSession(sessionId: string): Promise<void> {
+    if (!sessionId.startsWith('session-') || sessionId.length > 80) return
+    if (this.sessionId === sessionId) {
+      this.status('cannot delete the current chat; switch first')
+      this.broadcast({ type: 'history-error', code: 'current', message: 'cannot delete the current chat; switch first' })
+      return
+    }
+    const archive = this.ctx.workspaceController.archiveSession
+    if (typeof archive !== 'function') {
+      this.status('delete unsupported')
+      return
+    }
+    const result = await archive.call(this.ctx.workspaceController, {
+      sessionId,
+      stopActivity: true,
+    })
+    if (Array.isArray(result?.archivedSessionIds)) {
+      this.archivedIds = new Set(result.archivedSessionIds.filter((id) => typeof id === 'string'))
+    } else {
+      this.archivedIds.add(sessionId)
+    }
+    await this.sendHistory()
   }
 
   private async sendHistory(): Promise<void> {
@@ -1442,27 +1510,34 @@ export class OrbRuntime {
     const items = (await this.historyRecords()).slice(0, 40).map((row) => ({
       sessionId: row.sessionId,
       title: row.title,
+      running: row.running,
+      updatedAt: row.updatedAt,
       current: row.sessionId === current,
     }))
     this.broadcast({ type: 'history', items })
   }
 
-  private async historyRecords(): Promise<{ sessionId: string; title: string; running: boolean }[]> {
+  private archivedIds = new Set<string>()
+
+  private async historyRecords(): Promise<{ sessionId: string; title: string; running: boolean; updatedAt: number }[]> {
     try {
       const listed = await this.ctx.sessionController.list({}, AbortSignal.timeout(15_000))
       const rows = Array.isArray(listed) ? listed : (listed as { items?: readonly unknown[] }).items ?? []
       const orb = resolve(dshHomePath('dsh_orb'))
-      const items: { sessionId: string; title: string; running: boolean }[] = []
+      const items: { sessionId: string; title: string; running: boolean; updatedAt: number }[] = []
       for (const row of rows) {
         const record = asRecord(row)
         if (!record || !isHistoryRow(record, orb) || typeof record.sessionId !== 'string') continue
+        if (this.archivedIds.has(record.sessionId)) continue
         const title = projection(record, 'title')
         items.push({
           sessionId: record.sessionId,
           title: typeof title === 'string' ? title.slice(0, 200) : '',
           running: record.running === true,
+          updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0,
         })
       }
+      items.sort((a, b) => b.updatedAt - a.updatedAt)
       return items
     } catch (error) {
       console.error(`dsh-orb: history failed: ${error instanceof Error ? error.message : String(error)}`)

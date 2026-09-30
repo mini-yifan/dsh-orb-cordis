@@ -31,6 +31,12 @@ contextBridge.exposeInMainWorld('dshOrb', {
   newSession() {
     ipcRenderer.send('orb:new')
   },
+  renameSession(id, title) {
+    ipcRenderer.send('orb:rename', { sessionId: id, title })
+  },
+  deleteSession(id) {
+    ipcRenderer.send('orb:delete', id)
+  },
   setPermission(preset) {
     ipcRenderer.send('orb:permission', preset)
   },
@@ -78,6 +84,9 @@ contextBridge.exposeInMainWorld('dshOrb', {
   },
   onHistory(callback) {
     ipcRenderer.on('orb:history', (_event, items) => callback(items))
+  },
+  onHistoryError(callback) {
+    ipcRenderer.on('orb:history-error', (_event, payload) => callback(payload))
   },
   onPermission(callback) {
     ipcRenderer.on('orb:permission', (_event, preset) => callback(preset))
