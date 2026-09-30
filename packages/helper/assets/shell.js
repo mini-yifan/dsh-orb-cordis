@@ -28,6 +28,14 @@ const zh = {
   history: '历史',
   historyEmpty: '还没有 Computer Use 对话。',
   untitled: '未命名对话',
+  historyCurrent: '当前',
+  historyRunning: '进行中',
+  historyRename: '重命名',
+  historyDelete: '删除',
+  historyDeleteConfirm: '删除这条对话？删除后可从主窗口归档列表恢复。',
+  historyDeleteCurrent: '不能删除当前对话，请先切换到其他对话再删。',
+  historyTitlePrompt: '对话标题',
+  historyTitleInvalid: '标题不能为空',
   placeholder: '向桌面 agent 发送消息…',
   accessReadOnly: '仅可查看',
   accessWrite: '工作区内修改',
@@ -72,6 +80,14 @@ const en = {
   history: 'History',
   historyEmpty: 'No Computer Use chats yet.',
   untitled: 'Untitled',
+  historyCurrent: 'Current',
+  historyRunning: 'Running',
+  historyRename: 'Rename',
+  historyDelete: 'Delete',
+  historyDeleteConfirm: 'Delete this chat? You can restore it from the main window archive list.',
+  historyDeleteCurrent: 'Cannot delete the current chat. Switch to another chat first.',
+  historyTitlePrompt: 'Chat title',
+  historyTitleInvalid: 'Title cannot be empty',
   placeholder: 'Ask the desktop agent…',
   accessReadOnly: 'Read Only',
   accessWrite: 'Workspace Write',
@@ -126,6 +142,7 @@ function applyLocale(locale) {
   chatLabels = toolLabels(messages === zh)
   usageText = usageLabels(messages === zh)
   document.documentElement.lang = locale
+  if (historyOpen) renderHistory()
 }
 
 function applyColorScheme(dark) {
@@ -1525,6 +1542,31 @@ function main() {
     node.remove()
   }
 
+  function formatHistoryTime(updatedAt) {
+    if (typeof updatedAt !== 'number' || updatedAt <= 0) return ''
+    const delta = Date.now() - updatedAt
+    const zhLocale = messages === zh
+    if (delta < 60_000) return zhLocale ? '刚刚' : 'just now'
+    if (delta < 3_600_000) {
+      const mins = Math.max(1, Math.floor(delta / 60_000))
+      return zhLocale ? `${mins} 分钟前` : `${mins}m ago`
+    }
+    if (delta < 86_400_000) {
+      const hours = Math.max(1, Math.floor(delta / 3_600_000))
+      return zhLocale ? `${hours} 小时前` : `${hours}h ago`
+    }
+    try {
+      return new Date(updatedAt).toLocaleString(zhLocale ? 'zh-CN' : 'en', {
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    } catch {
+      return ''
+    }
+  }
+
   function renderHistory() {
     historyList.replaceChildren()
     if (historyItems.length === 0) {
@@ -1535,18 +1577,110 @@ function main() {
       return
     }
     for (const item of historyItems) {
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.className = item.sessionId === sessionId ? 'history-row current' : 'history-row'
-      button.setAttribute('role', 'option')
-      button.setAttribute('aria-selected', String(item.sessionId === sessionId))
-      button.textContent = typeof item.title === 'string' && item.title !== '' ? item.title : messages.untitled
-      button.addEventListener('click', () => {
+      const row = document.createElement('div')
+      row.className = item.sessionId === sessionId || item.current ? 'history-row current' : 'history-row'
+      row.setAttribute('role', 'option')
+      row.setAttribute('aria-selected', String(item.sessionId === sessionId || item.current === true))
+      row.dataset.sessionId = item.sessionId
+
+      const open = document.createElement('button')
+      open.type = 'button'
+      open.className = 'history-open'
+      const title = document.createElement('span')
+      title.className = 'history-title'
+      title.textContent = typeof item.title === 'string' && item.title !== '' ? item.title : messages.untitled
+      const meta = document.createElement('span')
+      meta.className = 'history-meta'
+      const badges = []
+      if (item.sessionId === sessionId || item.current) badges.push(messages.historyCurrent)
+      if (item.running === true) badges.push(messages.historyRunning)
+      const when = formatHistoryTime(item.updatedAt)
+      if (when) badges.push(when)
+      meta.textContent = badges.join(' · ')
+      open.append(title, meta)
+      open.addEventListener('click', () => {
+        if (item.sessionId === sessionId) {
+          setHistoryOpen(false)
+          return
+        }
         setHistoryOpen(false)
-        if (item.sessionId !== sessionId) api.openSession(item.sessionId)
+        api.openSession(item.sessionId)
       })
-      historyList.append(button)
+
+      const actions = document.createElement('div')
+      actions.className = 'history-actions'
+      const renameBtn = document.createElement('button')
+      renameBtn.type = 'button'
+      renameBtn.className = 'history-action'
+      renameBtn.textContent = messages.historyRename
+      renameBtn.addEventListener('click', (event) => {
+        event.stopPropagation()
+        beginRename(item, row, title)
+      })
+      const isCurrent = item.sessionId === sessionId || item.current === true
+      const deleteBtn = document.createElement('button')
+      deleteBtn.type = 'button'
+      deleteBtn.className = isCurrent ? 'history-action danger disabled' : 'history-action danger'
+      deleteBtn.textContent = messages.historyDelete
+      deleteBtn.title = isCurrent ? messages.historyDeleteCurrent : messages.historyDelete
+      deleteBtn.setAttribute('aria-disabled', String(isCurrent))
+      deleteBtn.addEventListener('click', (event) => {
+        event.stopPropagation()
+        if (item.sessionId === sessionId || item.current === true) {
+          window.alert(messages.historyDeleteCurrent)
+          return
+        }
+        if (!window.confirm(messages.historyDeleteConfirm)) return
+        api.deleteSession(item.sessionId)
+      })
+      actions.append(renameBtn, deleteBtn)
+
+      row.append(open, actions)
+      historyList.append(row)
     }
+  }
+
+  function beginRename(item, row, titleNode) {
+    if (row.querySelector('.history-rename')) return
+    const form = document.createElement('form')
+    form.className = 'history-rename'
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.maxLength = 200
+    input.value = typeof item.title === 'string' ? item.title : ''
+    input.placeholder = messages.historyTitlePrompt
+    input.setAttribute('aria-label', messages.historyTitlePrompt)
+    const save = document.createElement('button')
+    save.type = 'submit'
+    save.textContent = messages.historyRename
+    form.append(input, save)
+    const openBtn = row.querySelector('.history-open')
+    if (openBtn) openBtn.hidden = true
+    row.insertBefore(form, row.querySelector('.history-actions'))
+    const finish = (commit) => {
+      form.remove()
+      if (openBtn) openBtn.hidden = false
+      if (!commit) return
+      const next = input.value.trim()
+      if (next.length === 0) {
+        window.alert(messages.historyTitleInvalid)
+        return
+      }
+      titleNode.textContent = next
+      api.renameSession(item.sessionId, next)
+    }
+    form.addEventListener('submit', (event) => {
+      event.preventDefault()
+      finish(true)
+    })
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        finish(false)
+      }
+    })
+    input.focus()
+    input.select()
   }
 
   function clearTranscript() {
@@ -2069,11 +2203,27 @@ function main() {
   api.onBlock((block) => { stage(block) })
   api.onBlockDrop((key) => { stage({ type: 'block-drop', key }) })
   api.onTurn((turn) => { stage({ type: 'turn', ...(turn ?? {}) }) })
-  api.onSession((id) => { sessionId = typeof id === 'string' ? id : '' })
+  api.onSession((id) => {
+    sessionId = typeof id === 'string' ? id : ''
+    if (historyOpen) renderHistory()
+  })
   api.onHistory((items) => {
     historyItems = Array.isArray(items) ? items : []
     if (historyOpen) renderHistory()
   })
+  if (typeof api.onHistoryError === 'function') {
+    api.onHistoryError((payload) => {
+      const code = payload && typeof payload === 'object' ? payload.code : undefined
+      if (code === 'current') {
+        window.alert(messages.historyDeleteCurrent)
+        return
+      }
+      const text = payload && typeof payload === 'object' && typeof payload.message === 'string'
+        ? payload.message
+        : ''
+      if (text) window.alert(text)
+    })
+  }
   api.onPermission((preset) => {
     if (typeof preset !== 'string') return
     permission = preset
