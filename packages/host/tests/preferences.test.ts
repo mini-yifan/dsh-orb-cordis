@@ -34,6 +34,7 @@ describe('profile preferences', () => {
     assert.equal(store.coordinateMode(), defaultMillifraction() ? 'millifraction' : 'pixel')
     assert.equal(store.selectionEnabled(), false)
     assert.equal(store.ballEnabled(), true)
+    assert.deepEqual(store.hotkey(), { enabled: false, accelerator: 'Alt+B' })
     assert.equal(store.avatarVersion(), 0)
     assert.equal(store.readAvatar(), undefined)
   })
@@ -138,6 +139,26 @@ describe('profile preferences', () => {
     store.restoreAvatar()
     assert.deepEqual(store.avatarSelection(), { kind: 'default' })
     assert.equal(store.avatarVersion(), 0)
+  })
+
+  it('persists the summon hotkey and falls back to the default for unknown accelerators', () => {
+    const path = dir('hotkey')
+    const store = new ProfileStore(path)
+    store.setHotkey(true, 'Control+Alt+B')
+    assert.deepEqual(JSON.parse(readFileSync(join(path, 'orb-hotkey.json'), 'utf8')), {
+      enabled: true,
+      accelerator: 'Control+Alt+B',
+    })
+    const reloaded = new ProfileStore(path)
+    assert.deepEqual(reloaded.hotkey(), { enabled: true, accelerator: 'Control+Alt+B' })
+    // Disabled keeps the picked key; a corrupt file falls back to the default.
+    reloaded.setHotkey(false, 'F9')
+    assert.deepEqual(new ProfileStore(path).hotkey(), { enabled: false, accelerator: 'F9' })
+    writeFileSync(join(path, 'orb-hotkey.json'), '{')
+    assert.deepEqual(new ProfileStore(path).hotkey(), { enabled: false, accelerator: 'Alt+B' })
+    writeFileSync(join(path, 'orb-hotkey.json'), JSON.stringify({ enabled: true, accelerator: 'Ctrl+T' }))
+    const fallback = new ProfileStore(path)
+    assert.deepEqual(fallback.hotkey(), { enabled: false, accelerator: 'Alt+B' })
   })
 
   it('reads the official profile directory', () => {

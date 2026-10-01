@@ -18,8 +18,10 @@ import { openMainWindow } from './open-main.ts'
 import { isDesktopHost, isTccRight, TccMonitor, type TccRight, type TccStatus } from './tcc.ts'
 import {
   isAgentModelSelection,
+  isHotkeyAccelerator,
   isPermissionPreset,
   type AgentModelSelection,
+  type HotkeyAccelerator,
   type PermissionPreset,
   type ProfileStore,
 } from './preferences.ts'
@@ -547,6 +549,7 @@ export class OrbRuntime {
     }
     this.send(socket, { type: 'turn', running: this.turnRunning })
     if (Object.keys(this.appearance).length > 0) this.send(socket, { type: 'appearance', ...this.appearance })
+    this.send(socket, { type: 'hotkey', ...this.store.hotkey() })
     if (this.pending) this.send(socket, this.questionPayload(this.pending.id))
     void this.publishChrome()
     this.selection.sync()
@@ -1294,6 +1297,13 @@ export class OrbRuntime {
       return
     }
     this.halt()
+  }
+
+  async setHotkey(enabled: boolean, accelerator: HotkeyAccelerator): Promise<void> {
+    const previous = this.store.hotkey()
+    if (previous.enabled === enabled && previous.accelerator === accelerator) return
+    this.store.setHotkey(enabled, accelerator)
+    this.broadcast({ type: 'hotkey', enabled, accelerator })
   }
 
   private onControl(message: unknown, socket: Socket): void {

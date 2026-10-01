@@ -13,7 +13,7 @@ window.__ModuleLoader__.load({
       error: '无法加载悬浮球设置。',
       saveError: '无法保存。',
       helperFailed: '悬浮球多次退出，已经停止重试。关闭后再打开可再试一次。',
-      runtimeFailed: '悬浮球运行时没有下载成功。关闭后再打开可再试一次。',
+      runtimeFailed: '悬浮球运行时没有下载成功。请确认网络能访问 github.com 或 npmmirror.com 后，关闭再打开重试。',
       permissionFallback: '权限设置无法读取，已改为工作区内修改。',
       retry: '重试',
       ball: '启用悬浮球',
@@ -41,6 +41,10 @@ window.__ModuleLoader__.load({
       emptyCatalog: '暂无可用模型。',
       defaultEffort: '默认',
       millifractionTitle: '千分比坐标',
+      hotkeyTitle: '全局快捷键',
+      hotkeyDescription: '在系统任意位置一键呼出或隐藏悬浮球。默认关闭；键位被其他程序占用时无法注册。',
+      hotkeyToggle: '启用全局快捷键',
+      hotkeyAccelerator: '键位',
       millifractionDescription: '新建对话使用截图的 0–1000 比例。关闭后使用已附加图片的像素。更改此项会新建对话。',
       millifractionToggle: '使用千分比坐标',
       millifractionConfirm: '新编码只在新对话中生效。当前对话不变，仍可从历史记录打开。取消不写入、不新建。',
@@ -67,7 +71,7 @@ window.__ModuleLoader__.load({
       error: 'Could not load floating-ball settings.',
       saveError: 'Could not save.',
       helperFailed: 'The floating ball exited too many times and stopped retrying. Turn it off and on to try again.',
-      runtimeFailed: 'The floating-ball runtime did not download. Turn it off and on to try again.',
+      runtimeFailed: 'The floating-ball runtime did not download. Check that github.com or npmmirror.com is reachable, then turn it off and on to retry.',
       permissionFallback: 'The permission file could not be read. Access is now Workspace Write.',
       retry: 'Retry',
       ball: 'Enable the floating ball',
@@ -95,6 +99,10 @@ window.__ModuleLoader__.load({
       emptyCatalog: 'No models available.',
       defaultEffort: 'Default',
       millifractionTitle: 'Millifraction coordinates',
+      hotkeyTitle: 'Global hotkey',
+      hotkeyDescription: 'Summon or hide the floating ball from anywhere in the system. Off by default; the key cannot register while another app holds it.',
+      hotkeyToggle: 'Enable the global hotkey',
+      hotkeyAccelerator: 'Key combination',
       millifractionDescription: 'New chats use 0–1000 fractions of the screenshot. Turn off to use pixels of the attached image. Changing this creates a new conversation.',
       millifractionToggle: 'Use millifraction coordinates',
       millifractionConfirm: 'The new encoding takes effect in a new conversation. The current conversation stays unchanged and remains in History. Cancel leaves the default and this chat as they are.',
@@ -382,7 +390,33 @@ window.__ModuleLoader__.load({
               void mutate('/.dsh-orb/millifraction', { enabled })
             },
           })),
+          hotkeyCard(text, snap, disabled, mutate),
           snap.tcc && snap.tcc.applicable ? tccCard(text, snap, disabled, mutate) : null))
+    }
+
+    /** The hotkey card: summon toggle plus a fixed accelerator preset list. */
+    const HOTKEY_KEYS = ['Alt+B', 'Alt+O', 'Control+Alt+B', 'F9']
+    function hotkeyCard(text, snap, disabled, mutate) {
+      const hotkey = snap.hotkey ?? { enabled: false, accelerator: 'Alt+B' }
+      return h('section', { className: 'dsh-orb-set-card dsh-orb-set-row' },
+        h('div', null, h('h3', null, text.hotkeyTitle), h('p', null, text.hotkeyDescription)),
+        h('div', { className: 'dsh-orb-set-actions' },
+          h(Toggle, {
+            checked: hotkey.enabled === true,
+            label: text.hotkeyToggle,
+            disabled,
+            onChange: (enabled) => {
+              void mutate('/.dsh-orb/hotkey', { enabled, accelerator: hotkey.accelerator })
+            },
+          }),
+          hotkey.enabled === true ? h('select', {
+            'aria-label': text.hotkeyAccelerator,
+            disabled,
+            value: hotkey.accelerator,
+            onChange: (event) => {
+              void mutate('/.dsh-orb/hotkey', { enabled: true, accelerator: String(event.target.value) })
+            },
+          }, ...HOTKEY_KEYS.map((key) => h('option', { key, value: key }, key))) : null))
     }
 
     function helperNotice(text, snap) {
