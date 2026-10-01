@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { contextMenuTemplate } from '../src/menu.ts'
+import { contextMenuTemplate, trayMenuTemplate } from '../src/menu.ts'
 import { modelMenuItems } from '../src/model-menu.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -128,11 +128,11 @@ describe('ball menu', () => {
     })
     assert.deepEqual(template.map((item) => item.label ?? item.type), [
       '打开主窗口',
-      '悬浮球 Agent 模型',
-      '后台 Agent 模型',
+      '悬浮球 Agent 设置',
+      '后台 Agent 设置',
       '千分比坐标',
       'separator',
-      '停用悬浮球',
+      '关闭悬浮球',
     ])
     assert.equal(template[0]?.enabled, true)
     template[0]?.click?.({ checked: false })
@@ -157,7 +157,35 @@ describe('ball menu', () => {
     })
     assert.equal(english[0]?.label, 'Open Main Window')
     assert.equal(english[0]?.enabled, false)
-    assert.equal(english.at(-1)?.label, 'Disable floating ball')
+    assert.equal(english.at(-1)?.label, 'Close floating ball')
+  })
+
+  it('builds the tray menu with summon, main window gating, and disable', () => {
+    const actions: string[] = []
+    const zh = trayMenuTemplate({ openMain: true }, true, {
+      toggleVisible: () => { actions.push('toggle') },
+      openMain: () => { actions.push('open') },
+      disable: () => { actions.push('disable') },
+    })
+    assert.deepEqual(zh.map((item) => item.label ?? item.type), [
+      '显示/隐藏悬浮球',
+      '打开主窗口',
+      'separator',
+      '关闭悬浮球',
+    ])
+    assert.equal(zh[1]?.enabled, true)
+    zh[0]?.click?.({ checked: false })
+    zh[1]?.click?.({ checked: false })
+    zh[3]?.click?.({ checked: false })
+    const gated = trayMenuTemplate({ openMain: false }, false, {
+      toggleVisible() {},
+      openMain() {},
+      disable() {},
+    })
+    assert.equal(gated[0]?.label, 'Show / Hide Floating Ball')
+    assert.equal(gated[1]?.enabled, false)
+    assert.equal(gated.at(-1)?.label, 'Close floating ball')
+    assert.deepEqual(actions, ['toggle', 'open', 'disable'])
   })
 
   it('sends ball controls from the ball preload and keeps them off the toolbar', () => {

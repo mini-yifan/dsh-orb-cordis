@@ -2,14 +2,14 @@
  * Floating ball window. The official dsh process owns the session; this process only draws and forwards one socket.
  */
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, screen, shell, Tray, type NativeImage } from 'electron'
 import { request as httpRequest } from 'node:http'
 import { createConnection, type Socket } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { readAvatarChoice, type AvatarChoice } from './avatar.ts'
 import { collectChromeWindowIds, type NativeHandleWindow } from './chrome-windows.ts'
 import { FloatingPlacement, initialWindowBounds } from './geometry.ts'
-import { contextMenuTemplate } from './menu.ts'
+import { contextMenuTemplate, trayMenuTemplate } from './menu.ts'
 import { attachOverlays, denyWindowPermissions } from './overlays.ts'
 import { type MenuCatalog, type MenuSelection } from './model-menu.ts'
 
@@ -71,9 +71,11 @@ let placement: FloatingPlacement | undefined
 let live: Socket | undefined
 let quitting = false
 let buffer = ''
+let tray: InstanceType<typeof Tray> | undefined
 
 app.on('before-quit', () => {
   quitting = true
+  tray?.destroy()
   live?.destroy()
 })
 app.on('window-all-closed', () => {
@@ -100,6 +102,12 @@ void app.whenReady().then(async () => {
   // OS scheme flips ride through while the theme preference is `system`.
   nativeTheme.on('updated', () => { pushAppearance() })
   applyAppearance()
+  try {
+    tray = new Tray(trayImage())
+    applyTrayMenu()
+  } catch (error) {
+    console.error(`dsh-orb helper: tray icon failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
   await win.loadFile(fileURLToPath(new URL('../assets/floating.html', import.meta.url)))
   connect(0)
 })
@@ -361,6 +369,7 @@ function deliver(message: unknown): void {
   }
   if (record.type === 'chrome') {
     chrome = readChrome(record)
+    applyTrayMenu()
     return
   }
   if (record.type === 'appearance') {
@@ -482,6 +491,28 @@ function menuZh(): boolean {
 function applyAppearance(): void {
   nativeTheme.themeSource = appearance.theme ?? 'system'
   pushAppearance()
+  applyTrayMenu()
+}
+
+function trayImage(): NativeImage {
+  const image = nativeImage.createFromPath(fileURLToPath(new URL('../assets/tray-icon.png', import.meta.url)))
+  if (image.isEmpty()) return image
+  return process.platform === 'win32' ? image.resize({ width: 16, height: 16 }) : image.resize({ width: 18, height: 18 })
+}
+
+function applyTrayMenu(): void {
+  if (!tray) return
+  const zh = menuZh()
+  tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate({ openMain: chrome.openMain }, zh, {
+    toggleVisible: () => {
+      if (!win || win.isDestroyed()) return
+      if (win.isVisible()) win.hide()
+      else win.showInactive()
+    },
+    openMain: () => { write({ type: 'open-main' }) },
+    disable: () => { write({ type: 'disable' }) },
+  })))
+  tray.setToolTip(zh ? 'dsh-orb 悬浮球' : 'dsh-orb floating ball')
 }
 
 function pushAppearance(): void {
