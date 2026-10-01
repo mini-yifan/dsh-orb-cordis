@@ -337,7 +337,7 @@ describe('ball control socket', { concurrency: 1 }, () => {
     }
   })
 
-  it('creates a session, changes both models and access, and starts a new chat for millifraction', async () => {
+  it('creates a session, changes both models and access, and starts a new chat when the coordinate mode changes', async () => {
     const harness = boot()
     const client = await connect(harness.runtime)
     try {
@@ -390,14 +390,17 @@ describe('ball control socket', { concurrency: 1 }, () => {
       await new Promise((resolve) => setTimeout(resolve, 30))
       assert.equal(harness.calls.create.length, creates)
 
-      client.send({ type: 'set-millifraction', enabled: true })
+      // Toggling the coordinate mode restarts the chat, but only when the mode actually changes.
+      // A fresh profile already defaults to millifraction on Windows, so ask for the other one.
+      const toMillifraction = !harness.store.millifractionEnabled()
+      client.send({ type: 'set-millifraction', enabled: toMillifraction })
       await waitFor(() => harness.calls.create.length === creates + 1)
-      assert.equal(harness.store.millifractionEnabled(), true)
-      assert.equal(harness.store.coordinateMode(), 'millifraction')
+      assert.equal(harness.store.millifractionEnabled(), toMillifraction)
+      assert.equal(harness.store.coordinateMode(), toMillifraction ? 'millifraction' : 'pixel')
       assert.equal(harness.calls.create.at(-1)?.sessionId, undefined)
       assert.equal(harness.calls.create.at(-1)?.agentPreset, 'computer-use')
       const afterFraction = harness.calls.create.length
-      client.send({ type: 'set-millifraction', enabled: true })
+      client.send({ type: 'set-millifraction', enabled: toMillifraction })
       await new Promise((resolve) => setTimeout(resolve, 40))
       assert.equal(harness.calls.create.length, afterFraction)
 
@@ -412,7 +415,7 @@ describe('ball control socket', { concurrency: 1 }, () => {
       }
       assert.equal(chrome.overlay.model, 'deepseek-pro')
       assert.equal(chrome.background.model, 'background-model')
-      assert.equal(chrome.millifractionEnabled, true)
+      assert.equal(chrome.millifractionEnabled, toMillifraction)
       assert.equal(chrome.catalog.groups[0]?.id, 'deepseek-official')
     } finally {
       client.socket.end()
