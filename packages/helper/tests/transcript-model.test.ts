@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { processLabel, reasoningSummary, classifyTool, deriveSummary, formatToolBody, terminalCardModel, terminalFailed, searchCardModel, webCardModel, diffCardModel, diffTotals, diffLines, processTitle, toolTitle, readCardModel, usageLabels, tokenUsageTotal, formatTokenCount } from '../assets/transcript-model.js'
+import { processLabel, reasoningSummary, classifyTool, deriveSummary, formatToolBody, terminalCardModel, terminalFailed, searchCardModel, webCardModel, diffCardModel, diffTotals, diffLines, processTitle, toolTitle, readCardModel, usageLabels, tokenUsageTotal, formatTokenCount, errorHint } from '../assets/transcript-model.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -171,6 +171,32 @@ describe('turn usage pill', () => {
     assert.equal(zh.count(formatTokenCount(1234)), '1.2K tok')
     assert.equal(zh.title, '本轮用量')
     assert.equal(en.title, 'Turn usage')
+  })
+})
+
+describe('error hint', () => {
+  it('maps the provider errors from the comment reports to a hint', () => {
+    assert.match(errorHint('本轮运行失败\nDeepSeek Messages request failed (404)', true), /模型名/)
+    assert.match(errorHint('DeepSeek Messages request failed (404)', false), /model ID/)
+    assert.match(errorHint('用中转的会提示API密匙无效', true), /密钥/)
+    assert.match(errorHint('Error: 429 too many requests, please retry', true), /限流/)
+    assert.match(errorHint('insufficient balance', false), /balance/i)
+    assert.match(errorHint('fetch failed: ENOTFOUND api.example.com', true), /网络/)
+  })
+
+  it('leaves normal replies and unknown errors alone', () => {
+    assert.equal(errorHint('已经帮你打开画图工具了', true), '')
+    assert.equal(errorHint('Some totally unknown failure text', false), '')
+    assert.equal(errorHint('', true), '')
+    assert.equal(errorHint(undefined, true), '')
+  })
+
+  it('keeps the hint anchored in the settled assistant block, not while streaming', () => {
+    const shell = readFileSync(join(here, '../assets/shell.js'), 'utf8')
+    const chat = readFileSync(join(here, '../assets/chat.css'), 'utf8')
+    assert.match(shell, /errorHint\(block\.text, messages === zh\)/)
+    assert.match(shell, /block\.running === true \? '' : errorHint/)
+    assert.match(chat, /\.am-hint/)
   })
 })
 
