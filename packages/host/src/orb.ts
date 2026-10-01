@@ -421,6 +421,12 @@ export class OrbRuntime {
     if (this.retry) clearTimeout(this.retry)
     this.retry = undefined
     this.stopWatch()
+    // stopWatch() removed the only thing that can observe turn/end, and turnRunning is otherwise
+    // only cleared by finishTurn(). Leaving it true makes the ball come back spinning forever and
+    // keeps pausedReads() true, which silently kills the selection toolbar until a new transcript.
+    this.turnRunning = false
+    this.idleWarned = false
+    this.selection.setSessionRunning(false)
     this.clearDirty()
     this.handQuestionBack()
     this.server?.close()
@@ -726,6 +732,17 @@ export class OrbRuntime {
   }
 
   private consume(type: string, data: unknown, seq: number): void {
+    if (type === 'turn/start') {
+      this.turnRunning = true
+      this.idleWarned = false
+      this.selection.setSessionRunning(true)
+      this.broadcast({ type: 'turn', running: true })
+      // A queued follow-up runs inside the same agent-loop run, so no new prompt ever reaches
+      // onPrompt and nothing else re-arms the poll. Without this, finishTurn() on the previous
+      // turn's turn/end stops the 400ms drain for good and every later turn is never delivered.
+      this.watch()
+      return
+    }
     if (type === 'user/message') {
       if (!this.replaying) return
       const text = userText(data)

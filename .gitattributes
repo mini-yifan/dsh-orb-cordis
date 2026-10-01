@@ -1,0 +1,13 @@
+# Keep the working tree LF on every platform.
+#
+# The repository has no .gitattributes, so a Windows checkout with the default
+# core.autocrlf=true rewrote all 172 tracked text files to CRLF. A line-ending
+# sensitive assertion in packages/client-settings/tests/section.test.mjs then failed on Windows
+# even though the committed content is LF. `text=auto` leaves binaries (GIFs, dylibs, .node)
+# alone; `eol=lf` makes the working tree agree with the index everywhere.
+* text=auto eol=lf
+
+# These are the exception to the rule: Windows tooling still needs CRLF in them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

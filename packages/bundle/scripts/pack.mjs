@@ -24,7 +24,22 @@ try {
   delete manifest.devDependencies
   await writeFile(join(pkgDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 
-  const packed = spawnSync('npm', ['pack', '--pack-destination', repoRoot], { cwd: pkgDir, stdio: 'inherit' })
+  // Windows ships `npm` only as an `npm.cmd` shim, and Node >= 18.20.2 refuses to spawn a `.cmd`
+  // because of CVE-2024-27980, so the only route there is through the shell. The shell does not
+  // quote for us: `repoRoot` comes from this script's own location rather than from input, and `"`
+  // cannot occur in a Windows path, so quoting it here is sufficient. Node's DEP0190 warning about
+  // `shell` is expected on Windows and harmless for these two static arguments.
+  const isWindows = process.platform === 'win32'
+  const packArgs = ['pack', '--pack-destination', repoRoot]
+  const packed = spawnSync(
+    isWindows ? 'npm.cmd' : 'npm',
+    isWindows ? packArgs.map((arg) => `"${arg}"`) : packArgs,
+    { cwd: pkgDir, stdio: 'inherit', ...(isWindows ? { shell: true } : {}) },
+  )
+  if (packed.error) {
+    console.error(`pack: ${packed.error.message}`)
+    process.exit(1)
+  }
   if (packed.status !== 0) process.exit(packed.status ?? 1)
 } finally {
   await rm(stage, { recursive: true, force: true })

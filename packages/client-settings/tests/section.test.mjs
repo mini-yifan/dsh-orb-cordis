@@ -250,7 +250,9 @@ describe('settings section', () => {
     assert.deepEqual(pkg.dsh.client.inject, ['@deepseek-ai/dsh-client-ui-settings'])
     const patch = readFileSync(join(root, 'packages/bundle/cordis.patch.yml'), 'utf8')
     assert.match(patch, /id: ui-settings-orb/)
-    assert.match(patch, /id: ui-settings-orb\n\s+name: dsh-orb\n/)
+    // Tolerate CRLF: a Windows checkout without .gitattributes rewrites this file, and the
+    // committed content is LF either way.
+    assert.match(patch, /id: ui-settings-orb\r?\n\s+name: dsh-orb\r?\n/)
     const client = readFileSync(join(here, '../client.js'), 'utf8')
     // The selection toolbar is disabled (buggy): no settings entry point may ship.
     assert.equal(client.includes('划词'), false)

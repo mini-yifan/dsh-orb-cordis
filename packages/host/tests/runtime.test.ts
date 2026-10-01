@@ -337,7 +337,7 @@ describe('ball control socket', { concurrency: 1 }, () => {
     }
   })
 
-  it('creates a session, changes both models and access, and starts a new chat for millifraction', async () => {
+  it('creates a session, changes both models and access, and starts a new chat when the coordinate mode changes', async () => {
     const harness = boot()
     const client = await connect(harness.runtime)
     try {
@@ -390,14 +390,17 @@ describe('ball control socket', { concurrency: 1 }, () => {
       await new Promise((resolve) => setTimeout(resolve, 30))
       assert.equal(harness.calls.create.length, creates)
 
-      client.send({ type: 'set-millifraction', enabled: true })
+      // Toggling the coordinate mode restarts the chat, but only when the mode actually changes.
+      // A fresh profile already defaults to millifraction on Windows, so ask for the other one.
+      const toMillifraction = !harness.store.millifractionEnabled()
+      client.send({ type: 'set-millifraction', enabled: toMillifraction })
       await waitFor(() => harness.calls.create.length === creates + 1)
-      assert.equal(harness.store.millifractionEnabled(), true)
-      assert.equal(harness.store.coordinateMode(), 'millifraction')
+      assert.equal(harness.store.millifractionEnabled(), toMillifraction)
+      assert.equal(harness.store.coordinateMode(), toMillifraction ? 'millifraction' : 'pixel')
       assert.equal(harness.calls.create.at(-1)?.sessionId, undefined)
       assert.equal(harness.calls.create.at(-1)?.agentPreset, 'computer-use')
       const afterFraction = harness.calls.create.length
-      client.send({ type: 'set-millifraction', enabled: true })
+      client.send({ type: 'set-millifraction', enabled: toMillifraction })
       await new Promise((resolve) => setTimeout(resolve, 40))
       assert.equal(harness.calls.create.length, afterFraction)
 
@@ -412,7 +415,7 @@ describe('ball control socket', { concurrency: 1 }, () => {
       }
       assert.equal(chrome.overlay.model, 'deepseek-pro')
       assert.equal(chrome.background.model, 'background-model')
-      assert.equal(chrome.millifractionEnabled, true)
+      assert.equal(chrome.millifractionEnabled, toMillifraction)
       assert.equal(chrome.catalog.groups[0]?.id, 'deepseek-official')
     } finally {
       client.socket.end()
@@ -885,6 +888,68 @@ describe('ball control socket', { concurrency: 1 }, () => {
       await waitFor(() => client.messages.some((message) => (
         message.type === 'turn' && message.running === false && (message as { interrupted?: true }).interrupted === true
       )))
+    } finally {
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('keeps draining the queued follow-up that starts right after the first turn ended', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      const sessionId = (client.messages.find((message) => message.type === 'session') as { sessionId: string }).sessionId
+      client.send({ type: 'prompt', text: '第一条' })
+      await waitFor(() => client.messages.some((message) => message.type === 'turn' && message.running === true))
+      const prompts = harness.calls.prompt.length
+
+      // onPrompt always submits with mode:'queue', and the agent loop appends turn/end and then the
+      // next turn/start back to back, so one drain sees both. finishTurn() stops the poll on
+      // turn/end and nothing re-armed it, so the poll stayed dead for the whole follow-up turn.
+      // `mark` matters: a plain `some(...)` would match the running:false that `new` already sent.
+      const mark = client.messages.length
+      harness.inject(sessionId, { type: 'turn/end', seq: 900, data: { turn: 1, reason: { kind: 'completed' } } })
+      harness.inject(sessionId, { type: 'turn/start', seq: 901, data: { turn: 2 } })
+      await waitFor(() => client.messages.slice(mark).some((message) => message.type === 'turn' && message.running === false))
+
+      // The work of the follow-up turn arrives afterwards and needs the poll to still be running.
+      harness.inject(sessionId, {
+        type: 'assistant/message',
+        seq: 902,
+        data: { turn: 2, step: 0, message: { content: [{ type: 'text', text: '第二条的结果' }] } },
+      })
+
+      await waitFor(() => client.messages.slice(mark).some((message) => message.type === 'block' && message.text === '第二条的结果'))
+      // A queued follow-up is not a second prompt: the agent loop is already running it.
+      assert.equal(harness.calls.prompt.length, prompts)
+    } finally {
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('does not leave a running turn behind when the ball is halted mid-turn', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      client.send({ type: 'prompt', text: '干活' })
+      await waitFor(() => client.messages.some((message) => message.type === 'turn' && message.running === true))
+
+      // halt() stops the only poll that can observe turn/end, so the running flag has to be
+      // cleared here. Otherwise the next ball inherits "running", spins forever, and the
+      // selection toolbar stays paused because pausedReads() still sees a running session.
+      harness.runtime.halt()
+      const reconnected = await connect(harness.runtime)
+      try {
+        const turn = reconnected.messages.find((message) => message.type === 'turn') as { running: boolean }
+        assert.equal(turn.running, false)
+      } finally {
+        reconnected.socket.end()
+      }
     } finally {
       client.socket.end()
       harness.runtime.halt()
