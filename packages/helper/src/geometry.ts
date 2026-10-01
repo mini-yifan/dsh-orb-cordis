@@ -271,6 +271,10 @@ export class FloatingPlacement {
       this.docked = undefined
       const next = expandedOverlayBounds(origin, display.workArea)
       this.direction = { horizontal: next.horizontal, vertical: next.vertical }
+      // A dock slide may still be animating towards the off-screen origin; invalidate it the way
+      // `move` and `applyTab` do, or it keeps overwriting these bounds every 16ms until it lands
+      // and the ball ends up parked outside the work area with no tab to fall back to.
+      this.anim += 1
       this.window.setBounds({ x: next.x, y: next.y, width: next.width, height: next.height })
       return { expanded: true, ...this.direction, docked: undefined }
     }
@@ -279,6 +283,7 @@ export class FloatingPlacement {
       return { expanded: false, ...this.direction, docked: this.docked.side }
     }
     const origin = clampedBallOrigin(this.currentBallOrigin(display.workArea), display.workArea)
+    this.anim += 1
     this.window.setBounds(collapsedWindowBounds(origin))
     return { expanded: false, ...this.direction, docked: undefined }
   }
