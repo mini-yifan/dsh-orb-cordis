@@ -289,8 +289,13 @@ async function clickAt(
   await delay(POINTER_MOVE_SETTLE_MS, signal)
   for (let index = 0; index < count; index += 1) {
     ops.mouseButton(button, true)
-    await delay(BUTTON_HOLD_MS, signal)
-    ops.mouseButton(button, false)
+    // `delay` rejects on abort, so the release has to be in a `finally`: otherwise a cancelled
+    // click leaves the physical button held down and every later click becomes a drag-select.
+    try {
+      await delay(BUTTON_HOLD_MS, signal)
+    } finally {
+      ops.mouseButton(button, false)
+    }
     if (index + 1 < count) await delay(DOUBLE_CLICK_GAP_MS, signal)
   }
 }
@@ -302,11 +307,27 @@ async function chord(
 ): Promise<void> {
   const modifiers = keys.filter(key => MODIFIER_VKS.has(key.vk))
   const rest = keys.filter(key => !MODIFIER_VKS.has(key.vk))
-  for (const key of modifiers) ops.key(key.vk, true, key.extended)
-  if (modifiers.length > 0) await delay(MODIFIER_GAP_MS, signal)
-  for (const key of rest) ops.key(key.vk, true, key.extended)
-  for (const key of [...rest].reverse()) ops.key(key.vk, false, key.extended)
-  for (const key of [...modifiers].reverse()) ops.key(key.vk, false, key.extended)
+  // A modifier has to stay down until every other key came back up, or Ctrl+C degrades into a
+  // bare C. So track what is still held and release exactly that from the `finally`: the happy
+  // path leaves nothing to do, while a cancelled chord no longer latches Ctrl/Shift down.
+  const held: PostedKey[] = []
+  try {
+    for (const key of modifiers) {
+      ops.key(key.vk, true, key.extended)
+      held.push(key)
+    }
+    if (modifiers.length > 0) await delay(MODIFIER_GAP_MS, signal)
+    for (const key of rest) {
+      ops.key(key.vk, true, key.extended)
+      held.push(key)
+    }
+    for (const key of [...rest].reverse()) {
+      ops.key(key.vk, false, key.extended)
+      held.splice(held.indexOf(key), 1)
+    }
+  } finally {
+    for (const key of [...held].reverse()) ops.key(key.vk, false, key.extended)
+  }
 }
 
 function observationOf(ops: WindowsDesktopOps): WindowsObservationSelection | undefined {
@@ -462,16 +483,19 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
       host.movePointer(start.x, start.y)
       await delay(POINTER_MOVE_SETTLE_MS, abort)
       host.mouseButton('left', true)
-      await delay(BUTTON_HOLD_MS, abort)
-      for (let step = 1; step <= DRAG_STEPS; step += 1) {
-        const t = step / DRAG_STEPS
-        host.movePointer(
-          Math.round(start.x + (end.x - start.x) * t),
-          Math.round(start.y + (end.y - start.y) * t),
-        )
-        await delay(DRAG_STEP_MS, abort)
+      try {
+        await delay(BUTTON_HOLD_MS, abort)
+        for (let step = 1; step <= DRAG_STEPS; step += 1) {
+          const t = step / DRAG_STEPS
+          host.movePointer(
+            Math.round(start.x + (end.x - start.x) * t),
+            Math.round(start.y + (end.y - start.y) * t),
+          )
+          await delay(DRAG_STEP_MS, abort)
+        }
+      } finally {
+        host.mouseButton('left', false)
       }
-      host.mouseButton('left', false)
     },
 
     async openInBrowser(input: OpenInBrowserInput, signal) {
