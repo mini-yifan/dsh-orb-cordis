@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { expectedHash, PINNED_SHA256 } from '../src/electron-runtime.ts'
+import { expectedHash, PINNED_SHA256, releaseAssetUrls } from '../src/electron-runtime.ts'
 
 const fileName = 'electron-v44.0.0-darwin-arm64.zip'
 
@@ -23,5 +23,20 @@ describe('Electron checksum pin', () => {
       () => expectedHash(`${'b'.repeat(64)} *electron-v44.0.0-freebsd-x64.zip\n`, 'electron-v44.0.0-freebsd-x64.zip'),
       /no pinned Electron/,
     )
+  })
+})
+
+describe('Electron release mirrors', () => {
+  it('lists GitHub first and the npmmirror CDN second', () => {
+    assert.deepEqual(releaseAssetUrls(fileName), [
+      `https://github.com/electron/electron/releases/download/v44.0.0/${fileName}`,
+      `https://cdn.npmmirror.com/binaries/electron/v44.0.0/${fileName}`,
+    ])
+  })
+
+  it('covers SHASUMS256.txt on every mirror', () => {
+    for (const url of releaseAssetUrls('SHASUMS256.txt')) {
+      assert.match(url, /\/SHASUMS256\.txt$/)
+    }
   })
 })

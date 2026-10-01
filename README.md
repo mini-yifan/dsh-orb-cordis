@@ -103,6 +103,12 @@ dsh plugin add ./dsh-orb-0.0.0.tgz
 
 After the first installation the helper's Electron runtime is downloaded on first use of the ball, then cached.
 
+## Troubleshooting
+
+- **The plugin market or `dsh plugin add dsh-orb` fails to install**: the npm package is not published yet, so the market install command cannot pull it. Build the tarball locally first (see above) and add that.
+- **The settings page reports the floating-ball runtime did not download**: the runtime is fetched from GitHub on first use and falls back to the npmmirror CDN automatically. If neither mirror is reachable, restore network access to github.com / npmmirror.com (directly or through your proxy), then toggle the floating ball off and on in the settings to retry.
+- **Antivirus software blocks the install or the helper**: the helper is the stock official Electron release verified against pinned SHA-256 hashes; verify the hash and allowlist it if blocked.
+
 ## Development
 
 ```sh

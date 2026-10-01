@@ -14,7 +14,11 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 /** Matches the official app's Electron framework and the fork's desktop package. */
 const ELECTRON_VERSION = '44.0.0'
 
-const RELEASE_BASE = `https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}`
+/** GitHub first; npmmirror serves the same release assets and stays reachable where GitHub does not. */
+const RELEASE_BASES = [
+  `https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}`,
+  `https://cdn.npmmirror.com/binaries/electron/v${ELECTRON_VERSION}`,
+]
 
 /** Official SHASUMS256.txt for Electron 44.0.0. The download is rejected when it disagrees. */
 export const PINNED_SHA256: Readonly<Record<string, string>> = {
@@ -52,7 +56,7 @@ async function downloadRuntime(dest: string, binary: string, marker: string): Pr
     if (await exists(binary) && await exists(marker)) return
     const fileName = assetName()
     console.error(`dsh-orb: downloading Electron ${ELECTRON_VERSION} (${fileName})`)
-    const sums = await fetchText(`${RELEASE_BASE}/SHASUMS256.txt`)
+    const sums = await fetchChecksums()
     const expected = expectedHash(sums, fileName)
     const stamp = randomBytes(8).toString('hex')
     const zipPath = join(parent, `.electron-${stamp}.zip`)
@@ -183,17 +187,41 @@ function hashFromSums(sums: string, fileName: string): string {
 
 const CURL_HTTPS = ['--proto', '=https', '--proto-redir', '=https']
 
+/** Release asset URLs across every mirror, GitHub first. */
+export function releaseAssetUrls(name: string): string[] {
+  return RELEASE_BASES.map((base) => `${base}/${name}`)
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message.replace(/^dsh-orb: /, '')
+  return String(error)
+}
+
+/**
+ * Download SHASUMS256.txt from the first mirror that answers.
+ * The pinned hash decides acceptance later, so a mirror serving a stale or tampered list cannot pass.
+ */
+async function fetchChecksums(): Promise<string> {
+  let lastError: unknown
+  for (const url of releaseAssetUrls('SHASUMS256.txt')) {
+    try {
+      return await fetchText(url)
+    } catch (error) {
+      lastError = error
+      console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  throw new Error(`dsh-orb: failed to download Electron ${ELECTRON_VERSION} checksums — every mirror was unreachable (last error: ${describeError(lastError)})`)
+}
+
 async function fetchText(url: string): Promise<string> {
   const { stdout } = await run('curl', ['-fsSL', ...CURL_HTTPS, '--max-time', '60', url])
   return stdout
 }
 
 async function downloadVerifiedZip(fileName: string, expected: string, dest: string): Promise<void> {
-  // Official checksums decide what is accepted. A second URL only helps when GitHub is too slow.
-  const urls = [
-    `${RELEASE_BASE}/${fileName}`,
-    `https://cdn.npmmirror.com/binaries/electron/v${ELECTRON_VERSION}/${fileName}`,
-  ]
+  // The official checksum decides what is accepted; the mirror list only helps when GitHub is slow or unreachable.
+  const urls = releaseAssetUrls(fileName)
   let lastError: unknown
   for (const url of urls) {
     try {
@@ -213,7 +241,7 @@ async function downloadVerifiedZip(fileName: string, expected: string, dest: str
       console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
-  throw lastError instanceof Error ? lastError : new Error(`dsh-orb: failed to download Electron ${ELECTRON_VERSION}`)
+  throw new Error(`dsh-orb: failed to download Electron ${ELECTRON_VERSION} — every mirror was unreachable or served a bad file (last error: ${describeError(lastError)})`)
 }
 
 function run(command: string, args: string[]): Promise<{ stdout: string }> {
