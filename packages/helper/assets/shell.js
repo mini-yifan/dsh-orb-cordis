@@ -875,15 +875,26 @@ function main() {
     }
   }
 
+  /** Text a card's copy button should place on the clipboard. Terminal and search cards lay out
+   *  block rows rather than a <pre>, so they need their own containers and row separators. */
+  function copyableCardText(block) {
+    if (block === null) return ''
+    const rows = block.matches('.term')
+      ? block.querySelectorAll('.term-line')
+      : block.matches('.search')
+        ? block.querySelectorAll('.search-line, .search-file-header')
+        : null
+    if (rows !== null) return [...rows].map(row => row.textContent ?? '').join('\n')
+    return block.querySelector('pre')?.textContent ?? ''
+  }
+
   function wireCopyButtons(root) {
     for (const button of root.querySelectorAll('.cb-copy, .term-copy, .search-copy')) {
       if (button.dataset.wired === 'true') continue
       button.dataset.wired = 'true'
       button.addEventListener('click', (event) => {
         event.stopPropagation()
-        const block = button.closest('.cb, .term, .search')
-        const code = block?.querySelector('pre')?.textContent ?? ''
-        copyToClipboard(code, button)
+        copyToClipboard(copyableCardText(button.closest('.cb, .term, .search')), button)
       })
     }
   }
@@ -1136,7 +1147,7 @@ function main() {
         truncated.textContent = chatLabels.contentTruncated
         meta.append(truncated)
       }
-      fetch.append(url, meta)
+      fetch.append(meta)
       card.append(fetch)
       return card
     }
@@ -1322,6 +1333,7 @@ function main() {
         bodyWrap.append(buildIoCard(input, output, detail?.isError === true))
       }
     }
+    wireCopyButtons(bodyWrap)
     if (processGroup !== undefined) processGroup.tools.add(name)
     refreshProcessLabel(processGroup)
   }

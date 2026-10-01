@@ -197,4 +197,25 @@ describe('ball page module', () => {
     const floating = readFileSync(join(here, '../assets/floating.css'), 'utf8')
     assert.match(floating, /#transcript \{[^}]*user-select: text/s)
   })
+
+  it('builds the web fetch card without reading a binding that does not exist', () => {
+    const shell = readFileSync(join(here, '../assets/shell.js'), 'utf8')
+    // `fetch.append(url, meta)` threw ReferenceError on every web_fetch render. The throw escaped
+    // the rAF batch in stage(), so every message queued behind it in that frame was dropped too.
+    assert.doesNotMatch(shell, /\bappend\(url\b/u)
+    assert.match(shell, /fetch\.append\(meta\)/u)
+  })
+
+  it('wires the tool card copy buttons that renderMarkdownBody never reaches', () => {
+    const shell = readFileSync(join(here, '../assets/shell.js'), 'utf8')
+    // wireCopyButtons used to be called only from renderMarkdownBody, so the terminal, read and
+    // search cards shipped a copy button that did nothing at all.
+    assert.match(shell, /function wireCopyButtons\(root\)/u)
+    assert.match(shell, /wireCopyButtons\(bodyWrap\)/u)
+    // Terminal and search cards lay out block rows instead of a <pre>, so reading one <pre> would
+    // have copied an empty string even once the button was wired.
+    assert.match(shell, /function copyableCardText\(block\)/u)
+    assert.match(shell, /'\.term-line'/u)
+    assert.match(shell, /'\.search-line, \.search-file-header'/u)
+  })
 })
