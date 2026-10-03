@@ -7,12 +7,19 @@ import {
 } from './transcript-model.js'
 import { upgradeCodeBlocks } from './highlight.js'
 import {
+  encodeWave, meterLevel, MicrophoneCapture, VoiceCaptureError, VOICE_MAX_SECONDS, waveBase64,
+} from './voice.js'
+import {
   icon, THINK, CHEVRON_DOWN, CHEVRON_UP, SEARCH, GLOBE, BROWSE, EDIT, CODE, API, SPARKLE, COPY, CHECK, stateSpinner,
 } from './icons.js'
 
 const api = window.dshOrb
 const COLLAPSE_MS = 180
 const ANIMATION_MS = 300
+// A `requesting`/`transcribing` mic state normally lasts well under a second.
+// Past this age it is a wedge (a state that never left), not a live request, and
+// it must stop blocking the auto-collapse timer (see `scheduleCollapse`).
+const MIC_TRANSIENT_STUCK_MS = 30_000
 const DOCK_HOVER_DELAY_MS = 800
 const DOCK_DRAG_OFF_PX = 24
 const COMPOSER_MIN_PX = 72
@@ -64,6 +71,22 @@ const zh = {
   tccFooter: '打开开关后，请完全退出 {name} 再打开。只关主窗口无效。插件不能替你重启官方应用。',
   tccLater: '稍后',
   tccDismiss: '关闭',
+  voiceStart: '语音输入',
+  voiceStop: '停止并识别',
+  voiceCancel: '取消录音',
+  voiceRequesting: '请允许使用麦克风…',
+  voiceRecording: '正在录音…',
+  voiceTranscribing: '识别中…',
+  voiceEmpty: '未识别到语音',
+  voiceCancelled: '已取消语音输入。',
+  voiceUnavailable: '当前配置未启用语音输入。',
+  voiceNotReady: '语音模型尚未就绪。请在主窗口完成语音设置后重试。',
+  voicePermission: '麦克风权限未开启。请在系统设置中允许后重试。',
+  voiceInterrupted: '录音中断，请重试。',
+  voiceFailed: '语音识别失败：{message}',
+  voiceTooLarge: '录音过长，请缩短后重试。',
+  voiceRetry: '重试语音输入',
+  voiceInserted: '已将识别文字插入草稿。',
 }
 const en = {
   title: 'Desktop agent',
@@ -108,6 +131,22 @@ const en = {
   tccFooter: 'After the switches are on, quit {name} completely and open it again. Closing the main window does not quit. This plugin cannot restart the official app.',
   tccLater: 'Later',
   tccDismiss: 'Dismiss',
+  voiceStart: 'Voice input',
+  voiceStop: 'Stop and transcribe',
+  voiceCancel: 'Cancel recording',
+  voiceRequesting: 'Allow microphone access…',
+  voiceRecording: 'Recording…',
+  voiceTranscribing: 'Transcribing…',
+  voiceEmpty: 'No speech recognized',
+  voiceCancelled: 'Voice input cancelled.',
+  voiceUnavailable: 'Voice input is unavailable in this profile.',
+  voiceNotReady: 'The speech model is not ready. Open the main window and finish its setup.',
+  voicePermission: 'Microphone access is off. Allow it in system settings and try again.',
+  voiceInterrupted: 'Recording was interrupted. Please try again.',
+  voiceFailed: 'Speech recognition failed: {message}',
+  voiceTooLarge: 'The recording is too long. Try a shorter one.',
+  voiceRetry: 'Retry voice input',
+  voiceInserted: 'Inserted the transcript into the draft.',
 }
 
 const PROMPT_LIMIT = 8000
@@ -242,6 +281,23 @@ function main() {
   const status = document.querySelector('#status')
   const prompt = document.querySelector('#prompt')
   const composer = document.querySelector('#composer')
+  const mic = document.querySelector('#mic')
+  const micButton = document.querySelector('#mic-button')
+  const micCancel = document.querySelector('#mic-cancel')
+  const micIdle = document.querySelector('#mic-idle')
+  const micStop = document.querySelector('#mic-stop')
+  const micSpinner = document.querySelector('#mic-spinner')
+  const micRetry = document.querySelector('#mic-retry')
+  // Microphone control state. Declared before applyStaticText() below, which
+  // reads micState to label the button.
+  let micState = 'idle'
+  let micCapture
+  let micMeterFrame
+  let micGeneration = 0
+  // When the current transient state ('requesting'/'transcribing') began. Only
+  // meaningful while in one; it lets `scheduleCollapse` tell a live request from
+  // a wedged one.
+  let micTransientSince = 0
   applyStaticText()
 
   let expanded = false
@@ -252,6 +308,15 @@ function main() {
   let processGroup
   let processClock
   let dragging = false
+
+  /**
+   * Set the drag flag and tell the helper, which cannot see it for itself.
+   */
+  function setDragging(next) {
+    if (next === dragging) return
+    dragging = next
+    if (typeof api.setDragging === 'function') api.setDragging(dragging)
+  }
   let collapsing = false
   let skipClick = false
   let skipDockCommit = false
@@ -264,6 +329,12 @@ function main() {
   let collapseFrame
   let pointer
   let lastOrigin
+  let lastPointer
+  // The helper drives hover from its own cursor poll when the preload offers it. With the
+  // window panel-sized in both states, `pointerenter` fires for every pixel of transparent
+  // chrome around the ball, so opening the panel from it would pop the panel open on a
+  // pointer that never touched the ball. See `requestExpandFromHelper`.
+  const helperDrivesHover = typeof api.onHoverRequest === 'function'
   let permission = 'danger-full-access'
   let permissionOpen = false
   let historyOpen = false
@@ -303,6 +374,7 @@ function main() {
     const chipDismiss = document.querySelector('#selection-chip-dismiss')
     chipDismiss.setAttribute('aria-label', messages.chipDismiss)
     chipDismiss.title = messages.chipDismiss
+    applyMicText()
     document.querySelector('#tcc-screen-name').textContent = messages.tccScreenName
     document.querySelector('#tcc-screen-reason').textContent = messages.tccScreenReason
     document.querySelector('#tcc-screen-path').textContent = messages.tccScreenPath
@@ -468,6 +540,9 @@ function main() {
 
   function applyDockedFrom(result) {
     if (result == null) return
+    // Every docking answer carries the direction the helper placed the window for, and
+    // the ball's corner inside that window is a CSS class: it has to follow along.
+    if (typeof result.horizontal === 'string' && typeof result.vertical === 'string') applyDirection(result)
     applyDocked(result.docked)
   }
 
@@ -506,6 +581,7 @@ function main() {
       document.body.classList.add('expanded')
       stop.hidden = !running
       syncGif()
+      refreshPointerRegion()
       return
     }
     if (!force && (pinned || running || asking())) return
@@ -514,6 +590,7 @@ function main() {
     if (docked !== undefined) dockTab.hidden = false
     stop.hidden = true
     syncGif()
+    refreshPointerRegion()
     if (force) {
       panel.hidden = true
       await api.setExpanded(false)
@@ -533,6 +610,10 @@ function main() {
 
   function scheduleCollapse() {
     if (pinned || running || asking() || dragging) return
+    // A recording in progress must not lose the panel to the leave timer. A
+    // transient state past its wedge age is not progress and must not block the
+    // collapse forever (see `micBlocksCollapse`).
+    if (micBlocksCollapse()) return
     if (collapseTimer !== undefined) clearTimeout(collapseTimer)
     collapseTimer = setTimeout(() => {
       collapseTimer = undefined
@@ -568,6 +649,256 @@ function main() {
     document.body.classList.remove('composer-capped')
     document.body.style.setProperty('--composer-height', 'var(--ball)')
   }
+
+  /**
+   * Microphone control in the composer.
+   *
+   * States: idle -> requesting -> recording -> transcribing -> idle, with an
+   * `error` state that retries. Capture and the WAV/base64 encoding live in
+   * ./voice.js; the transcript is inserted at the caret without submitting, and
+   * `syncComposerHeight()` runs afterwards so the pill grows to fit it.
+   */
+  function micCopy(key, values) {
+    const template = messages[key] ?? ''
+    return values === undefined
+      ? template
+      : template.replace(/\{(\w+)\}/g, (match, name) => String(values[name] ?? match))
+  }
+
+  function applyMicText() {
+    micButton.setAttribute('aria-label', micState === 'recording' ? messages.voiceStop : micState === 'error' ? messages.voiceRetry : messages.voiceStart)
+    micButton.title = micState === 'recording' ? messages.voiceStop : micState === 'error' ? messages.voiceRetry : messages.voiceStart
+    micCancel.setAttribute('aria-label', messages.voiceCancel)
+    micCancel.title = messages.voiceCancel
+  }
+
+  function renderMic() {
+    mic.dataset.state = micState
+    micButton.setAttribute('aria-pressed', micState === 'recording' ? 'true' : 'false')
+    micIdle.hidden = micState !== 'idle'
+    micStop.hidden = micState !== 'recording'
+    micSpinner.hidden = micState !== 'requesting' && micState !== 'transcribing'
+    micRetry.hidden = micState !== 'error'
+    micCancel.hidden = micState !== 'recording'
+    micButton.disabled = micState === 'requesting' || micState === 'transcribing'
+    if (micState !== 'recording') document.body.style.setProperty('--mic-level', '0')
+    applyMicText()
+  }
+
+  function stopMicMeter() {
+    if (micMeterFrame === undefined) return
+    cancelAnimationFrame(micMeterFrame)
+    micMeterFrame = undefined
+    document.body.style.setProperty('--mic-level', '0')
+  }
+
+  function startMicMeter(capture) {
+    stopMicMeter()
+    const tick = () => {
+      micMeterFrame = requestAnimationFrame(() => {
+        if (micState !== 'recording' || micCapture !== capture) return
+        document.body.style.setProperty('--mic-level', capture.level().toFixed(3))
+        tick()
+      })
+    }
+    tick()
+  }
+
+  async function disposeMicCapture() {
+    const capture = micCapture
+    micCapture = undefined
+    stopMicMeter()
+    if (!capture) return
+    try {
+      await capture.dispose()
+    } catch {
+      // Releasing an already-closed stream is not worth surfacing.
+    }
+  }
+
+  function setMicState(next) {
+    micState = next
+    // Only a transient state can wedge; the timestamp is what the collapse
+    // guard ages out.
+    micTransientSince = next === 'requesting' || next === 'transcribing' ? Date.now() : 0
+    renderMic()
+  }
+
+  /**
+   * True while the mic is in a state that must not lose the panel to the leave
+   * timer. A transient state older than MIC_TRANSIENT_STUCK_MS is a wedge, not
+   * work in progress, and must not block the collapse forever.
+   */
+  function micBlocksCollapse() {
+    if (micState === 'idle') return false
+    if (micState !== 'requesting' && micState !== 'transcribing') return true
+    return Date.now() - micTransientSince < MIC_TRANSIENT_STUCK_MS
+  }
+
+  /**
+   * Leave a transient state and put the mic back in a sane one.
+   *
+   * Every early return after `setMicState('requesting'|'transcribing')` goes
+   * through here: a superseded generation used to `return` bare, which left the
+   * state transient FOREVER — `scheduleCollapse` then refused to collapse and
+   * `renderMic` kept the button disabled, so only a restart recovered. The
+   * capture is always disposed first, and the state is never left transient.
+   */
+  async function resetVoiceState(next = 'idle') {
+    await disposeMicCapture()
+    setMicState(next)
+  }
+
+  function micFailureText(error) {
+    if (error instanceof VoiceCaptureError) {
+      if (error.kind === 'permission') return micCopy('voicePermission')
+      if (error.kind === 'unavailable') return micCopy('voiceUnavailable')
+      if (error.kind === 'interrupted') return micCopy('voiceInterrupted')
+      if (error.kind === 'cancelled') return micCopy('voiceCancelled')
+      if (error.kind === 'empty') return micCopy('voiceEmpty')
+    }
+    return micCopy('voiceFailed', { message: error instanceof Error ? error.message : String(error) })
+  }
+
+  /** The host's stable error code, mapped onto the ball's own copy. */
+  function transcribeFailureText(failure) {
+    if (failure?.error === 'voice-unavailable') return micCopy('voiceUnavailable')
+    if (failure?.error === 'voice-not-ready') return micCopy('voiceNotReady')
+    if (failure?.error === 'invalid-audio') return micCopy('voiceTooLarge')
+    return micCopy('voiceFailed', { message: failure?.message ?? '' })
+  }
+
+  /**
+   * Insert the transcript as editable text at the caret/selection.
+   * Never submits; the existing submit path is untouched.
+   */
+  function insertTranscript(text) {
+    if (typeof text !== 'string' || text === '') return false
+    prompt.focus()
+    const selection = window.getSelection()
+    let inserted = false
+    // A collapsed or stale selection has to be replaced by a caret inside the
+    // prompt, or insertText would land outside the draft.
+    if (selection && selection.rangeCount > 0 && prompt.contains(selection.anchorNode)) {
+      inserted = insertPlainText(prompt, text)
+    } else {
+      const range = document.createRange()
+      range.selectNodeContents(prompt)
+      range.collapse(false)
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+      inserted = insertPlainText(prompt, text)
+    }
+    prompt.classList.remove('prompt-empty')
+    syncComposerHeight()
+    return inserted
+  }
+
+  async function startVoice() {
+    if (micState === 'requesting' || micState === 'recording' || micState === 'transcribing') return
+    if (typeof api.transcribe !== 'function') {
+      status.textContent = micCopy('voiceUnavailable')
+      setMicState('error')
+      return
+    }
+    const generation = ++micGeneration
+    setMicState('requesting')
+    status.textContent = micCopy('voiceRequesting')
+    const capture = new MicrophoneCapture()
+    micCapture = capture
+    try {
+      await capture.start()
+      // A newer request/cancel superseded this one: drop this capture and leave
+      // the transient state instead of returning bare (which used to wedge the
+      // state at 'requesting' and block auto-collapse forever).
+      if (generation !== micGeneration) {
+        await resetVoiceState()
+        return
+      }
+      setMicState('recording')
+      status.textContent = micCopy('voiceRecording')
+      startMicMeter(capture)
+    } catch (error) {
+      // The same guarantee on the failure path: dispose, then land on 'error'
+      // (or 'idle' for a user cancellation / a superseded generation), never
+      // back on 'requesting'.
+      const superseded = generation !== micGeneration
+      await resetVoiceState(
+        superseded || (error instanceof VoiceCaptureError && error.kind === 'cancelled') ? 'idle' : 'error',
+      )
+      if (!superseded) status.textContent = micFailureText(error)
+      return
+    }
+  }
+
+  async function finishVoice() {
+    const capture = micCapture
+    if (micState !== 'recording' || !capture) return
+    const generation = ++micGeneration
+    stopMicMeter()
+    setMicState('transcribing')
+    status.textContent = micCopy('voiceTranscribing')
+    let bytes
+    try {
+      bytes = await capture.stop(VOICE_MAX_SECONDS)
+    } catch (error) {
+      const superseded = generation !== micGeneration
+      await resetVoiceState(superseded ? 'idle' : 'error')
+      if (!superseded) status.textContent = micFailureText(error)
+      return
+    }
+    micCapture = undefined
+    if (generation !== micGeneration) {
+      await resetVoiceState()
+      return
+    }
+    const audioSeconds = Math.max(0, (bytes.length - 44) / 32000)
+    let result
+    try {
+      result = await api.transcribe(waveBase64(bytes), audioSeconds)
+    } catch (error) {
+      await resetVoiceState('error')
+      if (generation === micGeneration) {
+        status.textContent = micCopy('voiceFailed', { message: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+    // Superseded while transcribing: leave the transient state rather than
+    // wedging at 'transcribing'.
+    if (generation !== micGeneration) {
+      await resetVoiceState()
+      return
+    }
+    if (!result || result.ok !== true) {
+      status.textContent = transcribeFailureText(result)
+      setMicState('error')
+      return
+    }
+    if (result.text === '') {
+      status.textContent = micCopy('voiceEmpty')
+      setMicState('error')
+      return
+    }
+    insertTranscript(result.text)
+    status.textContent = micCopy('voiceInserted')
+    setMicState('idle')
+  }
+
+  async function cancelVoice() {
+    micGeneration += 1
+    const wasRecording = micState === 'recording'
+    await disposeMicCapture()
+    setMicState('idle')
+    status.textContent = wasRecording ? micCopy('voiceCancelled') : ''
+  }
+
+  micButton.addEventListener('click', () => {
+    if (micState === 'idle') { void startVoice(); return }
+    if (micState === 'recording') { void finishVoice(); return }
+    if (micState === 'error') { void startVoice() }
+  })
+  micCancel.addEventListener('click', () => { void cancelVoice() })
+  renderMic()
 
   function refreshProcessLabel(group) {
     if (!group) return
@@ -1759,26 +2090,135 @@ function main() {
     return (event.buttons & 1) === 1
   }
 
-  document.body.addEventListener('pointerenter', () => {
+  /**
+   * Tell the helper which region the pointer is on.
+   *
+   * The window keeps the panel size while collapsed so that expanding never moves its
+   * origin — a moved origin is the flicker. Everything outside the ball and the panel
+   * is transparent chrome, and the helper turns it click-through so the desktop below
+   * still gets those clicks. Reports pause while a button is held: that is a ball or
+   * tab drag, and the window has to stay interactive for the moves to keep arriving.
+   */
+  function reportPointerRegion(event) {
+    if (pageClosed()) return
+    lastPointer = { x: event.clientX, y: event.clientY }
+    if ((event.buttons & 1) === 1) return
+    reportRegionAt(lastPointer.x, lastPointer.y)
+  }
+
+  /**
+   * Re-answer for the last known pointer position.
+   *
+   * Opening or closing the panel changes what is under a pointer that has not moved,
+   * and a stale `click-through` would send the user's next click to the desktop
+   * instead of the panel they just opened. Nothing to correct before the first move.
+   */
+  function refreshPointerRegion() {
+    if (lastPointer === undefined) return
+    reportRegionAt(lastPointer.x, lastPointer.y)
+  }
+
+  function reportRegionAt(x, y) {
+    if (pageClosed()) return
+    // A drag must keep the window interactive no matter where the pointer is: the
+    // helper moves the window one round-trip behind the cursor, so a fast drag would
+    // otherwise test the cursor against a stale rectangle and drop the ball.
+    if (dragging) {
+      api.setInteractive(true)
+      return
+    }
+    if (docked !== undefined) {
+      api.setInteractive(true)
+      return
+    }
+    if (within(ball.getBoundingClientRect(), x, y)) {
+      api.setInteractive(true)
+      return
+    }
+    api.setInteractive(expanded && !panel.hidden && within(panel.getBoundingClientRect(), x, y))
+  }
+
+  function within(rect, x, y) {
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+  }
+
+  /**
+   * The helper saw the cursor on the ball with the panel closed.
+   *
+   * The page itself can no longer tell: the window keeps the panel size in both states,
+   * so the cursor leaving the ball stays inside the window and `pointerleave` never
+   * fires — and while the transparent chrome is click-through the page sees no pointer
+   * events at all. The poll in the main process is the only source that knows, and it
+   * asks here. Every guard stays where it already is: a pinned panel, a running turn,
+   * a pending question, a drag and a docked tab all keep the panel as it is.
+   */
+  function requestExpandFromHelper() {
+    if (pageClosed() || expanded || dragging || collapsing) return
+    if (suppressExpand) return
+    if (docked !== undefined) return
+    void setExpanded(true)
+  }
+
+  /**
+   * The helper saw the cursor leave both the ball and the open panel.
+   *
+   * This is the `pointerleave` of a window that is always panel-sized, so it carries the
+   * same side effects: the dock hover is over, and a suppression left behind by a dock
+   * slide ends here. Without that last part a ball slid back in would keep refusing to
+   * expand, because the pointer that follows it never leaves the window any more.
+   *
+   * `scheduleCollapse` owns the delay and all of its guards: pinned, running, a pending
+   * question, a ball drag and an active microphone each refuse the collapse on their
+   * own. Nothing here forces it, and a panel that is already folded only re-runs its
+   * own no-op teardown.
+   */
+  function requestCollapseFromHelper() {
+    if (pageClosed()) return
+    dockPointerInside = false
+    suppressExpand = false
+    if (!dragging && docked === undefined) lastPointer = undefined
+    // The side effects above run on every leave, because the helper sends one at rest as
+    // well. Only a panel that is actually showing has anything to close; without this the
+    // resting signal would keep re-running the collapse teardown for a folded panel.
+    if (!expanded) return
+    scheduleCollapse()
+  }
+
+  document.body.addEventListener('pointermove', reportPointerRegion)
+  document.body.addEventListener('pointerenter', (event) => {
     dockPointerInside = true
+    reportPointerRegion(event)
     if (dragging || collapsing) return
     if (docked !== undefined) {
       if (dockHoverArmed) void unsnapDocked()
       return
     }
     if (suppressExpand) return
+    // The poll is the authority on where the pointer is. What is left here is the fallback
+    // for a build whose preload has no poll: the enter itself says nothing about the ball,
+    // because the window is panel-sized and stays under the cursor after the ball is left.
+    if (helperDrivesHover) return
     void setExpanded(true)
   })
   document.body.addEventListener('pointerleave', () => {
     dockPointerInside = false
     suppressExpand = false
+    // The pointer is off the window, so nothing here is under it any more. Without
+    // this the last hover would keep the transparent chrome swallowing clicks over
+    // the 344x444 window while the pointer sits somewhere else entirely.
+    // A docked tab keeps the whole narrow window interactive; only a free ball drops
+    // the claim, or the pointer would leave behind a window that still eats clicks.
+    if (pointer === undefined && !dragging && docked === undefined) {
+      lastPointer = undefined
+      api.setInteractive(false)
+    }
     if (dragging || collapsing) return
     scheduleCollapse()
   })
 
   ball.addEventListener('pointerdown', (event) => {
     if (!isPrimaryButton(event)) return
-    dragging = false
+    setDragging(false)
     collapsing = false
     skipClick = false
     lastOrigin = undefined
@@ -1794,7 +2234,7 @@ function main() {
     lastOrigin = { x: event.screenX - pointer.dx, y: event.screenY - pointer.dy }
     if (!dragging) {
       if (Math.hypot(event.screenX - pointer.startX, event.screenY - pointer.startY) <= 4) return
-      dragging = true
+      setDragging(true)
       if (running || asking()) {
         void moveBall(lastOrigin.x, lastOrigin.y)
         return
@@ -1813,7 +2253,6 @@ function main() {
   async function finishPointer(event) {
     if (dragging) {
       skipClick = true
-      dragging = false
       collapsing = false
       const origin = pointer === undefined
         ? lastOrigin
@@ -1826,6 +2265,13 @@ function main() {
         if (origin !== undefined) await moveBall(origin.x, origin.y)
         await clampBall()
       }
+      // The window has moved under a stationary pointer; the old answer no longer
+      // describes where that pointer is. Body moves resume once the button is up.
+      // Released only once the window has stopped: the helper keeps the window
+      // interactive for the whole move, or a drop away from the cursor would land
+      // on a rectangle the poll has not caught up with yet.
+      setDragging(false)
+      reportPointerRegion(event)
       return true
     }
     pointer = undefined
@@ -1851,7 +2297,7 @@ function main() {
 
   dockTab.addEventListener('pointerdown', (event) => {
     if (!isPrimaryButton(event)) return
-    dragging = false
+    setDragging(false)
     collapsing = false
     skipClick = true
     lastOrigin = undefined
@@ -1867,7 +2313,7 @@ function main() {
     lastOrigin = { x: event.screenX, y: event.screenY }
     const inward = docked === 'right' ? pointer.startX - event.screenX : event.screenX - pointer.startX
     if (inward <= DOCK_DRAG_OFF_PX) return
-    dragging = true
+    setDragging(true)
     void unsnapDocked()
   })
   dockTab.addEventListener('pointerup', (event) => { void finishPointer(event) })
@@ -2118,6 +2564,14 @@ function main() {
     event.preventDefault()
     api.openExternal(href)
   })
+  // The window is panel-sized from the start, so the ball's corner has to be known
+  // before the first paint; the helper sends it once the page has loaded.
+  api.onDirection((direction) => { if (direction) applyDirection(direction) })
+  // Hover expand and auto collapse, driven by the helper's cursor poll. The enter/leave
+  // pair above stays as a fallback for the pixels the poll cannot see, but nothing
+  // depends on it.
+  if (typeof api.onHoverRequest === 'function') api.onHoverRequest(() => requestExpandFromHelper())
+  if (typeof api.onLeaveRequest === 'function') api.onLeaveRequest(() => requestCollapseFromHelper())
   api.onQuestion((payload) => { showQuestion(payload) })
   api.onQuestionClear((id) => { clearQuestion(id) })
   api.onQuestionError((payload) => {

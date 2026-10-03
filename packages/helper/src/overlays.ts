@@ -21,6 +21,11 @@ import {
 interface OverlayDeps {
   ball: () => BrowserWindow | undefined
   write: (message: unknown) => void
+  /**
+   * Reports the ball window's click-through state whenever the capture/input cloak
+   * changes it behind the transparent-chrome owner's back.
+   */
+  clickThrough?: (clickThrough: boolean) => void
 }
 
 /** Resolved appearance state mirrored onto the overlay pages. */
@@ -29,10 +34,29 @@ export interface OverlayAppearance {
   locale: 'zh' | 'en'
 }
 
+/**
+ * Sessions whose permission handlers have already been decided.
+ *
+ * Every window here shares the default Electron session, so the last writer
+ * would otherwise win: the toolbar/frame deny-all would clobber the ball's
+ * microphone grant (or the reverse) depending on construction order. The first
+ * decision per session is therefore kept.
+ */
+const permissionSessions = new WeakSet<object>()
+
 export function denyWindowPermissions(created: BrowserWindow): void {
-  created.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => {
+  const session = created.webContents.session
+  if (permissionSessions.has(session)) return
+  permissionSessions.add(session)
+  session.setPermissionRequestHandler((_contents, _permission, callback) => {
     callback(false)
   })
+  session.setPermissionCheckHandler(() => false)
+}
+
+/** Reserve this session so a later window cannot replace its permission policy. */
+export function claimPermissionSession(created: BrowserWindow): void {
+  permissionSessions.add(created.webContents.session)
 }
 
 export async function attachOverlays(deps: OverlayDeps): Promise<{
@@ -100,6 +124,7 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
       { window: () => frame, resting: process.platform === 'win32' },
     ],
     () => deps.ball(),
+    (clickThrough) => deps.clickThrough?.(clickThrough),
   )
 
   function raiseChrome(): void {

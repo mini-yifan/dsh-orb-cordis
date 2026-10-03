@@ -4,11 +4,31 @@
   --ball: 72px;
   --composer-height: var(--ball);
   --prompt-line: 20px;
-  --prompt-pad: 12px;
+  /* Symmetric vertical padding that centres one line in the ball-height pill.
+   * This must stay `(ball - line) / 2`: the empty-state placeholder sizes its
+   * line box as `ball - 2 * pad`, so any other value makes the placeholder and
+   * the real editable line box disagree and the caret/I-beam hotspot drifts
+   * away from the painted text. Horizontal padding stays 8px (see #prompt). */
+  --prompt-pad: calc((var(--ball) - var(--prompt-line)) / 2);
   --composer-max: calc(var(--ball) + var(--prompt-line) * 3);
   --chrome: 12px;
+  /* The panel is no longer pinned to the window `inset`: the ball owns a fixed window
+   * position (see `#ball`) and the panel slides to the side of it the direction names.
+   * The window is FIXED_WINDOW_SIZE (592x792) and the ball sits at BALL_ANCHOR
+   * (260, 360), so each direction still reaches its own panel rectangle without moving
+   * the window origin — a moved origin is the stale frame Windows copies. */
+  --panel-left: 12px;
+  --panel-top: 12px;
+  --panel-w: 320px;
+  --panel-h: 420px;
   --panel-radius: 36px;
   --selection-chip: 28px;
+  /* The microphone shares the pill's single line with the 72px ball float and
+   * the placeholder. Measured on the shipped CSS: the empty prompt leaves 174px
+   * beside the float and the localized placeholder needs ~150px, so the mic slot
+   * must stay under ~24px or the placeholder wraps into the pill's clipped second
+   * line. 22px with no gap keeps ~2px of headroom in both locales and directions. */
+  --mic-size: 22px;
   /* Shell chrome keeps the fork's exact palette — the bar must match the
    * original ball window pixel for pixel. Chat content styles itself through
    * the --dsw-* token sheets (theme.css) instead of these variables. */
@@ -60,7 +80,10 @@ body {
 
 #panel {
   position: absolute;
-  inset: var(--chrome);
+  left: var(--panel-left);
+  top: var(--panel-top);
+  width: var(--panel-w);
+  height: var(--panel-h);
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
@@ -75,6 +98,31 @@ body {
   transition: opacity 300ms ease-in-out, transform 300ms ease-in-out;
 }
 
+/* Panel placement: one property per rule.
+ *
+ * These four selectors have the same specificity, so a rule that pinned BOTH axes would
+ * win both, and the last one in the file would then drag the panel onto its own edge in
+ * the two MIXED corners (left+down, right+up) while the two same-side corners looked
+ * correct. One axis per rule makes that class of bug unrepresentable, and no rule here
+ * touches a physical left/top/right/bottom. */
+body.expand-left {
+  --panel-left: 12px;
+}
+
+body.expand-right {
+  --panel-left: 260px;
+}
+
+body.expand-up {
+  --panel-top: 12px;
+}
+
+body.expand-down {
+  --panel-top: 360px;
+}
+
+/* The scale animation still grows from the ball's corner, kept in its own rule so the
+ * placement rules above stay one property each. */
 body.expand-left {
   --origin-x: 100%;
 }
@@ -328,10 +376,23 @@ body.expand-up #transcript {
   color: var(--pin);
 }
 
+/* The status line shares the panel's top band with the absolutely positioned
+ * chrome buttons (#history at left 12px, #new-conversation at right 12px,
+ * #permission centred; all 28px tall from top 12px). In normal flow it ran
+ * underneath them, so a long mic message was covered by the History button.
+ * Clearing the whole chrome row keeps the text readable in every direction. */
 #status {
   margin: 0;
+  padding-top: 26px;
   font-size: 12px;
+  line-height: 1.4;
   color: var(--pin);
+  overflow-wrap: anywhere;
+}
+
+body.expand-down #status {
+  padding-top: 0;
+  padding-bottom: 26px;
 }
 
 #composer {
@@ -342,6 +403,22 @@ body.expand-up #transcript {
   right: 16px;
   height: var(--composer-height);
   padding: 0 12px;
+  /* The microphone sits at the pill's free end, opposite the ball. The row
+   * direction is flipped per expansion so `#prompt` always keeps the ball side
+   * and the wrap spacer below stays on the correct edge. `gap: 0` matters: the
+   * placeholder's single line is only ~2px wider than what the ball float
+   * leaves, so any extra gap makes it wrap inside the pill. */
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+body.expand-left #composer {
+  flex-direction: row-reverse;
+}
+
+body.expand-right #composer {
+  flex-direction: row;
 }
 
 body.expand-up #composer {
@@ -613,7 +690,8 @@ body.expand-down #selection-chip {
 
 #prompt {
   box-sizing: border-box;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
@@ -676,11 +754,130 @@ body.composer-capped #prompt::before {
   line-height: calc(var(--ball) - 2 * var(--prompt-pad));
 }
 
+/* Microphone control at the pill's free end. It occupies a fixed slot in the
+ * flex row so the ball-wrap spacer geometry of #prompt is untouched. */
+#mic {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 100%;
+}
+
+#mic[data-state="hidden"] {
+  display: none;
+}
+
+#mic-button,
+#mic-cancel {
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: var(--mic-size);
+  height: var(--mic-size);
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  color: var(--pin);
+  background: transparent;
+  cursor: pointer;
+}
+
+#mic-button:hover,
+#mic-cancel:hover {
+  background: var(--white);
+  color: var(--black);
+}
+
+#mic-button svg,
+#mic-cancel svg {
+  grid-area: 1 / 1;
+  width: 16px;
+  height: 16px;
+}
+
+#mic-cancel {
+  width: 20px;
+  height: 20px;
+}
+
+#mic-cancel[hidden] {
+  display: none;
+}
+
+#mic-button[hidden] {
+  display: none;
+}
+
+#mic-ring {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  border: 2px solid transparent;
+}
+
+#mic[data-state="recording"] #mic-button {
+  color: var(--white);
+  background: var(--error);
+}
+
+#mic[data-state="recording"] #mic-ring {
+  border-color: var(--error);
+  transform: scale(calc(1 + 0.35 * var(--mic-level, 0)));
+  opacity: calc(0.35 + 0.65 * var(--mic-level, 0));
+  transition: transform 80ms linear, opacity 80ms linear;
+}
+
+#mic[data-state="requesting"] #mic-button,
+#mic[data-state="transcribing"] #mic-button {
+  color: var(--pin);
+}
+
+#mic[data-state="error"] #mic-button {
+  color: var(--error);
+}
+
+#mic-retry {
+  grid-area: 1 / 1;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+#mic-spinner {
+  grid-area: 1 / 1;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 999px;
+  animation: mic-spin 700ms linear infinite;
+}
+
+@keyframes mic-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #mic-spinner {
+    animation-duration: 2000ms;
+  }
+
+  #mic[data-state="recording"] #mic-ring {
+    transition: none;
+  }
+}
+
 #ball {
   position: absolute;
   z-index: 1;
-  top: var(--chrome);
-  left: var(--chrome);
+  /* BALL_ANCHOR (260, 360) = 12 + 320 - 72 and 12 + 420 - 72. The ball is FIXED in the
+   * window and the panel moves around it, so expand/collapse never moves the window
+   * origin and no direction rule touches this element. */
+  top: calc(var(--chrome) + 348px);
+  left: calc(var(--chrome) + 248px);
   width: var(--ball);
   height: var(--ball);
   border: 0;
@@ -689,26 +886,6 @@ body.composer-capped #prompt::before {
   background: var(--black);
   box-shadow: var(--ball-shadow);
   cursor: grab;
-}
-
-body.expand-left #ball {
-  left: auto;
-  right: var(--chrome);
-}
-
-body.expand-right #ball {
-  right: auto;
-  left: var(--chrome);
-}
-
-body.expand-up #ball {
-  top: auto;
-  bottom: var(--chrome);
-}
-
-body.expand-down #ball {
-  bottom: auto;
-  top: var(--chrome);
 }
 
 body.expanded #ball {
@@ -721,6 +898,17 @@ body.pinned #ball {
 
 #ball:active {
   cursor: grabbing;
+}
+
+/* A docked window is the 34px tab strip and the ball is hidden inside it (see the
+ * `body.docked` visibility rule below), so nothing is painted here; the box is still
+ * moved to TAB_CORNER — right+down, `--chrome` in from the strip's corner — because that
+ * is the corner a slid ball would occupy. Both axes live in this one rule on purpose: no
+ * other rule sets left/top on `#ball` at this specificity any more, so neither can be
+ * clobbered by the other. */
+body.docked #ball {
+  left: var(--chrome);
+  top: var(--chrome);
 }
 
 #dock-tab {
@@ -801,20 +989,26 @@ body.docked #stop {
   background: var(--black);
 }
 
+/* #stop is a sibling of #panel, but it is the far cap of the input pill and the pill
+ * lives inside the panel, so it is measured from the panel offsets now that the panel is
+ * no longer at a fixed `inset`. The pill is `--panel-w` x `--composer-height` (320x72),
+ * flush with the panel edge the composer hugs: `bottom: 0` for expand-up, `top: 0` for
+ * expand-down. `58px` is `44 + (72 - 44) / 2`, i.e. the button plus its 14px inset from
+ * that cap. One axis per rule, same rule as the panel placement above. */
 body.expand-left #stop {
-  left: calc(var(--chrome) + 14px);
+  left: calc(var(--panel-left) + 14px);
 }
 
 body.expand-right #stop {
-  right: calc(var(--chrome) + 14px);
+  left: calc(var(--panel-left) + var(--panel-w) - 58px);
 }
 
 body.expand-up #stop {
-  bottom: calc(var(--chrome) + 14px);
+  top: calc(var(--panel-top) + var(--panel-h) - 58px);
 }
 
 body.expand-down #stop {
-  top: calc(var(--chrome) + 14px);
+  top: calc(var(--panel-top) + 14px);
 }
 
 body:not(.expanded) #stop,

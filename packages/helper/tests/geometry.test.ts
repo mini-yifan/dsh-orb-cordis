@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { BALL_WINDOW_SIZE, CHROME_INSET, FloatingPlacement, type Rect } from '../src/geometry.ts'
+import { FIXED_WINDOW_SIZE, FloatingPlacement, type Rect } from '../src/geometry.ts'
 
 describe('docking on more than one display', () => {
   it('does not dock on the seam between two displays', async () => {
@@ -26,11 +26,14 @@ function pair(x: number, y: number, width: number, height: number): { bounds: Re
 }
 
 function placement(displays: { bounds: Rect; workArea: Rect }[], x: number, y: number): FloatingPlacement {
+  // The free window is one fixed size now, with the ball at BALL_ANCHOR. Straddle the
+  // anchor here so the window really is centred on (x, y), which is what `nearest`
+  // and the seam check below are reading.
   let bounds: Rect = {
-    x: x - CHROME_INSET,
-    y: y - CHROME_INSET,
-    width: BALL_WINDOW_SIZE,
-    height: BALL_WINDOW_SIZE,
+    x: x - FIXED_WINDOW_SIZE.width / 2,
+    y: y - FIXED_WINDOW_SIZE.height / 2,
+    width: FIXED_WINDOW_SIZE.width,
+    height: FIXED_WINDOW_SIZE.height,
   }
   return new FloatingPlacement({
     getBounds: () => ({ ...bounds }),

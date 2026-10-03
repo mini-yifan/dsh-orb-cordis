@@ -8,9 +8,10 @@ import { createConnection, type Socket } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { readAvatarChoice, type AvatarChoice } from './avatar.ts'
 import { collectChromeWindowIds, type NativeHandleWindow } from './chrome-windows.ts'
-import { FloatingPlacement, initialWindowBounds } from './geometry.ts'
+import { FloatingPlacement, initialExpandDirection, initialWindowBounds, type Direction, type Rect } from './geometry.ts'
+import { decideHover } from './hover.ts'
 import { contextMenuTemplate } from './menu.ts'
-import { attachOverlays, denyWindowPermissions } from './overlays.ts'
+import { attachOverlays, claimPermissionSession, denyWindowPermissions } from './overlays.ts'
 import { type MenuCatalog, type MenuSelection } from './model-menu.ts'
 
 const socketAddress = process.env.DSH_ORB_SOCKET ?? ''
@@ -68,8 +69,36 @@ let overlays: {
   chromeWindows(): readonly (NativeHandleWindow | undefined)[]
 } | undefined
 let placement: FloatingPlacement | undefined
+/** True while the ball rides a display edge as a tab; the cursor poll reads it. */
+let ballDocked = false
 let live: Socket | undefined
 let quitting = false
+/** Click-through last written to the OS; see applyClickThrough. */
+let ballClickThrough = true
+/** The capture cloak forces click-through over this while it holds an input interval. */
+let cloakClickThrough = false
+/** Panel state the cursor poll reads: true while the renderer shows the panel. */
+let placementExpanded = false
+/** Corner the ball is parked in; the poll needs it before the renderer reports one. */
+let placementDirection: Direction = { horizontal: 'left', vertical: 'up' }
+/** Last hover request sent, so a request the renderer refuses is not re-sent every tick. */
+let lastRequest: 'expand' | 'collapse' | undefined
+/** The hover half of the click-through decision; the cloak owns the other half. */
+let cursorClickThrough = true
+/** True while the page holds the ball: set from `orb:interactive` reports. */
+let ballDragging = false
+/** ~16 polls a second: smooth enough for a hover, cheap enough to leave running. */
+const HOVER_POLL_MS = 60
+
+/** The window fields of a placement answer, which is what the cursor poll tracks. */
+interface PlacementAnswer {
+  readonly horizontal: string
+  readonly vertical: string
+  readonly docked?: unknown
+  readonly expanded?: boolean
+}
+// Corner the window was opened in; the renderer needs it before its first paint.
+let initialDirection: { horizontal: 'left' | 'right'; vertical: 'up' | 'down' } | undefined
 let buffer = ''
 
 app.on('before-quit', () => {
@@ -84,18 +113,42 @@ void app.whenReady().then(async () => {
   if (process.platform === 'darwin') app.dock?.hide()
   win = openWindow()
   try {
-    overlays = await attachOverlays({ ball: () => win, write })
+    overlays = await attachOverlays({
+      ball: () => win,
+      write,
+      clickThrough: (clickThrough) => setBallClickThrough(clickThrough),
+    })
   } catch (error) {
     console.error(`dsh-orb helper: overlays did not open: ${error instanceof Error ? error.message : String(error)}`)
   }
   placement = new FloatingPlacement(win, (point) => {
     const display = screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) })
     return { bounds: display.bounds, workArea: display.workArea }
-  }, () => screen.getAllDisplays().map((display) => display.bounds))
+  }, () => screen.getAllDisplays().map((display) => display.bounds), initialDirection,
+    // A drag across the screen centre flips the corner the ball is parked in, and the
+    // window is re-anchored for it in the same call. The page paints the ball from its own
+    // classes, so they have to be on their way out before the window moves: otherwise the
+    // frame pairs the new origin with the old corner (a flash towards the old side) and the
+    // cursor poll then aims at a rectangle the ball is not in (a ball that cannot be
+    // hovered, clicked or expanded). Push and let the placement move on.
+    (direction) => {
+      try {
+        win?.webContents.send('orb:direction', direction)
+      } catch {
+        // The window died between the check and the send; the move will fail too.
+      }
+    })
+  // Restore hover expand and auto collapse that the panel-sized window took away: the page
+  // only sees pointer events, and the pointer stays inside the window once it leaves the
+  // ball, so the OS cursor is the only honest source. See ./hover.ts.
+  setInterval(pollCursor, HOVER_POLL_MS)
   win.webContents.on('did-finish-load', () => {
     if (win && !win.isVisible()) win.showInactive()
     // The page may have loaded after the last appearance change.
     pushAppearance()
+    // The window is panel-sized from the start, so it already holds the ball in one
+    // corner; the page has to paint it there or it lands at the opposite edge.
+    if (win && initialDirection) win.webContents.send('orb:direction', initialDirection)
   })
   // OS scheme flips ride through while the theme preference is `system`.
   nativeTheme.on('updated', () => { pushAppearance() })
@@ -108,23 +161,134 @@ ipcMain.handle('orb:expand', (event, expanded) => {
   if (!fromBall(event) || !placement || typeof expanded !== 'boolean') {
     return { expanded: false, horizontal: 'left', vertical: 'up', docked: undefined }
   }
-  return placement.setExpanded(expanded)
+  return remember(placement.setExpanded(expanded))
 })
 
 ipcMain.handle('orb:move', (event, request) => {
   if (!fromBall(event) || !placement || !isMove(request)) return { docked: undefined }
-  return placement.move(request.x, request.y, request.canDock)
+  return remember(placement.move(request.x, request.y, request.canDock))
 })
 
 ipcMain.handle('orb:clamp', async (event, canDock) => {
   if (!fromBall(event) || !placement) return { docked: undefined }
-  return placement.clamp(canDock !== false)
+  return remember(await placement.clamp(canDock !== false))
 })
 
 ipcMain.handle('orb:unsnap', async (event) => {
   if (!fromBall(event) || !placement) return { docked: undefined }
-  return placement.unsnap()
+  return remember(await placement.unsnap())
 })
+
+/** Hand the answer back untouched, but let the cursor poll read it first. */
+function remember<T extends PlacementAnswer>(state: T): T {
+  setPlacementState(state)
+  return state
+}
+
+/**
+ * Click-through for the transparent chrome of the ball window.
+ *
+ * The window keeps FIXED_WINDOW_SIZE in every state so that expand/collapse never
+ * moves its origin: a moved origin makes Windows copy the old client bitmap to the
+ * new one and paints one stale frame, which is the expand flicker. Everything
+ * outside the ball and the open panel is therefore transparent chrome that must
+ * forward clicks to the window underneath. The main process decides that from its own
+ * cursor poll ({@link decideHover}) instead of from a renderer report: while the
+ * window is click-through the page sees no pointer move at all, so a report-driven
+ * flag would be whatever was written before the pointer froze.
+ */
+ipcMain.on('orb:dragging', (event, dragging) => {
+  if (!fromBall(event) || typeof dragging !== 'boolean') return
+  // A drag owns the window: it stays interactive wherever the cursor goes, and the
+  // poll stops second-guessing a rectangle it cannot keep up with.
+  ballDragging = dragging
+  pollCursor()
+})
+
+ipcMain.on('orb:interactive', (event, interactive) => {
+  if (!fromBall(event) || typeof interactive !== 'boolean') return
+  // The renderer still reports the region it believes the pointer is over, right after
+  // every panel and dock change. The poll owns the answer now, so the report only has to
+  // cut the wait for the next tick short — one authority, no second opinion to reconcile,
+  // and a stale claim cannot leave the window swallowing clicks.
+  pollCursor()
+})
+
+/** The capture cloak holds the ball click-through for the length of an input interval. */
+function setBallClickThrough(clickThrough: boolean): void {
+  cloakClickThrough = clickThrough
+  applyClickThrough(currentClickThrough())
+}
+
+/**
+ * The OS click-through the two writers agree on: the capture cloak while it holds an
+ * input interval, otherwise the cursor poll's hover answer. Either one keeps it on;
+ * neither writes the other's half off.
+ */
+function applyClickThrough(clickThrough: boolean): void {
+  if (clickThrough === ballClickThrough) return
+  ballClickThrough = clickThrough
+  if (!win || win.isDestroyed()) return
+  if (clickThrough) win.setIgnoreMouseEvents(true, { forward: true })
+  else win.setIgnoreMouseEvents(false)
+}
+
+function currentClickThrough(): boolean {
+  return cloakClickThrough || cursorClickThrough
+}
+
+/**
+ * One cursor tick: test the OS cursor against the window rectangle, then do the two
+ * things the page can no longer do for itself.
+ *
+ * `placementExpanded` is true only while the panel is showing, and the ball keeps the
+ * corner it was placed in through both states, so one rectangle serves both. The flag
+ * decides whether the panel is hit-tested at all and whether a ball hover is a request.
+ *
+ * A request is sent when the answer changes, and the memory of it is dropped as soon as
+ * there is no request at all. Keeping it through an "off" tick would latch: pin the panel,
+ * walk the cursor off it, unpin, walk off again — the second leave would look like a repeat
+ * of the refused first one and the panel would stay open. What the memory is really for is
+ * the tick after a *refused* request: the renderer keeps every guard (pinned, running,
+ * asking, dragging, suppressExpand), a refusal leaves the state unchanged, and re-sending
+ * the identical request sixteen times a second would only be noise. `orb:expand` stays the
+ * renderer's call alone, so a pinned panel is never forced open.
+ */
+function pollCursor(): void {
+  if (!win || win.isDestroyed() || win.webContents.isLoading()) return
+  const bounds = win.getBounds()
+  const decision = decideHover({
+    cursor: screen.getCursorScreenPoint(),
+    window: bounds,
+    direction: placementDirection,
+    expanded: placementExpanded,
+    docked: ballDocked,
+    dragging: ballDragging,
+  })
+  cursorClickThrough = !decision.interactive
+  applyClickThrough(currentClickThrough())
+  const request = decision.request
+  if (request === lastRequest) return
+  lastRequest = request
+  if (request === undefined) return
+  win.webContents.send(request === 'expand' ? 'orb:hover' : 'orb:unhover')
+}
+
+
+/**
+ * Keep the cursor poll's own view of the window in step with the placement.
+ *
+ * Only `orb:expand` answers carry `expanded`; a move or clamp leaves the flag as it was,
+ * which is what the renderer does with the panel too.
+ */
+function setPlacementState(state: PlacementAnswer): void {
+  if (typeof state.expanded === 'boolean') placementExpanded = state.expanded
+  placementDirection = {
+    horizontal: state.horizontal === 'left' ? 'left' : 'right',
+    vertical: state.vertical === 'up' ? 'up' : 'down',
+  }
+  ballDocked = state.docked === 'left' || state.docked === 'right'
+}
 
 ipcMain.on('orb:prompt', (event, text) => {
   if (!fromBall(event)) return
@@ -199,8 +363,105 @@ ipcMain.handle('orb:tcc-open', (event, right) => {
   return askTcc({ type: 'tcc-open', right })
 })
 
+/**
+ * Forward one recording to the host's `/.dsh-orb/transcribe` proxy.
+ *
+ * The helper holds no official credentials, so the official speech service is
+ * reached over the same authenticated loopback surface as the avatar. Failures
+ * resolve to a result object rather than rejecting, so the page can show a
+ * localized message instead of an unhandled rejection.
+ */
+ipcMain.handle('orb:transcribe', async (event, payload) => {
+  if (!fromBall(event)) return transcribeFailure('voice-unavailable', 'Not the ball')
+  const request = readTranscribeRequest(payload)
+  if (request === undefined) return transcribeFailure('invalid-audio', 'Audio is invalid')
+  const response = await postTranscribe(request)
+  return response ?? transcribeFailure('voice-unavailable', 'Speech recognition is not available')
+})
+
+function transcribeFailure(error: string, message: string): { ok: false; error: string; message: string } {
+  return { ok: false, error, message }
+}
+
+/** Accept only a plausible base64 WAV payload from the renderer. */
+function readTranscribeRequest(value: unknown): { audioBase64: string; audioSeconds: number } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as { audioBase64?: unknown; audioSeconds?: unknown }
+  if (typeof record.audioBase64 !== 'string' || record.audioBase64.length === 0) return undefined
+  if (record.audioBase64.length > 8_000_000) return undefined
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(record.audioBase64)) return undefined
+  if (typeof record.audioSeconds !== 'number' || !Number.isFinite(record.audioSeconds) || record.audioSeconds < 0) {
+    return undefined
+  }
+  return { audioBase64: record.audioBase64, audioSeconds: record.audioSeconds }
+}
+
+/** POST the recording to the host and decode its JSON answer. */
+function postTranscribe(request: { audioBase64: string; audioSeconds: number }): Promise<
+  { ok: true; text: string } | { ok: false; error: string; message: string } | undefined
+> {
+  const port = Number(webPort)
+  if (!Number.isInteger(port) || port <= 0 || !token) return Promise.resolve(undefined)
+  const body = Buffer.from(JSON.stringify(request))
+  return new Promise((resolve) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: '/.dsh-orb/transcribe',
+      method: 'POST',
+      headers: {
+        'x-dsh-orb-helper': token,
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': body.length,
+      },
+    }, (res) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      res.on('data', (chunk: Buffer) => {
+        size += chunk.length
+        if (size > 1_000_000) {
+          req.destroy()
+          resolve(undefined)
+          return
+        }
+        chunks.push(chunk)
+      })
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(text)
+        } catch {
+          resolve(undefined)
+          return
+        }
+        const record = parsed as { text?: unknown; error?: unknown; message?: unknown }
+        if (res.statusCode === 200 && typeof record.text === 'string') {
+          resolve({ ok: true, text: record.text })
+          return
+        }
+        const code = typeof record.error === 'string' ? record.error : 'voice-failed'
+        const message = typeof record.message === 'string' ? record.message : 'Speech recognition failed'
+        resolve(transcribeFailure(code, message))
+      })
+    })
+    req.setTimeout(120_000, () => {
+      req.destroy()
+      resolve(undefined)
+    })
+    req.on('error', () => resolve(undefined))
+    req.end(body)
+  })
+}
+
 function openWindow(): BrowserWindow {
-  const bounds = initialWindowBounds(screen.getPrimaryDisplay().workArea)
+  const workArea = screen.getPrimaryDisplay().workArea
+  const bounds = initialWindowBounds(workArea)
+  initialDirection = initialExpandDirection(workArea)
+  // The cursor poll has to know the ball's corner before the renderer reports one: it
+  // hit-tests the window from the very first tick, and the resting spot on a short work
+  // area is not the default corner.
+  placementDirection = initialDirection
   const created = new BrowserWindow({
     title: 'dsh-orb',
     x: bounds.x,
@@ -232,7 +493,11 @@ function openWindow(): BrowserWindow {
   // The ball rests captureable; overlays.ts syncCloak lifts it out of captures
   // for the duration of each Computer Use capture or HID interval.
   denyWindowPermissions(created)
+  allowBallMicrophone(created)
   created.setAlwaysOnTop(true, 'screen-saver')
+  // Fixed-size from the start, so most of the window is transparent chrome: open
+  // click-through and let the renderer report the ball's region on its first move.
+  created.setIgnoreMouseEvents(true, { forward: true })
   if (process.platform === 'darwin') {
     created.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
   }
@@ -257,6 +522,46 @@ function openWindow(): BrowserWindow {
     console.error(`dsh-orb helper: ball ${shown.x},${shown.y} ${shown.width}x${shown.height}`)
   })
   return created
+}
+
+/**
+ * Grant the microphone to this window's own `file:` page and nothing else.
+ *
+ * The ball shares Electron's default session with the selection toolbar and the
+ * observation frame, which call `denyWindowPermissions`. This claims the session
+ * first so that deny-all cannot overwrite the grant, then admits exactly one
+ * permission for the ball's own origin. Both the request and the synchronous
+ * check are covered, because Chromium consults the check handler for
+ * `getUserMedia` too. Every other permission —and every other origin —still
+ * gets `false`.
+ */
+function allowBallMicrophone(created: BrowserWindow): void {
+  const session = created.webContents.session
+  claimPermissionSession(created)
+  /**
+   * The ball's own page and nothing else.
+   *
+   * Identity against this window's webContents is the precise test: the
+   * selection toolbar and observation frame are separate windows on the same
+   * session and must stay denied. The URL check is a fallback for Electron
+   * builds that pass a fresh wrapper object; note that a `file:` URL's
+   * `origin` is the *string* `"null"`, so the protocol is compared instead.
+   */
+  const isBallPage = (contents: { getURL(): string } | null | undefined): boolean => {
+    if (!contents) return false
+    if (contents === created.webContents) return true
+    try {
+      return new URL(contents.getURL()).protocol === 'file:'
+    } catch {
+      return false
+    }
+  }
+  session.setPermissionRequestHandler((contents, permission, callback) => {
+    callback(permission === 'media' && isBallPage(contents))
+  })
+  session.setPermissionCheckHandler((contents, permission) => {
+    return permission === 'media' && isBallPage(contents)
+  })
 }
 
 function connect(attempt: number): void {
