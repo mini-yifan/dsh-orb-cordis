@@ -289,10 +289,35 @@ async function clickAt(
   await delay(POINTER_MOVE_SETTLE_MS, signal)
   for (let index = 0; index < count; index += 1) {
     ops.mouseButton(button, true)
-    await delay(BUTTON_HOLD_MS, signal)
-    ops.mouseButton(button, false)
+    // Release before the abort can propagate, or an interrupted click leaves the button held.
+    try {
+      await delay(BUTTON_HOLD_MS, signal)
+    } finally {
+      ops.mouseButton(button, false)
+    }
     if (index + 1 < count) await delay(DOUBLE_CLICK_GAP_MS, signal)
   }
+}
+
+/**
+ * Post key-up for every key whose key-down was posted, most recently pressed first.
+ *
+ * The OS keeps a modifier held until a matching key-up arrives, and nothing later re-posts one, so
+ * skipping this on the way out leaves Alt/Ctrl/Shift/Win stuck until the user taps the key.
+ * @param ops - Win32 operations.
+ * @param held - keys whose key-down was posted, in press order.
+ * @param failing - true when the caller is already unwinding, so a release error must not hide the abort.
+ */
+function releaseHeldKeys(ops: WindowsDesktopOps, held: readonly PostedKey[], failing: boolean): void {
+  let releaseError: unknown
+  for (const key of [...held].reverse()) {
+    try {
+      ops.key(key.vk, false, key.extended)
+    } catch (error: unknown) {
+      releaseError ??= error
+    }
+  }
+  if (!failing && releaseError !== undefined) throw releaseError
 }
 
 async function chord(
@@ -302,11 +327,26 @@ async function chord(
 ): Promise<void> {
   const modifiers = keys.filter(key => MODIFIER_VKS.has(key.vk))
   const rest = keys.filter(key => !MODIFIER_VKS.has(key.vk))
-  for (const key of modifiers) ops.key(key.vk, true, key.extended)
-  if (modifiers.length > 0) await delay(MODIFIER_GAP_MS, signal)
-  for (const key of rest) ops.key(key.vk, true, key.extended)
-  for (const key of [...rest].reverse()) ops.key(key.vk, false, key.extended)
-  for (const key of [...modifiers].reverse()) ops.key(key.vk, false, key.extended)
+  // Press order is modifiers then keys, so releasing `held` in reverse reproduces the original
+  // key-up order (keys first, modifiers last) while also covering an abort that lands mid-chord.
+  const held: PostedKey[] = []
+  let failing = false
+  try {
+    for (const key of modifiers) {
+      ops.key(key.vk, true, key.extended)
+      held.push(key)
+    }
+    if (modifiers.length > 0) await delay(MODIFIER_GAP_MS, signal)
+    for (const key of rest) {
+      ops.key(key.vk, true, key.extended)
+      held.push(key)
+    }
+  } catch (error: unknown) {
+    failing = true
+    throw error
+  } finally {
+    releaseHeldKeys(ops, held, failing)
+  }
 }
 
 function observationOf(ops: WindowsDesktopOps): WindowsObservationSelection | undefined {
@@ -462,16 +502,20 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
       host.movePointer(start.x, start.y)
       await delay(POINTER_MOVE_SETTLE_MS, abort)
       host.mouseButton('left', true)
-      await delay(BUTTON_HOLD_MS, abort)
-      for (let step = 1; step <= DRAG_STEPS; step += 1) {
-        const t = step / DRAG_STEPS
-        host.movePointer(
-          Math.round(start.x + (end.x - start.x) * t),
-          Math.round(start.y + (end.y - start.y) * t),
-        )
-        await delay(DRAG_STEP_MS, abort)
+      // An aborted drag must still let go of the button, or the pointer keeps dragging everything.
+      try {
+        await delay(BUTTON_HOLD_MS, abort)
+        for (let step = 1; step <= DRAG_STEPS; step += 1) {
+          const t = step / DRAG_STEPS
+          host.movePointer(
+            Math.round(start.x + (end.x - start.x) * t),
+            Math.round(start.y + (end.y - start.y) * t),
+          )
+          await delay(DRAG_STEP_MS, abort)
+        }
+      } finally {
+        host.mouseButton('left', false)
       }
-      host.mouseButton('left', false)
     },
 
     async openInBrowser(input: OpenInBrowserInput, signal) {
