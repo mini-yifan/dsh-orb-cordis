@@ -327,6 +327,56 @@ describe('windows desktop backend', () => {
     expect(host.calls).toEqual(['move:10,20', 'down', 'up'])
   })
 
+  it('releases held modifiers when a hotkey is aborted mid-chord', async () => {
+    const controller = new AbortController()
+    const host = ops({
+      key: (virtualKey, down, extended) => {
+        host.calls.push(`key:${String(virtualKey)}:${down ? 'down' : 'up'}:${extended ? '1' : '0'}`)
+        // Abort exactly while the chord sits between its modifier and its main key.
+        if (virtualKey === 0x12 && down) controller.abort(new Error('stopped'))
+      },
+    })
+    const backend = createWindowsDesktopBackend(host)
+    await expect(backend.hotkey({ keys: ['alt', 'tab'] }, controller.signal)).rejects.toThrow('stopped')
+    expect(host.calls).toEqual(['key:18:down:0', 'key:18:up:0'])
+  })
+
+  it('releases the mouse button when a click is aborted while it is held', async () => {
+    const controller = new AbortController()
+    const host = ops({
+      mouseButton: (_button, down) => {
+        host.calls.push(down ? 'down' : 'up')
+        if (down) controller.abort(new Error('stopped'))
+      },
+    })
+    const screen = { index: 0, bounds, scale: 1 }
+    const backend = createWindowsDesktopBackend(host)
+    await expect(
+      backend.click({ screen, position: [0, 0], button: 'left', count: 1 }, controller.signal),
+    ).rejects.toThrow('stopped')
+    expect(host.calls).toEqual(['move:10,20', 'down', 'up'])
+  })
+
+  it('releases the mouse button when a drag is aborted mid-move', async () => {
+    const controller = new AbortController()
+    const host = ops({
+      mouseButton: (_button, down) => {
+        host.calls.push(down ? 'down' : 'up')
+        if (down) controller.abort(new Error('stopped'))
+      },
+    })
+    const screen = { index: 0, bounds, scale: 1 }
+    const backend = createWindowsDesktopBackend(host)
+    await expect(
+      backend.drag(
+        { startScreen: screen, startPosition: [0, 0], endScreen: screen, endPosition: [1000, 1000] },
+        controller.signal,
+      ),
+    ).rejects.toThrow('stopped')
+    expect(host.calls.filter(call => call === 'down')).toEqual(['down'])
+    expect(host.calls.at(-1)).toBe('up')
+  })
+
   it('refuses input into an elevated window and opens Explorer for reveal', async () => {
     let blocked = true
     const host = ops({

@@ -796,6 +796,10 @@ export function createProductionWindowsOps(): WindowsDesktopOps {
    * @returns false when `target` is still not foreground after one retry.
    */
   function becomeForeground(target: unknown): boolean {
+    // The Alt transition is a desktop-wide side effect, so skip the whole sequence when the window
+    // is already foreground: that keeps repeated focus calls from piling Alt taps onto the system,
+    // which is what arms the menu and can read as a stuck Alt key.
+    if (isForeground(target)) return true
     if (api.IsIconic(target) !== 0) api.ShowWindow(target, SW_RESTORE)
     postKey(api, VK_MENU, true, false)
     try {
