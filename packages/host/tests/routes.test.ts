@@ -240,4 +240,247 @@ describe('settings routes', () => {
     assert.equal(missing.status, 404)
     dispose()
   })
+
+  it('proxies a ball recording to the optional speech service and degrades cleanly', async () => {
+    const profile = join(root, 'speech-profile')
+    mkdirSync(profile, { recursive: true })
+    const store = new ProfileStore(profile)
+    const control: OrbControl = {
+      helperAuthorized: (token) => tokensMatch(token, 'helper-secret'),
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setBallEnabled() {},
+    }
+    const seen: { audio: Buffer; language?: string }[] = []
+    const speech = {
+      listProviders: () => [{ id: 'sensevoice-local', name: 'SenseVoice', languages: ['auto'] }],
+      resolve: (request: { audio: Buffer; language?: string }) => {
+        seen.push(request)
+        return { provider: { info: { id: 'sensevoice-local' } }, audio: request.audio, language: 'auto' }
+      },
+      transcribe: async () => ({ text: 'hello from the ball', audioSeconds: 1 }),
+    }
+    const handlers: { current?: (req: IncomingMessage, res: ServerResponse) => Promise<void> } = {}
+    registerOrbRoutes({
+      ctx: {
+        webServer: {
+          register(route) {
+            handlers.current = route.handler
+            return () => { handlers.current = undefined }
+          },
+        },
+        connection: { isAuthenticated: () => true },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+        get: (name) => (name === 'speechToText' ? speech : undefined),
+      },
+      store,
+      tcc: new TccMonitor(),
+      control,
+    })
+    const run = (req: IncomingMessage, res: ServerResponse) => handlers.current!(req, res)
+
+    const bytes = canonicalWave(1)
+    const ok = response()
+    await run(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: bytes.toString('base64'),
+      audioSeconds: 1,
+    }), { 'x-dsh-orb-helper': 'helper-secret' }), ok)
+    assert.equal(ok.status, 200)
+    assert.equal(JSON.parse(ok.body.toString('utf8')).text, 'hello from the ball')
+    assert.equal(seen[0].audio.equals(bytes), true)
+
+    // The proxy is helper-only: a normal authenticated page cannot reach it.
+    const page = response()
+    await run(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: bytes.toString('base64'),
+      audioSeconds: 1,
+    }), { 'x-dsh-user': 'ok' }), page)
+    assert.equal(page.status, 401)
+    assert.equal(JSON.parse(page.body.toString('utf8')).error, 'unauthorized')
+
+    const unauthenticated = response()
+    await run(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: bytes.toString('base64'),
+      audioSeconds: 1,
+    })), unauthenticated)
+    assert.equal(unauthenticated.status, 401)
+
+    // A malformed recording is refused before the provider sees it.
+    const invalid = response()
+    await run(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: Buffer.from('not a wave').toString('base64'),
+      audioSeconds: 1,
+    }), { 'x-dsh-orb-helper': 'helper-secret' }), invalid)
+    assert.equal(invalid.status, 400)
+    assert.equal(JSON.parse(invalid.body.toString('utf8')).error, 'invalid-audio')
+
+    // Valid base64 that is not a canonical WAV is still refused up front.
+    const notWave = response()
+    await run(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: Buffer.from('A'.repeat(20_000)).toString('base64'),
+      audioSeconds: 1,
+    }), { 'x-dsh-orb-helper': 'helper-secret' }), notWave)
+    assert.equal(notWave.status, 400)
+    assert.equal(JSON.parse(notWave.body.toString('utf8')).error, 'invalid-audio')
+
+    // A body past the size limit is reported as oversize audio, not a host error.
+    const oversized = response()
+    await run(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: 'A'.repeat(6 * 1024 * 1024),
+      audioSeconds: 1,
+    }), { 'x-dsh-orb-helper': 'helper-secret' }), oversized)
+    assert.equal(oversized.status, 413)
+    assert.equal(JSON.parse(oversized.body.toString('utf8')).error, 'invalid-audio')
+  })
+
+  it('answers voice-unavailable when the voice bundle is not mounted', async () => {
+    const profile = join(root, 'no-voice-profile')
+    mkdirSync(profile, { recursive: true })
+    const store = new ProfileStore(profile)
+    const control: OrbControl = {
+      helperAuthorized: (token) => tokensMatch(token, 'helper-secret'),
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setBallEnabled() {},
+    }
+    const handlers: { current?: (req: IncomingMessage, res: ServerResponse) => Promise<void> } = {}
+    registerOrbRoutes({
+      ctx: {
+        webServer: {
+          register(route) {
+            handlers.current = route.handler
+            return () => { handlers.current = undefined }
+          },
+        },
+        connection: { isAuthenticated: () => true },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+      },
+      store,
+      tcc: new TccMonitor(),
+      control,
+    })
+    const denied = response()
+    await handlers.current!(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: canonicalWave(1).toString('base64'),
+      audioSeconds: 1,
+    }), { 'x-dsh-orb-helper': 'helper-secret' }), denied)
+    assert.equal(denied.status, 503)
+    assert.equal(JSON.parse(denied.body.toString('utf8')).error, 'voice-unavailable')
+  })
+
+  it('answers voice-unavailable when no provider is registered', async () => {
+    const profile = join(root, 'no-provider-profile')
+    mkdirSync(profile, { recursive: true })
+    const store = new ProfileStore(profile)
+    const control: OrbControl = {
+      helperAuthorized: (token) => tokensMatch(token, 'helper-secret'),
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setBallEnabled() {},
+    }
+    const handlers: { current?: (req: IncomingMessage, res: ServerResponse) => Promise<void> } = {}
+    registerOrbRoutes({
+      ctx: {
+        webServer: {
+          register(route) {
+            handlers.current = route.handler
+            return () => { handlers.current = undefined }
+          },
+        },
+        connection: { isAuthenticated: () => true },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+        get: (name) => (name === 'speechToText'
+          ? {
+            listProviders: () => [],
+            resolve: () => { throw new Error('Speech provider is unavailable') },
+            transcribe: async () => ({ text: '' }),
+          }
+          : undefined),
+      },
+      store,
+      tcc: new TccMonitor(),
+      control,
+    })
+    const denied = response()
+    await handlers.current!(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: canonicalWave(1).toString('base64'),
+      audioSeconds: 1,
+    }), { 'x-dsh-orb-helper': 'helper-secret' }), denied)
+    assert.equal(denied.status, 503)
+    assert.equal(JSON.parse(denied.body.toString('utf8')).error, 'voice-unavailable')
+  })
+
+  it('reports an unprepared provider as voice-not-ready, not a crash', async () => {
+    const profile = join(root, 'not-ready-profile')
+    mkdirSync(profile, { recursive: true })
+    const store = new ProfileStore(profile)
+    const control: OrbControl = {
+      helperAuthorized: (token) => tokensMatch(token, 'helper-secret'),
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setBallEnabled() {},
+    }
+    const handlers: { current?: (req: IncomingMessage, res: ServerResponse) => Promise<void> } = {}
+    registerOrbRoutes({
+      ctx: {
+        webServer: {
+          register(route) {
+            handlers.current = route.handler
+            return () => { handlers.current = undefined }
+          },
+        },
+        connection: { isAuthenticated: () => true },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+        get: (name) => (name === 'speechToText'
+          ? {
+            listProviders: () => [{ id: 'sensevoice-local' }],
+            resolve: () => { throw new Error('Prepare the local speech provider before recording') },
+            transcribe: async () => ({ text: '' }),
+          }
+          : undefined),
+      },
+      store,
+      tcc: new TccMonitor(),
+      control,
+    })
+    const notReady = response()
+    await handlers.current!(request('POST', '/.dsh-orb/transcribe', JSON.stringify({
+      audioBase64: canonicalWave(1).toString('base64'),
+      audioSeconds: 1,
+    }), { 'x-dsh-orb-helper': 'helper-secret' }), notReady)
+    assert.equal(notReady.status, 503)
+    assert.equal(JSON.parse(notReady.body.toString('utf8')).error, 'voice-not-ready')
+  })
 })
+
+/** One canonical 16 kHz mono PCM16 WAV with `seconds` of silence. */
+function canonicalWave(seconds: number): Buffer {
+  const samples = Math.round(seconds * 16_000)
+  const bytes = Buffer.alloc(44 + samples * 2)
+  bytes.write('RIFF', 0, 'ascii')
+  bytes.writeUInt32LE(bytes.length - 8, 4)
+  bytes.write('WAVE', 8, 'ascii')
+  bytes.write('fmt ', 12, 'ascii')
+  bytes.writeUInt32LE(16, 16)
+  bytes.writeUInt16LE(1, 20)
+  bytes.writeUInt16LE(1, 22)
+  bytes.writeUInt32LE(16_000, 24)
+  bytes.writeUInt32LE(32_000, 28)
+  bytes.writeUInt16LE(2, 32)
+  bytes.writeUInt16LE(16, 34)
+  bytes.write('data', 36, 'ascii')
+  bytes.writeUInt32LE(samples * 2, 40)
+  return bytes
+}

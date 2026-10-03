@@ -104,6 +104,27 @@ describe('agent cloak', () => {
     assert.equal(ball.ignoreMouse, false)
   })
 
+  it('reports every click-through write to the region owner', () => {
+    const ball = fakeWindow()
+    const seen: boolean[] = []
+    const cloak = createAgentCloak(
+      [{ window: () => ball, resting: false }],
+      () => ball,
+      (clickThrough) => seen.push(clickThrough),
+    )
+
+    // The transparent-chrome owner caches the flag it last wrote; the cloak writes
+    // around it during an input interval, so the new reality has to be reported.
+    cloak.begin('input')
+    assert.deepEqual(seen, [true])
+    cloak.end('input')
+    assert.deepEqual(seen, [true, false])
+
+    // Capture intervals never touch the flag, so they must not report anything.
+    cloak.begin('capture')
+    cloak.end('capture')
+    assert.deepEqual(seen, [true, false])
+  })
   it('survives destroyed windows and a missing ball', () => {
     const ball = fakeWindow()
     const gone = fakeWindow()

@@ -13,11 +13,14 @@ declare module 'electron' {
 
   interface WebContents {
     send(channel: string, ...args: unknown[]): void
+    getURL(): string
     setWindowOpenHandler(handler: () => { action: 'deny' }): void
     on(event: 'will-navigate' | 'did-finish-load' | 'context-menu', listener: (event: { preventDefault(): void }, params?: { isEditable?: boolean; hasSelection?: boolean }) => void): void
     executeJavaScript(code: string): Promise<unknown>
+    isLoading(): boolean
     session: {
       setPermissionRequestHandler(handler: (contents: WebContents, permission: string, callback: (granted: boolean) => void) => void): void
+      setPermissionCheckHandler(handler: (contents: WebContents | null, permission: string, requestingOrigin?: string, details?: unknown) => boolean): void
     }
   }
 
@@ -110,6 +113,7 @@ declare module 'electron' {
     getPrimaryDisplay(): Display
     getAllDisplays(): Display[]
     getDisplayNearestPoint(point: { x: number; y: number }): Display
+    getCursorScreenPoint(): { x: number; y: number }
     screenToDipRect(window: null, rect: Rectangle): Rectangle
   }
 

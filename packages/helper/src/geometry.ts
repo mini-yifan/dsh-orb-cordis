@@ -1,15 +1,33 @@
 /**
  * Floating-ball window geometry.
- * Sizes match the fork overlay exactly: a 72px ball, 12px of transparent chrome, and a 320×420 panel.
+ * A 72px ball, 12px of transparent chrome, a 320×420 panel, and one fixed 592×792 window
  */
 
 export const BALL_SIZE = 72
 export const PANEL_SIZE = { width: 320, height: 420 } as const
 export const CHROME_INSET = 12
-export const BALL_WINDOW_SIZE = BALL_SIZE + 2 * CHROME_INSET
+/**
+ * The panel-sized window of the older corner model, where the ball sat in a corner so
+ * the window spanned only the panel plus its chrome. Kept as the "too small to be a
+ * panel" threshold for the dock path and for the tests that still describe it.
+ */
 export const PANEL_WINDOW_SIZE = {
   width: PANEL_SIZE.width + 2 * CHROME_INSET,
   height: PANEL_SIZE.height + 2 * CHROME_INSET,
+} as const
+/**
+ * The one window rectangle that holds the ball in every state: the panel window plus the
+ * overhang the panel has past the ball, so the ball can sit at dead centre. 344 + 248 by
+ * 444 + 348.
+ */
+export const FIXED_WINDOW_SIZE = {
+  width: PANEL_WINDOW_SIZE.width + PANEL_SIZE.width - BALL_SIZE,
+  height: PANEL_WINDOW_SIZE.height + PANEL_SIZE.height - BALL_SIZE,
+} as const
+/** Distance from the window origin to the ball top-left corner: dead centre. */
+export const BALL_ANCHOR = {
+  x: CHROME_INSET + PANEL_SIZE.width - BALL_SIZE,
+  y: CHROME_INSET + PANEL_SIZE.height - BALL_SIZE,
 } as const
 export const BELOW_CENTER = 0.08
 export const DOCK_OVERLAP = Math.round(BALL_SIZE / 5)
@@ -44,6 +62,8 @@ export interface ExpandState {
 
 export interface DockState {
   readonly docked: DockSide | undefined
+  readonly horizontal: HorizontalExpand
+  readonly vertical: VerticalExpand
 }
 
 export interface DisplayPair {
@@ -51,7 +71,7 @@ export interface DisplayPair {
   readonly workArea: Rect
 }
 
-interface Direction {
+export interface Direction {
   horizontal: HorizontalExpand
   vertical: VerticalExpand
 }
@@ -60,22 +80,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), Math.max(min, max))
 }
 
-function collapsedWindowBounds(ball: { readonly x: number; readonly y: number }): Rect {
-  return {
-    x: ball.x - CHROME_INSET,
-    y: ball.y - CHROME_INSET,
-    width: BALL_WINDOW_SIZE,
-    height: BALL_WINDOW_SIZE,
-  }
-}
-
-function isCollapsed(bounds: Rect): boolean {
-  return bounds.width <= BALL_WINDOW_SIZE && bounds.height <= BALL_WINDOW_SIZE
-}
-
-function clampWindowOrigin(value: number, workOrigin: number, workSize: number, windowSize: number): number {
-  return clamp(value, workOrigin - CHROME_INSET, workOrigin + workSize - windowSize + CHROME_INSET)
-}
 
 /**
  * Which outer display edge the ball already overlaps by about one fifth of its width.
@@ -134,16 +138,14 @@ export function expandDirection(
   return { horizontal, vertical }
 }
 
-/** Ball top-left recovered from an expanded window and its growth direction. */
-export function ballOriginFromWindow(bounds: Rect, direction: Direction): { x: number; y: number } {
-  return {
-    x: direction.horizontal === 'left'
-      ? bounds.x + bounds.width - CHROME_INSET - BALL_SIZE
-      : bounds.x + CHROME_INSET,
-    y: direction.vertical === 'up'
-      ? bounds.y + bounds.height - CHROME_INSET - BALL_SIZE
-      : bounds.y + CHROME_INSET,
-  }
+/**
+ * Ball top-left recovered from the window that holds it.
+ *
+ * The window is one fixed rectangle in every state and parks the ball at
+ * `BALL_ANCHOR`, so its origin no longer depends on the expand direction.
+ */
+export function ballOriginFromWindow(bounds: Rect): { x: number; y: number } {
+  return { x: bounds.x + BALL_ANCHOR.x, y: bounds.y + BALL_ANCHOR.y }
 }
 
 /** Keep a 72px ball fully inside a work area. */
@@ -165,29 +167,43 @@ export function defaultFloatingBallOrigin(workArea: Rect): { x: number; y: numbe
   return clampedBallOrigin({ x: Math.round(x), y: Math.round(y) }, workArea)
 }
 
-function overlayBoundsFromBall(ball: { readonly x: number; readonly y: number }, direction: Direction): Rect {
+/**
+ * The one window rectangle that holds the ball in every state.
+ *
+ * Collapsed and expanded share this rectangle, so showing the panel never moves the
+ * window origin - only the panel opacity and scale change. Windows `SetWindowPos`
+ * copies the old client bitmap to a moved origin, which paints one stale frame; the
+ * fixed origin is what removes the expand flicker. The ball sits at `BALL_ANCHOR`
+ * inside it, so the rectangle is identical for every expand direction and only the
+ * panel placement still varies with the direction; the renderer mirrors it with the
+ * `expand-*` CSS classes.
+ */
+function overlayBoundsFromBall(ball: { readonly x: number; readonly y: number }): Rect {
   return {
-    x: direction.horizontal === 'left'
-      ? ball.x - (PANEL_SIZE.width - BALL_SIZE) - CHROME_INSET
-      : ball.x - CHROME_INSET,
-    y: direction.vertical === 'up'
-      ? ball.y - (PANEL_SIZE.height - BALL_SIZE) - CHROME_INSET
-      : ball.y - CHROME_INSET,
-    width: PANEL_WINDOW_SIZE.width,
-    height: PANEL_WINDOW_SIZE.height,
+    x: ball.x - BALL_ANCHOR.x,
+    y: ball.y - BALL_ANCHOR.y,
+    width: FIXED_WINDOW_SIZE.width,
+    height: FIXED_WINDOW_SIZE.height,
   }
 }
 
 function expandedOverlayBounds(ball: { readonly x: number; readonly y: number }, workArea: Rect): Rect & Direction {
   const direction = expandDirection(ball, workArea)
-  const unclamped = overlayBoundsFromBall(ball, direction)
-  return {
-    x: clampWindowOrigin(unclamped.x, workArea.x, workArea.width, unclamped.width),
-    y: clampWindowOrigin(unclamped.y, workArea.y, workArea.height, unclamped.height),
-    width: unclamped.width,
-    height: unclamped.height,
-    ...direction,
-  }
+  // Only the direction still varies with the work area: the rectangle is
+  // direction-independent, so the window origin never moves on expand/collapse and
+  // no stale frame is copied. The renderer keeps the ball under the cursor through
+  // the `expand-*` classes and clips the panel to the work area.
+  return { ...overlayBoundsFromBall(ball), ...direction }
+}
+
+/**
+ * The four window fields of a placement result.
+ *
+ * `expandedOverlayBounds` carries the direction alongside the rectangle for its
+ * caller's convenience; the window must not be handed those extra keys.
+ */
+function windowRect(bounds: Rect): Rect {
+  return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
 }
 
 function clampBallY(ballY: number, bounds: Rect): number {
@@ -243,9 +259,31 @@ function lerpRect(start: Rect, end: Rect, t: number): Rect {
   }
 }
 
-/** Initial collapsed window, including the transparent chrome around the ball. */
+/**
+ * The corner a dock slide parks the ball in. An undock lands the ball back inside the
+ * display, and this is the corner the slide starts from, so the ball does not jump
+ * across the window body on the way in.
+ */
+const TAB_CORNER: Direction = { horizontal: 'right', vertical: 'down' }
+
+/** Expand direction of the ball's default resting place; the window is placed for it. */
+export function initialExpandDirection(workArea: Rect): Direction {
+  return expandDirection(defaultFloatingBallOrigin(workArea), workArea)
+}
+
+/**
+ * Initial window: the fixed {@link FIXED_WINDOW_SIZE} rectangle with the ball parked at
+ * {@link BALL_ANCHOR}, so the first expand cannot move the origin.
+ *
+ * The dock slide runs at this same fixed size too: parking the ball at
+ * `ball - CHROME_INSET` for the slide would need a 96x96 window, which would clip a ball
+ * anchored at {@link BALL_ANCHOR} away for the whole animation.
+ *
+ * It has to start at the full size, or the first expand would move the origin (the
+ * flicker) and the renderer would have to guess a corner.
+ */
 export function initialWindowBounds(workArea: Rect): Rect {
-  return collapsedWindowBounds(defaultFloatingBallOrigin(workArea))
+  return overlayBoundsFromBall(defaultFloatingBallOrigin(workArea))
 }
 
 /**
@@ -253,25 +291,68 @@ export function initialWindowBounds(workArea: Rect): Rect {
  * Dock is committed on pointer-up, not while the ball is still moving.
  */
 export class FloatingPlacement {
-  private direction: Direction = { horizontal: 'left', vertical: 'up' }
+  private direction: Direction
   private docked: { side: DockSide; y: number } | undefined
   private anim = 0
+  private expanded = false
 
-  constructor(private readonly window: {
-    getBounds(): Rect
-    setBounds(bounds: Rect): void
-  }, private readonly displayAt: (point: { x: number; y: number }) => DisplayPair, private readonly displayBounds: () => readonly Rect[] = () => []) {}
+  /**
+   * `initialDirection` must be the one the window was opened for, i.e.
+   * {@link initialExpandDirection} of the same work area. It is not always the default
+   * `left`/`up`: a short work area puts the resting ball above the panel threshold, and
+   * a stale guess would place the ball one panel-height away from where it is drawn.
+   */
+  constructor(
+    private readonly window: {
+      getBounds(): Rect
+      setBounds(bounds: Rect): void
+    },
+    private readonly displayAt: (point: { x: number; y: number }) => DisplayPair,
+    private readonly displayBounds: () => readonly Rect[] = () => [],
+    initialDirection: Direction = { horizontal: 'left', vertical: 'up' },
+    /**
+     * Called with the new direction immediately BEFORE the window is re-anchored for it.
+     * A different direction puts the ball in a different corner of the same rectangle,
+     * so the renderer's corner classes have to land first: it is a separate process, and
+     * a reposition it has not been told about paints one frame in the old corner.
+     */
+    private readonly announceDirection: (direction: Direction) => void = () => {},
+  ) {
+    this.direction = { ...initialDirection }
+  }
+  /**
+   * Show or hide the panel.
+   *
+   * Both states keep the same panel-sized window: collapsing only scales the panel
+   * down over the ball. The window origin therefore never moves on expand/collapse,
+   * which is what removes the one stale frame Windows would copy from the old origin.
+   * A docked ball still folds the window down to its tab.
+   */
+  /**
+   * Adopt a new corner for the ball, announcing it BEFORE anything moves.
+   *
+   * A reposition that changes the corner must be announced first: the page paints the
+   * ball from its own classes, so a window moved ahead of them shows the ball in the old
+   * corner for one frame and leaves the cursor poll aiming at the wrong rectangle. That
+   * pair is what a drag across the screen centre used to look like: a flash towards the
+   * old side, then a ball that can be neither hovered nor clicked.
+   */
+  private adoptDirection(next: Direction): void {
+    if (next.horizontal === this.direction.horizontal && next.vertical === this.direction.vertical) return
+    this.direction = { horizontal: next.horizontal, vertical: next.vertical }
+    this.announceDirection({ ...this.direction })
+  }
 
-  /** Resize between the ball and the panel while keeping the ball origin fixed. */
   setExpanded(expanded: boolean): ExpandState {
     const bounds = this.window.getBounds()
     const display = this.displayAt(center(bounds))
+    this.expanded = expanded
     if (expanded) {
       const origin = this.currentBallOrigin(display.workArea)
       this.docked = undefined
       const next = expandedOverlayBounds(origin, display.workArea)
-      this.direction = { horizontal: next.horizontal, vertical: next.vertical }
-      this.window.setBounds({ x: next.x, y: next.y, width: next.width, height: next.height })
+      this.adoptDirection(next)
+      this.window.setBounds(windowRect(next))
       return { expanded: true, ...this.direction, docked: undefined }
     }
     if (this.docked) {
@@ -279,7 +360,9 @@ export class FloatingPlacement {
       return { expanded: false, ...this.direction, docked: this.docked.side }
     }
     const origin = clampedBallOrigin(this.currentBallOrigin(display.workArea), display.workArea)
-    this.window.setBounds(collapsedWindowBounds(origin))
+    const next = expandedOverlayBounds(origin, display.workArea)
+    this.adoptDirection(next)
+    this.window.setBounds(windowRect(next))
     return { expanded: false, ...this.direction, docked: undefined }
   }
 
@@ -289,27 +372,31 @@ export class FloatingPlacement {
    */
   move(x: number, y: number, canDock = true): DockState {
     const origin = { x: Math.round(x), y: Math.round(y) }
-    const bounds = this.window.getBounds()
-    if (!isCollapsed(bounds) && this.docked === undefined) {
-      const direction = this.direction
-      this.window.setBounds(overlayBoundsFromBall(origin, direction))
-      return { docked: undefined }
+    const display = this.displayAt(origin)
+    // A free ball always drags the whole panel-sized window, so only a docked tab
+    // narrows it: a width test cannot tell an expanded window from a collapsed one.
+    if (this.docked === undefined) {
+      const next = expandedOverlayBounds(origin, display.workArea)
+      this.adoptDirection(next)
+      this.anim += 1
+      this.window.setBounds(windowRect(next))
+      return { docked: undefined, ...this.direction }
     }
     if (!canDock) {
+      const side = this.docked.side
       this.docked = undefined
       this.anim += 1
-      this.window.setBounds(collapsedWindowBounds(origin))
-      return { docked: undefined }
+      this.window.setBounds(windowRect(overlayBoundsFromBall(origin)))
+      return { docked: undefined, ...this.direction }
     }
-    const display = this.displayAt(origin)
-    if (this.docked && staysDocked(this.docked.side, origin.x, display.bounds)) {
+    if (staysDocked(this.docked.side, origin.x, display.bounds)) {
       this.applyTab(this.docked.side, this.docked.y, display.bounds)
-      return { docked: this.docked.side }
+      return { docked: this.docked.side, ...this.direction }
     }
     this.docked = undefined
     this.anim += 1
-    this.window.setBounds(collapsedWindowBounds(origin))
-    return { docked: undefined }
+    this.window.setBounds(windowRect(overlayBoundsFromBall(origin)))
+    return { docked: undefined, ...this.direction }
   }
 
   /** Pull a free ball inside the work area, or dock it when it already overlaps a side edge. */
@@ -318,38 +405,59 @@ export class FloatingPlacement {
     const display = this.displayAt(center(bounds))
     if (this.docked) {
       this.applyTab(this.docked.side, this.docked.y, display.bounds)
-      return { docked: this.docked.side }
+      return { docked: this.docked.side, ...this.direction }
     }
-    if (isCollapsed(bounds)) {
-      const origin = { x: bounds.x + CHROME_INSET, y: bounds.y + CHROME_INSET }
-      if (canDock) {
-        const side = dockSideForBallOrigin(origin, display.bounds, this.displayBounds())
-        if (side) return this.snap(side, origin.y, display.bounds)
-      }
-      this.window.setBounds(collapsedWindowBounds(clampedBallOrigin(origin, display.workArea)))
-      return { docked: undefined }
+    if (this.expanded) {
+      this.setExpanded(true)
+      return { docked: undefined, ...this.direction }
     }
-    this.setExpanded(true)
-    return { docked: undefined }
+    const origin = ballOriginFromWindow(bounds)
+    if (canDock) {
+      const side = dockSideForBallOrigin(origin, display.bounds, this.displayBounds())
+      if (side) return this.snap(side, origin.y, display.bounds)
+    }
+    this.window.setBounds(windowRect(overlayBoundsFromBall(clampedBallOrigin(origin, display.workArea))))
+    return { docked: undefined, ...this.direction }
   }
 
-  /** Slide the ball back on screen from a docked tab. */
+  /**
+   * Slide the ball back on screen from a docked tab.
+   *
+   * The slide runs at {@link FIXED_WINDOW_SIZE}, with the ball in the tab corner that
+   * `TAB_CORNER` names, so it ends on the very rectangle the next expand would use:
+   * no second resize and no origin move. Dock *commit* is untouched — `snap` and
+   * `applyTab` still fold the window down to the tab.
+   */
   async unsnap(): Promise<DockState> {
-    if (!this.docked) return { docked: undefined }
+    if (!this.docked) return { docked: undefined, ...this.direction }
     const display = this.displayAt(center(this.window.getBounds()))
     const start = offScreenBallOrigin(this.docked.side, this.docked.y, display.bounds)
     const end = insideBallOrigin(this.docked.side, this.docked.y, display)
     this.docked = undefined
-    this.window.setBounds(collapsedWindowBounds(start))
-    await this.animate(collapsedWindowBounds(end), DOCK_SLIDE_IN_MS, easeOutCubic)
-    return { docked: undefined }
+    this.adoptDirection(TAB_CORNER)
+    this.window.setBounds(windowRect(overlayBoundsFromBall(start)))
+    await this.animate(windowRect(overlayBoundsFromBall(end)), DOCK_SLIDE_IN_MS, easeOutCubic)
+    return { docked: undefined, ...this.direction }
   }
 
   private currentBallOrigin(workArea: Rect): { x: number; y: number } {
     const bounds = this.window.getBounds()
     if (this.docked) return insideBallOrigin(this.docked.side, this.docked.y, this.displayAt(center(bounds)))
-    if (isCollapsed(bounds)) return { x: bounds.x + CHROME_INSET, y: bounds.y + CHROME_INSET }
-    return ballOriginFromWindow(bounds, this.direction)
+    if (this.isTabSized(bounds)) {
+      // First expand after a dock slide: the window is still a small bar, so it is the
+      // ball box, not a panel with a corner. Place the ball from this direction, then
+      // let setExpanded re-place the window for whichever direction it grows in.
+      const ball = { x: bounds.x + CHROME_INSET, y: bounds.y + CHROME_INSET }
+      const direction = expandDirection(ball, workArea)
+      this.adoptDirection(direction)
+      return ball
+    }
+    return ballOriginFromWindow(bounds)
+  }
+
+  /** True while the window is too small to be a panel, i.e. a dock slide or tab. */
+  private isTabSized(bounds: Rect): boolean {
+    return bounds.width < PANEL_WINDOW_SIZE.width || bounds.height < PANEL_WINDOW_SIZE.height
   }
 
   private applyTab(side: DockSide, ballY: number, bounds: Rect): void {
@@ -362,14 +470,18 @@ export class FloatingPlacement {
   private async snap(side: DockSide, ballY: number, bounds: Rect): Promise<DockState> {
     const y = clampBallY(ballY, bounds)
     this.docked = { side, y }
+    // Carried at the fixed size, not down to a 96x96 ball box: the ball now sits at
+    // BALL_ANCHOR, so a 96x96 window would clip it away (overflow:hidden) for the whole
+    // slide. The ball reaching the screen edge is what this animates; the window only
+    // narrows to the tab afterwards.
     await this.animate(
-      collapsedWindowBounds(offScreenBallOrigin(side, y, bounds)),
+      windowRect(overlayBoundsFromBall(offScreenBallOrigin(side, y, bounds))),
       DOCK_SLIDE_OFF_MS,
       easeInOutCubic,
     )
-    if (!this.docked || this.docked.side !== side) return { docked: this.docked?.side }
+    if (!this.docked || this.docked.side !== side) return { docked: this.docked?.side, ...this.direction }
     this.window.setBounds(dockedTabBounds(side, y, bounds))
-    return { docked: side }
+    return { docked: side, ...this.direction }
   }
 
   private animate(end: Rect, durationMs: number, ease: (t: number) => number): Promise<void> {

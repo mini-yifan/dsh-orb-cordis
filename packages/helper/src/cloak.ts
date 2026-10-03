@@ -64,6 +64,7 @@ export function scheduleCloakAck(
 export function createAgentCloak(
   entries: CloakEntry[],
   clickThroughWindow?: () => CloakWindow | undefined,
+  onClickThroughChange?: (clickThrough: boolean) => void,
 ): AgentCloak {
   const counts: Record<CloakMode, number> = { capture: 0, input: 0 }
   let clickThrough = false
@@ -83,9 +84,12 @@ export function createAgentCloak(
     if (next) {
       ball.setIgnoreMouseEvents(true, { forward: false })
       ball.blur()
-      return
+    } else {
+      ball.setIgnoreMouseEvents(false)
     }
-    ball.setIgnoreMouseEvents(false)
+    // The transparent-chrome owner caches the OS flag it last wrote, and this write
+    // went around it; report the new reality so the two never disagree.
+    onClickThroughChange?.(next)
   }
 
   return {

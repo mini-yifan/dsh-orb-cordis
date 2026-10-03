@@ -87,6 +87,25 @@
       <form id="composer">
         <label id="input-label"></label>
         <div id="prompt" class="prompt-empty" role="textbox" aria-multiline="true" aria-labelledby="input-label" contenteditable="true"></div>
+        <div id="mic" data-state="idle">
+          <button id="mic-cancel" type="button" hidden>
+            <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+              <path d="M3.5 3.5l5 5M8.5 3.5l-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+            </svg>
+          </button>
+          <button id="mic-button" type="button" aria-pressed="false">
+            <span id="mic-ring" aria-hidden="true"></span>
+            <svg id="mic-idle" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <rect x="6" y="1.5" width="4" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"></rect>
+              <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+            </svg>
+            <svg id="mic-stop" viewBox="0 0 16 16" aria-hidden="true" focusable="false" hidden>
+              <rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"></rect>
+            </svg>
+            <span id="mic-spinner" class="mic-spinner" aria-hidden="true" hidden></span>
+            <span id="mic-retry" hidden>!</span>
+          </button>
+        </div>
       </form>
     </section>
     <button id="ball" type="button">
