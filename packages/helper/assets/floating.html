@@ -11,6 +11,7 @@
   </head>
   <body>
     <section id="panel" hidden>
+      <header id="panel-header">
       <button id="history" type="button" aria-pressed="false">
         <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
           <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"></circle>
@@ -26,7 +27,16 @@
         </button>
         <ul id="permission-menu" role="listbox" hidden></ul>
       </div>
+      <button id="panel-control" type="button" aria-pressed="false">
+        <svg class="pin-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M5 2h6l-1 4 3 4H3l3-4-1-4Zm3 8v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+        <svg class="minimize-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
+        </svg>
+      </button>
       <button id="new-conversation" type="button">+</button>
+      </header>
       <div id="transcript" role="log" aria-live="polite"></div>
       <div id="question" hidden>
         <div class="question-card">
@@ -91,6 +101,7 @@
     </section>
     <button id="ball" type="button">
       <img id="ball-gif" src="deepseek-avatar-square.gif" alt="" draggable="false">
+      <span id="ball-indicator" aria-hidden="true"></span>
     </button>
     <button id="dock-tab" type="button" hidden aria-hidden="true"></button>
     <button id="stop" type="button" hidden></button>
