@@ -12,7 +12,14 @@ export const PANEL_WINDOW_SIZE = {
   height: PANEL_SIZE.height + 2 * CHROME_INSET,
 } as const
 export const BELOW_CENTER = 0.08
-export const DOCK_OVERLAP = Math.round(BALL_SIZE / 5)
+/**
+ * How far past a screen edge the ball must be pushed for a release to dock it.
+ * A fifth of the ball was too eager: the pointer still sits well inside the
+ * screen when the ball itself crosses, so the ball appeared to snap before it
+ * had been dragged anywhere near the edge. Half the ball means the drag has to
+ * genuinely push it off.
+ */
+export const DOCK_OVERLAP = Math.round(BALL_SIZE / 2)
 export const DOCK_DRAG_OFF = Math.round(BALL_SIZE / 3)
 export const DOCK_TAB_WIDTH = 6
 export const DOCK_GLOW = 8
@@ -69,8 +76,20 @@ function collapsedWindowBounds(ball: { readonly x: number; readonly y: number })
   }
 }
 
+/** Rounded window sizes land a pixel or two over the nominal value. */
+const SIZE_TOLERANCE = 2
+
+/**
+ * True when the window is showing the ball rather than the panel.
+ *
+ * The tolerance is load-bearing: a 96-logical-pixel window measures 97x97 once
+ * the compositor rounds its physical size (96 * 2.25 = 216), and without slack
+ * every collapsed window read as expanded. A drag then took the expanded branch,
+ * placed the window with the panel's corner offset, and parked the ball a few
+ * hundred pixels from the pointer.
+ */
 function isCollapsed(bounds: Rect): boolean {
-  return bounds.width <= BALL_WINDOW_SIZE && bounds.height <= BALL_WINDOW_SIZE
+  return bounds.width <= BALL_WINDOW_SIZE + SIZE_TOLERANCE && bounds.height <= BALL_WINDOW_SIZE + SIZE_TOLERANCE
 }
 
 function clampWindowOrigin(value: number, workOrigin: number, workSize: number, windowSize: number): number {
@@ -256,14 +275,45 @@ export class FloatingPlacement {
   private direction: Direction = { horizontal: 'left', vertical: 'up' }
   private docked: { side: DockSide; y: number } | undefined
   private anim = 0
+  /** Sub-pixel ball origin while a drag is in flight; dropped by every other move. */
+  private dragOrigin: { x: number; y: number } | undefined
 
   constructor(private readonly window: {
     getBounds(): Rect
     setBounds(bounds: Rect): void
   }, private readonly displayAt: (point: { x: number; y: number }) => DisplayPair, private readonly displayBounds: () => readonly Rect[] = () => []) {}
 
+  /**
+   * Move a window that keeps its size.
+   *
+   * The size is always stated even though it should not change: Electron turns a
+   * position-only request into a full geometry request carrying the size from its
+   * own cache, and on X11 that cache lags. A drag then re-sent a slightly rounded
+   * size every frame, the window grew a pixel at a time until it stopped looking
+   * collapsed, and the drag switched to the panel code path mid-gesture.
+   */
+  private slideTo(bounds: Rect): void {
+    this.window.setBounds(bounds)
+  }
+
+  /**
+   * Direction the next expansion would take, without moving the window.
+   *
+   * The page needs this before {@link setExpanded} runs. Growing the window
+   * first and repainting the page second leaves one frame that draws the ball
+   * in its *previous* corner inside the *new* window, so the ball appears to
+   * jump diagonally across the panel and then snap back.
+   */
+  previewExpand(): ExpandState {
+    const bounds = this.window.getBounds()
+    const display = this.displayAt(center(bounds))
+    const origin = this.currentBallOrigin(display.workArea)
+    return { expanded: false, ...expandDirection(origin, display.workArea), docked: this.docked?.side }
+  }
+
   /** Resize between the ball and the panel while keeping the ball origin fixed. */
   setExpanded(expanded: boolean): ExpandState {
+    this.dragOrigin = undefined
     const bounds = this.window.getBounds()
     const display = this.displayAt(center(bounds))
     if (expanded) {
@@ -288,17 +338,17 @@ export class FloatingPlacement {
    * A collapsed ball may hang past a display edge. Dock is committed by {@link clamp}.
    */
   move(x: number, y: number, canDock = true): DockState {
+    this.dragOrigin = undefined
     const origin = { x: Math.round(x), y: Math.round(y) }
     const bounds = this.window.getBounds()
     if (!isCollapsed(bounds) && this.docked === undefined) {
-      const direction = this.direction
-      this.window.setBounds(overlayBoundsFromBall(origin, direction))
+      this.slideTo(overlayBoundsFromBall(origin, this.direction))
       return { docked: undefined }
     }
     if (!canDock) {
       this.docked = undefined
       this.anim += 1
-      this.window.setBounds(collapsedWindowBounds(origin))
+      this.slideTo(collapsedWindowBounds(origin))
       return { docked: undefined }
     }
     const display = this.displayAt(origin)
@@ -312,8 +362,31 @@ export class FloatingPlacement {
     return { docked: undefined }
   }
 
+  /**
+   * Move the ball by a pointer delta rather than to an absolute position.
+   *
+   * The page cannot name the ball's screen position: in this XWayland setup
+   * `window.screenX` and `event.screenX` disagree with the compositor's window
+   * geometry by a couple of hundred pixels, so an absolute target parked the
+   * window that far away from the pointer.
+   *
+   * The delta is accumulated on a sub-pixel origin of our own rather than on the
+   * geometry the compositor reports back. That reading is rounded, so re-deriving
+   * the origin from it every frame dropped its fractional part each time and a
+   * long drag drifted steadily toward the top-left.
+   */
+  moveBy(dx: number, dy: number, canDock = false): DockState {
+    const base = this.dragOrigin ?? this.currentBallOrigin(this.displayAt(center(this.window.getBounds())).workArea)
+    const next = { x: base.x + dx, y: base.y + dy }
+    const state = this.move(next.x, next.y, canDock)
+    // `move` clears the drag origin; this gesture is still in flight.
+    this.dragOrigin = next
+    return state
+  }
+
   /** Pull a free ball inside the work area, or dock it when it already overlaps a side edge. */
   async clamp(canDock = true): Promise<DockState> {
+    this.dragOrigin = undefined
     const bounds = this.window.getBounds()
     const display = this.displayAt(center(bounds))
     if (this.docked) {
@@ -326,7 +399,7 @@ export class FloatingPlacement {
         const side = dockSideForBallOrigin(origin, display.bounds, this.displayBounds())
         if (side) return this.snap(side, origin.y, display.bounds)
       }
-      this.window.setBounds(collapsedWindowBounds(clampedBallOrigin(origin, display.workArea)))
+      this.slideTo(collapsedWindowBounds(clampedBallOrigin(origin, display.workArea)))
       return { docked: undefined }
     }
     this.setExpanded(true)
@@ -335,6 +408,7 @@ export class FloatingPlacement {
 
   /** Slide the ball back on screen from a docked tab. */
   async unsnap(): Promise<DockState> {
+    this.dragOrigin = undefined
     if (!this.docked) return { docked: undefined }
     const display = this.displayAt(center(this.window.getBounds()))
     const start = offScreenBallOrigin(this.docked.side, this.docked.y, display.bounds)

@@ -101,6 +101,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     const { signal, ...region } = input
     return capture(region, signal)
   }
-  const backend = createPlatformBackend(process.platform, excludedRegionCapture)
+  const backend = createPlatformBackend(process.platform, excludedRegionCapture, {
+    // The Desktop Host publishes the harness and helper pids so the floating ball
+    // is never mistaken for the window the agent is looking at.
+    excludedPids: () => ctx.get('computerUseExcludedPids')?.() ?? [],
+  })
   applyComputerUse(ctx, desktopBackend(ctx, backend), resolveComputerUseConfig(config))
 }

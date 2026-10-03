@@ -24,6 +24,7 @@ export function mainWindowTarget(_ctx: OpenContext, desktop = isDesktopHost()): 
 /** Command used to focus that window. The target is never logged. */
 export function openCommand(target: string, platform: NodeJS.Platform = process.platform): { command: string; args: string[] } {
   if (platform === 'win32') return { command: 'cmd', args: ['/c', 'start', '', target] }
+  if (platform === 'linux') return { command: 'xdg-open', args: [target] }
   return { command: 'open', args: [target] }
 }
 

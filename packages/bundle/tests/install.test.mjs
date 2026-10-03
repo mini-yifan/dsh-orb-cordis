@@ -107,7 +107,8 @@ describe('dsh-orb install layout', () => {
       for (const spec of Object.values({ ...manifest.dependencies })) {
         assert.doesNotMatch(String(spec), /^(file|link|workspace):/)
       }
-      assert.deepEqual(Object.keys(manifest.dependencies).sort(), ['koffi', 'zod'])
+      // dbus-next drives the KWin session-bus bridge on Linux; koffi is the FFI core.
+      assert.deepEqual(Object.keys(manifest.dependencies).sort(), ['dbus-next', 'koffi', 'zod'])
     } finally {
       rmSync(tarball, { force: true })
     }

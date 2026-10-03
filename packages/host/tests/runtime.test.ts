@@ -214,6 +214,9 @@ async function connect(runtime: OrbRuntime) {
   const messages: Record<string, unknown>[] = []
   let buffer = ''
   socket.setEncoding('utf8')
+  // Teardown closes the server before the client finishes draining; that race is
+  // expected and must not surface as an uncaught ECONNRESET after the test ends.
+  socket.on('error', () => {})
   socket.on('data', (chunk: string) => {
     buffer += chunk
     const parts = buffer.split('\n')

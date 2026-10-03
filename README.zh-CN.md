@@ -75,7 +75,9 @@ Helper（自带的下载版 Electron，独立 userData）
 ## 环境要求
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：桌面版，或 CLI 的 `dsh web`。按 dsh `0.1.7-rc.2` 编译；声明的兼容范围是 `>=0.1.7-rc.2 <0.3.0-0`。
-- macOS（Apple Silicon / Intel）或 Windows x64。Linux 会加载插件但不建球——后台代码会话仍可用。
+- macOS（Apple Silicon / Intel）、Windows x64，或 **Linux 上的 KDE Plasma 6**（Wayland 或 X11）。
+  Linux 端需要 `spectacle` 与 ImageMagick，以及 `/dev/uinput` 访问权限来注入输入——
+  见 [docs/05-linux-kde.md](docs/05-linux-kde.md) 与 `scripts/linux-setup.sh`。
 - Node.js `^22.19.0 || >=24.0.0` 与 pnpm `11.7.0`（仅从源码构建时需要）。
 
 ## 安装
@@ -117,7 +119,9 @@ pnpm build       # 构建全部包并装配 bundle
 
 - **划词工具条**（划词后搜索 / 翻译 / 发给 Agent）修复缺陷期间暂时停用；代码保留，但所有入口已撤下，偏好里强制关闭。
 - 按 dsh `0.1.7-rc.2` 构建与测试；兼容范围内的新版 dsh 可能需要重新验证。
-- Linux 上没有悬浮球；无显示器的环境仍可跑后台代码会话。
+- **Linux 只支持 KDE Plasma**，且比 macOS / Windows 后端新：窗口几何、焦点与截图全部来自 KWin，
+  球跑在 X11（XWayland）后端上才能自己定位。GNOME、wlroots 合成器与纯 X11 会话没有后端。
+  已知限制见 [docs/05-linux-kde.md](docs/05-linux-kde.md)。
 - macOS 权限弹窗写的是 DeepSeek Harness 或终端，不是本插件——权限归属承载 Agent 的进程，这是系统行为。
 
 ## 与 DeepSeek Harness 的关系
