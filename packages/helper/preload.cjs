@@ -1,8 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('dshOrb', {
-  move(x, y, canDock) {
-    return ipcRenderer.invoke('orb:move', { x, y, canDock: canDock !== false })
+  moveBy(dx, dy) {
+    return ipcRenderer.invoke('orb:move-by', { dx, dy })
   },
   clamp(canDock) {
     return ipcRenderer.invoke('orb:clamp', canDock !== false)
@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld('dshOrb', {
   },
   setExpanded(expanded) {
     return ipcRenderer.invoke('orb:expand', Boolean(expanded))
+  },
+  onPrepare(callback) {
+    ipcRenderer.on('orb:prepare', (_event, state) => callback(state))
+  },
+  prepared() {
+    ipcRenderer.send('orb:prepared')
   },
   send(text) {
     ipcRenderer.send('orb:prompt', text)

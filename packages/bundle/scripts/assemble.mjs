@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 
 const bundleRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const packages = resolve(bundleRoot, '..')
+const repoRoot = resolve(packages, '..')
 
 const OLD_CLIENT_ID = "id: '@dsh-orb/client-ui-settings-orb'"
 const NEW_CLIENT_ID = "id: 'dsh-orb'"
@@ -78,9 +79,23 @@ await copyFrom('native-selection', 'prebuilds/darwin-universal', join(dist, 'nat
 
 await rewrite(join(dist, 'host', 'index.js'), SELECTION_SPECIFIER, SELECTION_RELATIVE, 1)
 
+// Files the package ships beside its code. npm always includes README* and
+// LICENSE from the package folder, so the tarball carries the repo's own copies
+// instead of an empty one. The readmes live at the repository root; the package
+// manifest and the patch sit next to this script.
+const USER_FACING = [
+  join(bundleRoot, 'package.json'),
+  join(bundleRoot, 'cordis.patch.yml'),
+  join(repoRoot, 'LICENSE'),
+  join(repoRoot, 'README.md'),
+  join(repoRoot, 'README.zh-CN.md'),
+]
+const USER_FACING_NAMES = USER_FACING.map((path) => path.split('/').pop() ?? '')
+
 if (!inPlace) {
-  await cp(join(bundleRoot, 'package.json'), join(stage, 'package.json'))
-  await cp(join(bundleRoot, 'cordis.patch.yml'), join(stage, 'cordis.patch.yml'))
+  for (const path of USER_FACING) {
+    if (existsSync(path)) await cp(path, join(stage, path.split('/').pop() ?? ''))
+  }
 }
 
 const retired = await mkdtemp(join(outRoot, '.retired-'))
@@ -90,7 +105,9 @@ for (const entry of ['lib', 'dist', 'client.js']) {
   await rename(join(stage, entry), target)
 }
 if (!inPlace) {
-  for (const entry of ['package.json', 'cordis.patch.yml']) await rename(join(stage, entry), join(outRoot, entry))
+  for (const name of USER_FACING_NAMES) {
+    if (existsSync(join(stage, name))) await rename(join(stage, name), join(outRoot, name))
+  }
 }
 await rm(stage, { recursive: true, force: true })
 await rm(retired, { recursive: true, force: true })

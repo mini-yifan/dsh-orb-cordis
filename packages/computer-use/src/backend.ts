@@ -4,6 +4,7 @@
  */
 
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import { createLinuxDesktopBackend, type LinuxDesktopOptions } from './desktop.ts'
 import { createMacosDesktopBackend, type OverlayExcludedRegionCapture } from './macos.ts'
 import { createUnsupportedDesktopBackend } from './unsupported.ts'
 import { createWindowsDesktopBackend } from './windows.ts'
@@ -265,13 +266,16 @@ export interface DesktopBackend {
  * Construct the backend for a host platform.
  * @param platform - Node `process.platform` value; tests pass an explicit id.
  * @param excludedRegionCapture - Desktop overlay-exclude capture; CLI omits it and spawns the helper.
- * @returns macOS capture/input on Darwin, Windows capture/input on Win32, otherwise a backend whose methods throw.
+ * @param linux - KDE Wayland options; only read when `platform` is `linux`.
+ * @returns macOS capture/input on Darwin, Windows capture/input on Win32, KWin capture/input on Linux, otherwise a backend whose methods throw.
  */
 export function createPlatformBackend(
   platform: NodeJS.Platform = process.platform,
   excludedRegionCapture?: OverlayExcludedRegionCapture,
+  linux: LinuxDesktopOptions = {},
 ): DesktopBackend {
   if (platform === 'darwin') return createMacosDesktopBackend(undefined, excludedRegionCapture)
   if (platform === 'win32') return createWindowsDesktopBackend()
+  if (platform === 'linux') return createLinuxDesktopBackend(linux)
   return createUnsupportedDesktopBackend()
 }

@@ -69,7 +69,7 @@ export function registerOrbRoutes(deps: RouteDeps): () => void {
 }
 
 export function orbSupported(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === 'darwin' || platform === 'win32'
+  return platform === 'darwin' || platform === 'win32' || platform === 'linux'
 }
 
 async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {

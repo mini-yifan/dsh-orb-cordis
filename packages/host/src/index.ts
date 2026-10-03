@@ -27,7 +27,7 @@ export type { OrbContext }
 
 /**
  * Register preferences, Computer Use services, and settings routes, then start the ball.
- * Linux never starts the helper. `autoStart: false` and `ball-enabled.json` leave Computer Use in the main window.
+ * `autoStart: false` and `ball-enabled.json` leave Computer Use in the main window.
  * @param ctx - host services named in {@link inject}.
  * @param config - patch config. `autoStart: false` skips the helper until settings turn it back on.
  */
@@ -45,7 +45,10 @@ export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): vo
     // Theme and locale follow the official settings document; a missing
     // settings service leaves the ball on its system defaults.
     const detachAppearance = watchAppearance(ctx, (appearance) => { runtime.setAppearance(appearance) })
-    const start = process.platform !== 'linux' && config.autoStart !== false && store.ballEnabled()
+    // Computer Use skips our own chrome windows: on Linux the ball is an ordinary
+    // toplevel, so it would otherwise be captured as the frontmost window.
+    ctx.provide('computerUseExcludedPids', () => runtime.excludedPids())
+    const start = config.autoStart !== false && store.ballEnabled()
     if (start) {
       void runtime.start().catch((error: unknown) => {
         console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
