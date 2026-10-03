@@ -8,6 +8,7 @@ import { createConnection, type Socket } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { readAvatarChoice, type AvatarChoice } from './avatar.ts'
 import { collectChromeWindowIds, type NativeHandleWindow } from './chrome-windows.ts'
+import { attachDisplayRecovery } from './display-events.ts'
 import { FloatingPlacement, initialWindowBounds } from './geometry.ts'
 import { contextMenuTemplate } from './menu.ts'
 import { attachOverlays, denyWindowPermissions } from './overlays.ts'
@@ -68,12 +69,14 @@ let overlays: {
   chromeWindows(): readonly (NativeHandleWindow | undefined)[]
 } | undefined
 let placement: FloatingPlacement | undefined
+let detachDisplayRecovery: (() => void) | undefined
 let live: Socket | undefined
 let quitting = false
 let buffer = ''
 
 app.on('before-quit', () => {
   quitting = true
+  detachDisplayRecovery?.()
   live?.destroy()
 })
 app.on('window-all-closed', () => {
@@ -92,6 +95,8 @@ void app.whenReady().then(async () => {
     const display = screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) })
     return { bounds: display.bounds, workArea: display.workArea }
   }, () => screen.getAllDisplays().map((display) => display.bounds))
+  detachDisplayRecovery = attachDisplayRecovery(screen, win, placement)
+  win.on('closed', () => { detachDisplayRecovery?.() })
   win.webContents.on('did-finish-load', () => {
     if (win && !win.isVisible()) win.showInactive()
     // The page may have loaded after the last appearance change.
