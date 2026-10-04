@@ -128,6 +128,8 @@ describe('selection actions', () => {
   })
 
   it('excludes the host and helper pids and restores the front app after translate', () => {
+    // Selection monitoring is macOS/Windows only; on Linux the controller never starts.
+    if (process.platform === 'linux') return
     const excluded: number[][] = []
     const activated: number[] = []
     const monitor: SelectionMonitorHandle = {

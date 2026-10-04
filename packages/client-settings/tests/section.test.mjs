@@ -91,7 +91,7 @@ function loadSection() {
       calls.push({ path, options })
       if (String(path).includes('token') || String(path).startsWith('http')) throw new Error(`credentialed fetch ${path}`)
       if (path === '/.dsh-orb/settings') {
-        return json(mode === 'linux' ? { ...snapshot, supported: false, tcc: { ...snapshot.tcc, applicable: false } } : snapshot)
+        return json(mode === 'blocked' ? { ...snapshot, supported: false, tcc: { ...snapshot.tcc, applicable: false } } : snapshot)
       }
       if (path === '/.dsh-orb/models') return json(catalog)
       if (options.method === 'POST' && path === '/.dsh-orb/ball') snapshot.ballEnabled = JSON.parse(options.body).enabled
@@ -234,7 +234,7 @@ describe('settings section', () => {
     assert.equal(selected.length, 1)
     assert.equal(selected[0].props['aria-pressed'], 'true')
 
-    page.setMode('linux')
+    page.setMode('blocked')
     page.reset()
     page.calls.length = 0
     view = page.render()
@@ -242,7 +242,7 @@ describe('settings section', () => {
     view = page.render()
     const fieldset = find(view, (node) => node.type === 'fieldset')[0]
     assert.equal(fieldset.props.disabled, true)
-    assert.equal(find(view, (node) => node.children?.includes('悬浮球在 Linux 上不可用。')).length, 1)
+    assert.equal(find(view, (node) => node.children?.includes('当前平台没有悬浮球后端。')).length, 1)
 
     const pkg = JSON.parse(readFileSync(join(here, '../package.json'), 'utf8'))
     assert.equal(pkg.name, '@dsh-orb/client-ui-settings-orb')

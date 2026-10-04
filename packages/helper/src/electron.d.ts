@@ -78,6 +78,8 @@ declare module 'electron' {
     getLocale?(): string
     setActivationPolicy?(policy: 'accessory'): void
     dock?: { hide(): void }
+    /** Chromium switches; read before `whenReady` to pick the display backend. */
+    commandLine: { appendSwitch(name: string, value?: string): void }
     on(event: 'before-quit' | 'window-all-closed', listener: () => void): void
   }
 

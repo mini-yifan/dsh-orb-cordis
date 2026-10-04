@@ -275,6 +275,7 @@ function openToolbar(preload: string): BrowserWindow {
     backgroundColor: '#00000000',
     roundedCorners: false,
     ...process.platform === 'darwin' ? { type: 'panel' as const } : {},
+    ...process.platform === 'linux' ? { type: 'utility' as const } : {},
     webPreferences: {
       preload,
       contextIsolation: true,
@@ -306,6 +307,7 @@ function openFrame(): BrowserWindow {
     backgroundColor: '#00000000',
     roundedCorners: false,
     ...process.platform === 'darwin' ? { type: 'panel' as const } : {},
+    ...process.platform === 'linux' ? { type: 'utility' as const } : {},
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

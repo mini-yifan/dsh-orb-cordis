@@ -2,6 +2,7 @@ import { defineConfig } from 'tsdown'
 
 const external = [
   'koffi',
+  'dbus-next',
   'zod',
   '@deepseek-ai/cordis',
   '@deepseek-ai/schemastery',

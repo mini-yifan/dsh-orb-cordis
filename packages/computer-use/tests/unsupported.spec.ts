@@ -51,8 +51,13 @@ describe('unsupported desktop', () => {
     await expect(backend.withGuiTurn(() => Promise.resolve(3))).resolves.toBe(3)
   })
 
-  it('selects the unsupported backend off Darwin without capturing', async () => {
-    await expect(createPlatformBackend('linux').listScreens()).rejects.toThrow(UNSUPPORTED_DESKTOP_MESSAGE)
+  it('selects the unsupported backend on a platform with no desktop backend', async () => {
+    await expect(createPlatformBackend('freebsd').listScreens()).rejects.toThrow(UNSUPPORTED_DESKTOP_MESSAGE)
+  })
+
+  it('constructs the KDE Wayland backend on Linux without posting input', () => {
+    expect(typeof createPlatformBackend('linux').click).toBe('function')
+    expect(typeof createPlatformBackend('linux').capture).toBe('function')
   })
 
   it('constructs the macOS backend on Darwin without posting input', () => {

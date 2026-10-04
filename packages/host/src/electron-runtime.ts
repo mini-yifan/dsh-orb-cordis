@@ -28,7 +28,10 @@ export const PINNED_SHA256: Readonly<Record<string, string>> = {
 
 /**
  * Resolve the helper executable.
- * `DSH_ORB_ELECTRON_PATH` wins. Otherwise use the cached official zip, downloading it once.
+ * `DSH_ORB_ELECTRON_PATH` wins. On Linux the distribution's own Electron is used
+ * when one is installed, so the helper links against the system GTK and Qt
+ * instead of carrying a second copy. Otherwise the cached official zip is used,
+ * downloading it once.
  * @returns absolute path to the Electron executable.
  */
 export async function resolveElectronBinary(): Promise<string> {
@@ -37,12 +40,57 @@ export async function resolveElectronBinary(): Promise<string> {
     await access(override)
     return override
   }
+  const system = await systemElectron()
+  if (system !== undefined) {
+    console.error(`dsh-orb: using the system Electron at ${system}`)
+    return system
+  }
   const dest = dshHomePath('dsh-orb', 'electron-runtime')
   const binary = join(dest, binaryRelative())
   const marker = join(dest, `.complete-${ELECTRON_VERSION}`)
   if (await exists(binary) && await exists(marker)) return binary
   await downloadRuntime(dest, binary, marker)
   return binary
+}
+
+/**
+ * A distribution-packaged Electron on Linux, newest first.
+ * Arch ships `/usr/lib/electronNN/electron`; other distributions put `electron`
+ * on `PATH`. Both are unstripped stock builds, which is what the helper needs.
+ * @returns the executable path, or `undefined` when none is installed.
+ */
+async function systemElectron(): Promise<string | undefined> {
+  if (process.platform !== 'linux') return undefined
+  const explicit = process.env.DSH_ORB_SYSTEM_ELECTRON?.trim()
+  if (explicit !== undefined && explicit.length > 0) {
+    return await exists(explicit) ? explicit : undefined
+  }
+  let best: { version: number; path: string } | undefined
+  const roots = await readdirSafe('/usr/lib')
+  for (const entry of roots) {
+    const match = /^electron(\d+)$/u.exec(entry)
+    if (match?.[1] === undefined) continue
+    const version = Number(match[1])
+    const candidate = join('/usr/lib', entry, 'electron')
+    if (!await exists(candidate)) continue
+    if (best === undefined || version > best.version) best = { version, path: candidate }
+  }
+  if (best !== undefined) return best.path
+  for (const directory of (process.env.PATH ?? '').split(':')) {
+    if (directory === '') continue
+    const candidate = join(directory, 'electron')
+    if (await exists(candidate)) return candidate
+  }
+  return undefined
+}
+
+async function readdirSafe(path: string): Promise<readonly string[]> {
+  try {
+    const { readdir } = await import('node:fs/promises')
+    return await readdir(path)
+  } catch {
+    return []
+  }
 }
 
 async function downloadRuntime(dest: string, binary: string, marker: string): Promise<void> {

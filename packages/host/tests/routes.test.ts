@@ -60,7 +60,7 @@ describe('settings routes', () => {
       }],
     })
     assert.deepEqual(normalizeCatalog(null), { groups: [] })
-    assert.equal(orbSupported('linux'), false)
+    assert.equal(orbSupported('linux'), true)
     assert.equal(orbSupported('darwin'), true)
     assert.equal(orbSupported('win32'), true)
     assert.equal(tokensMatch('same-token', 'same-token'), true)
@@ -139,7 +139,7 @@ describe('settings routes', () => {
     assert.equal(snapshot.avatarUrl.includes('token'), false)
     assert.equal(snapshot.ballEnabled, true)
     assert.equal(snapshot.overlay.model, 'deepseek-flash')
-    assert.equal(snapshot.supported, process.platform === 'darwin' || process.platform === 'win32')
+    assert.equal(snapshot.supported, ['darwin', 'win32', 'linux'].includes(process.platform))
     assert.equal(snapshot.permissionFallback, false)
 
     const models = response()

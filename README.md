@@ -75,7 +75,9 @@ Helper (its own downloaded Electron, isolated userData)
 ## Requirements
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): the desktop app, or `dsh web` from the CLI. Built against dsh `0.1.7-rc.2`; the declared compatibility range is `>=0.1.7-rc.2 <0.3.0-0`.
-- macOS (Apple Silicon / Intel) or Windows x64. Linux loads the plugin but does not create a ball — background code sessions still work.
+- macOS (Apple Silicon / Intel), Windows x64, or **KDE Plasma 6 on Linux** (Wayland or X11).
+  The Linux port needs `spectacle` and ImageMagick, plus `/dev/uinput` access for synthetic input —
+  see [docs/05-linux-kde.md](docs/05-linux-kde.md) and `scripts/linux-setup.sh`.
 - Node.js `^22.19.0 || >=24.0.0` and pnpm `11.7.0` (only for building from source).
 
 ## Install
@@ -117,7 +119,10 @@ The design documents this plugin was built from live in [docs/](docs/) — feasi
 
 - The **selection toolbar** (search / translate / send-to-agent on text selection) is temporarily disabled while a defect is fixed; its code ships but every entry point is removed and the feature is forced off in preferences.
 - Built and tested against dsh `0.1.7-rc.2`; newer dsh versions within the compatibility range may require re-verification.
-- No floating ball on Linux; headless environments can still run background code sessions.
+- **Linux support is KDE Plasma only**, and newer than the macOS/Windows backends: window geometry,
+  focus, and screen capture all come from KWin, and the ball runs on the X11 (XWayland) backend so it
+  can place itself. GNOME, wlroots compositors, and bare X11 sessions have no backend. See the known
+  limitations in [docs/05-linux-kde.md](docs/05-linux-kde.md).
 - The macOS permission dialogs name DeepSeek Harness or your terminal, not this plugin — that is how the OS attributes permissions to the process that hosts the agent.
 
 ## Relationship to DeepSeek Harness

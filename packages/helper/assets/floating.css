@@ -711,6 +711,20 @@ body.expand-down #ball {
   top: var(--chrome);
 }
 
+/**
+ * Hides the ball for the one or two frames the compositor needs to apply a
+ * window resize.
+ *
+ * X11 draws the old buffer into the new window before the client's next frame
+ * arrives: growing 96x96 to 344x444 paints the old contents into the top-left
+ * corner, so the ball appeared in the panel's top-left corner for a frame and
+ * then snapped to its real one. There is nothing to show during that gap, so
+ * the ball simply steps out until the new frame is up.
+ */
+body.layout-changing #ball {
+  visibility: hidden;
+}
+
 body.expanded #ball {
   box-shadow: 0 0 0 1px var(--border);
 }

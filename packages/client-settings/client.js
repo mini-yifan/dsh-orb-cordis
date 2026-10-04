@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     const zh = {
       nav: '悬浮球',
       intro: '更改写入当前配置。',
-      linux: '悬浮球在 Linux 上不可用。',
+      unsupported: '当前平台没有悬浮球后端。',
       error: '无法加载悬浮球设置。',
       saveError: '无法保存。',
       helperFailed: '悬浮球多次退出，已经停止重试。关闭后再打开可再试一次。',
@@ -63,7 +63,7 @@ window.__ModuleLoader__.load({
     const en = {
       nav: 'Floating ball',
       intro: 'Changes are saved in the current profile.',
-      linux: 'The floating ball is not available on Linux.',
+      unsupported: 'The floating ball has no backend for this platform.',
       error: 'Could not load floating-ball settings.',
       saveError: 'Could not save.',
       helperFailed: 'The floating ball exited too many times and stopped retrying. Turn it off and on to try again.',
@@ -312,7 +312,7 @@ window.__ModuleLoader__.load({
         state.status === 'error' && state.error
           ? h('p', { className: 'dsh-orb-set-error', role: 'alert' }, `${text.saveError} ${state.error}`)
           : null,
-        snap.supported ? null : h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.linux),
+        snap.supported ? null : h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.unsupported),
         helperNotice(text, snap),
         snap.permissionFallback === true
           ? h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.permissionFallback)

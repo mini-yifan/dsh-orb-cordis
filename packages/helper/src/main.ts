@@ -8,7 +8,7 @@ import { createConnection, type Socket } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { readAvatarChoice, type AvatarChoice } from './avatar.ts'
 import { collectChromeWindowIds, type NativeHandleWindow } from './chrome-windows.ts'
-import { FloatingPlacement, initialWindowBounds } from './geometry.ts'
+import { BALL_WINDOW_SIZE, FloatingPlacement, initialWindowBounds } from './geometry.ts'
 import { contextMenuTemplate } from './menu.ts'
 import { attachOverlays, denyWindowPermissions } from './overlays.ts'
 import { type MenuCatalog, type MenuSelection } from './model-menu.ts'
@@ -60,6 +60,13 @@ if (!socketAddress || !token) {
 
 if (process.platform === 'darwin') app.setActivationPolicy?.('accessory')
 
+// KDE Wayland: a client cannot place its own toplevel and cannot keep it above
+// other windows. The X11 (XWayland) backend can, so the ball is pinned to it
+// rather than letting Chromium pick the native Wayland backend.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('ozone-platform', 'x11')
+  app.commandLine.appendSwitch('enable-transparent-visuals')
+}
 let win: BrowserWindow | undefined
 let tccWait: ((status: unknown) => void) | undefined
 let overlays: {
@@ -80,6 +87,15 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
+/** How often the window is checked against the page's own idea of the panel. */
+const PANEL_WATCHDOG_MS = 700
+/** Rounded window sizes land a pixel over the nominal value. */
+const SIZE_TOLERANCE = 2
+/** Consecutive bad readings before the watchdog acts. */
+const PANEL_WATCHDOG_STRIKES = 4
+/** Minimum gap between two collapses. */
+const PANEL_WATCHDOG_COOLDOWN_MS = 5000
+
 void app.whenReady().then(async () => {
   if (process.platform === 'darwin') app.dock?.hide()
   win = openWindow()
@@ -92,10 +108,18 @@ void app.whenReady().then(async () => {
     const display = screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) })
     return { bounds: display.bounds, workArea: display.workArea }
   }, () => screen.getAllDisplays().map((display) => display.bounds))
+  startPanelWatchdog()
   win.webContents.on('did-finish-load', () => {
     if (win && !win.isVisible()) win.showInactive()
     // The page may have loaded after the last appearance change.
     pushAppearance()
+    // The ball starts collapsed. A page that opened the panel on boot would
+    // leave the window at panel size with a 72px ball in the corner of it,
+    // which is also what made dragging feel off: the pointer was moving a
+    // 344x444 window while aiming at the ball inside it.
+    if (placement !== undefined) {
+      setTimeout(() => { placement?.setExpanded(false) }, 400).unref?.()
+    }
   })
   // OS scheme flips ride through while the theme preference is `system`.
   nativeTheme.on('updated', () => { pushAppearance() })
@@ -104,16 +128,66 @@ void app.whenReady().then(async () => {
   connect(0)
 })
 
-ipcMain.handle('orb:expand', (event, expanded) => {
-  if (!fromBall(event) || !placement || typeof expanded !== 'boolean') {
+ipcMain.handle('orb:expand', async (event, expanded) => {
+  const sender = ballSender(event)
+  if (sender === undefined || !placement || typeof expanded !== 'boolean') {
     return { expanded: false, horizontal: 'left', vertical: 'up', docked: undefined }
   }
+  if (expanded) await prepareExpansion(sender)
   return placement.setExpanded(expanded)
 })
 
-ipcMain.handle('orb:move', (event, request) => {
-  if (!fromBall(event) || !placement || !isMove(request)) return { docked: undefined }
-  return placement.move(request.x, request.y, request.canDock)
+/** The ball's webContents when the IPC came from it, otherwise undefined. */
+function ballSender(event: unknown): BrowserWindow['webContents'] | undefined {
+  if (!fromBall(event)) return undefined
+  return (event as { sender: BrowserWindow['webContents'] }).sender
+}
+
+/** Resolves when the page has moved the ball into its expanded corner, or on timeout. */
+let prepared: (() => void) | undefined
+
+/** How long the page gets to acknowledge a layout change before the window moves anyway. */
+const PREPARE_TIMEOUT_MS = 120
+
+ipcMain.on('orb:prepared', (event) => {
+  if (!fromBall(event)) return
+  const resolve = prepared
+  prepared = undefined
+  resolve?.()
+})
+
+/**
+ * Let the page repaint the ball into the corner it will occupy once the window
+ * grows. The window keeps its collapsed size while this runs, so nothing is
+ * visible yet; the point is that the very first frame drawn at panel size
+ * already has the ball in the right place.
+ */
+function prepareExpansion(sender: BrowserWindow['webContents']): Promise<void> {
+  if (placement === undefined) return Promise.resolve()
+  const preview = placement.previewExpand()
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (): void => {
+      if (done) return
+      done = true
+      prepared = undefined
+      resolve()
+    }
+    prepared = finish
+    sender.send('orb:prepare', preview)
+    setTimeout(() => {
+      if (done) return
+      // The resize goes through anyway: a page that never answers must not be
+      // able to freeze the ball, and the frame it costs is the old behaviour.
+      console.error('dsh-orb helper: page did not acknowledge the layout change')
+      finish()
+    }, PREPARE_TIMEOUT_MS).unref?.()
+  })
+}
+
+ipcMain.handle('orb:move-by', (event, request) => {
+  if (!fromBall(event) || !placement || !isDelta(request)) return { docked: undefined }
+  return placement.moveBy(request.dx, request.dy, false)
 })
 
 ipcMain.handle('orb:clamp', async (event, canDock) => {
@@ -222,6 +296,7 @@ function openWindow(): BrowserWindow {
     backgroundColor: '#00000000',
     roundedCorners: false,
     ...process.platform === 'darwin' ? { type: 'panel' } : {},
+    ...process.platform === 'linux' ? { type: 'utility' } : {},
     webPreferences: {
       preload: fileURLToPath(new URL('../preload.cjs', import.meta.url)),
       contextIsolation: true,
@@ -229,6 +304,11 @@ function openWindow(): BrowserWindow {
       sandbox: true,
     },
   })
+    // KDE lists only normal windows in the task bar, and Electron's
+    // `skipTaskbar` never reaches X11's `_NET_WM_STATE_SKIP_TASKBAR`: KWin
+    // reports the ball as a normal window and shows it next to real apps.
+    // A utility window is the shape KDE keeps out of the task bar while still
+    // letting the client place itself.
   // The ball rests captureable; overlays.ts syncCloak lifts it out of captures
   // for the duration of each Computer Use capture or HID interval.
   denyWindowPermissions(created)
@@ -257,6 +337,51 @@ function openWindow(): BrowserWindow {
     console.error(`dsh-orb helper: ball ${shown.x},${shown.y} ${shown.width}x${shown.height}`)
   })
   return created
+}
+
+/**
+ * Keep the window the size of the ball unless the panel is genuinely open.
+ *
+ * The panel and the ball share one window: opening grows it to 320x420, closing
+ * shrinks it back. Every path that opens it has to remember to close it, and any
+ * path that forgets leaves a 72px ball inside a 344x444 window. This asks the
+ * page directly and puts the window back if the page says the panel is closed.
+ *
+ * It must never become a resize loop, so three guards apply before it acts: the
+ * size comparison has a rounding tolerance (a collapsed window measures 96x97,
+ * not 96x96), the bad state has to persist for several ticks, and the watchdog
+ * gives up permanently after a handful of attempts — a window that keeps
+ * coming back large is the page's decision, not a missed collapse.
+ */
+function startPanelWatchdog(): void {
+  let strikes = 0
+  let lastAttempt = 0
+  const timer = setInterval(() => {
+    if (win === undefined || win.isDestroyed() || placement === undefined) return
+    const bounds = win.getBounds()
+    if (bounds.width <= BALL_WINDOW_SIZE + SIZE_TOLERANCE && bounds.height <= BALL_WINDOW_SIZE + SIZE_TOLERANCE) {
+      strikes = 0
+      return
+    }
+    void win.webContents
+      .executeJavaScript('document.body.classList.contains("expanded")')
+      .then((open: unknown) => {
+        if (open === true) {
+          strikes = 0
+          return
+        }
+        strikes += 1
+        if (strikes < PANEL_WATCHDOG_STRIKES) return
+        if (Date.now() - lastAttempt < PANEL_WATCHDOG_COOLDOWN_MS) return
+        strikes = 0
+        lastAttempt = Date.now()
+        if (win === undefined || win.isDestroyed() || placement === undefined) return
+        console.error(`dsh-orb helper: window was ${bounds.width}x${bounds.height} with the panel closed; collapsing`)
+        placement.setExpanded(false)
+      })
+      .catch(() => undefined)
+  }, PANEL_WATCHDOG_MS)
+  timer.unref?.()
 }
 
 function connect(attempt: number): void {
@@ -419,13 +544,12 @@ function write(message: unknown): void {
   live.write(`${JSON.stringify(message)}\n`)
 }
 
-function isMove(value: unknown): value is { x: number; y: number; canDock: boolean } {
+function isDelta(value: unknown): value is { dx: number; dy: number } {
   if (typeof value !== 'object' || value === null) return false
-  const point = value as { x?: unknown; y?: unknown; canDock?: unknown }
-  return typeof point.x === 'number' && typeof point.y === 'number'
-    && Number.isFinite(point.x) && Number.isFinite(point.y)
-    && Math.abs(point.x) <= 100_000 && Math.abs(point.y) <= 100_000
-    && typeof point.canDock === 'boolean'
+  const step = value as { dx?: unknown; dy?: unknown }
+  return typeof step.dx === 'number' && typeof step.dy === 'number'
+    && Number.isFinite(step.dx) && Number.isFinite(step.dy)
+    && Math.abs(step.dx) <= 10_000 && Math.abs(step.dy) <= 10_000
 }
 
 function zhLocale(): boolean {

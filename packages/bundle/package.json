@@ -30,7 +30,10 @@
     "lib",
     "client.js",
     "dist",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "node ./scripts/assemble.mjs",
@@ -38,6 +41,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "dbus-next": "^0.10.2",
     "koffi": "^3.1.0",
     "zod": "^4.4.3"
   },

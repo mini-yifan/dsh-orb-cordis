@@ -797,7 +797,8 @@ describe('computer-use tools', () => {
       'open_app', 'open_in_browser', 'open_in_finder', 'screenshot', 'scroll', 'wait',
     ])
     expect(host.tools.schemas().map(schema => schema.name)).not.toContain('code_agent')
-    if (process.platform === 'darwin' || process.platform === 'win32') return
+    // macOS, Windows, and KDE Wayland all have a real backend; only other hosts fail at execute.
+    if (['darwin', 'win32', 'linux'].includes(process.platform)) return
     const result = await host.tools.execute({
       signal: SIGNAL,
       callId: ToolCallId('host-click'),

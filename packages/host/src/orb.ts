@@ -5,8 +5,10 @@
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { readdirSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { createServer, type Server, type Socket } from 'node:net'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { Appearance, ThemePreference } from './appearance.ts'
@@ -335,8 +337,7 @@ export class OrbRuntime {
   }
 
   /** A new attempt supersedes the dead one: drop its transient blocks so the retry streams into a clean slate. */
-  private rewindLiveStep(turn: number, step: number): void {
-    const tracked = this.stepBlocks.get(`${turn}:${step}`)
+  private rewindLiveStep(turn: number, step: number): void {    const tracked = this.stepBlocks.get(`${turn}:${step}`)
     if (!tracked) return
     this.stepBlocks.delete(`${turn}:${step}`)
     for (const key of tracked) this.dropBlock(key)
@@ -344,7 +345,6 @@ export class OrbRuntime {
 
   /** Open the socket, prepare a session, and spawn the helper. A halted ball can start again. */
   async start(): Promise<void> {
-    if (process.platform === 'linux') return
     this.halted = false
     this.failures = 0
     this.helperError = undefined
@@ -373,6 +373,16 @@ export class OrbRuntime {
   /** Short code the settings page can show after the helper gives up. */
   helperStatus(): string {
     return this.helperError ?? ''
+  }
+
+  /**
+   * Pids whose windows are never an observation surface.
+   * On Linux the Compositor reports the ball and the observation ribbon as
+   * ordinary toplevels, so Computer Use skips them by owner process.
+   * @returns this host and the helper, when the helper has reported itself.
+   */
+  excludedPids(): readonly number[] {
+    return this.helperPid === undefined ? [process.pid] : [process.pid, this.helperPid]
   }
 
   private async begin(generation: number): Promise<void> {
@@ -1155,6 +1165,7 @@ export class OrbRuntime {
     const userData = this.userData || helperDataDirectory(this.store.dir)
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...desktopSessionEnvironment(),
       DSH_ORB_TOKEN: this.token,
       DSH_ORB_SOCKET: `127.0.0.1:${this.port}`,
       DSH_ORB_WEB_PORT: String(this.ctx.webServer.port),
@@ -1286,7 +1297,6 @@ export class OrbRuntime {
 
   async setBallEnabled(enabled: boolean): Promise<void> {
     this.store.setBallEnabled(enabled)
-    if (process.platform === 'linux') return
     if (enabled) {
       void this.start().catch((error: unknown) => {
         console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
@@ -1543,8 +1553,92 @@ export class OrbRuntime {
 }
 
 /** Per-profile Chromium data so desktop and `dsh web` do not share one lock. */
-function helperDataDirectory(profileDir: string): string {
-  const id = createHash('sha256').update(profileDir).digest('hex').slice(0, 16)
+/**
+ * Desktop session variables for the helper.
+ *
+ * `dsh web` may run from a system service, whose environment carries `PATH` and
+ * `HOME` only. The helper is an Electron app and needs the display server
+ * coordinates, so they are resolved from the standard runtime paths instead.
+ * @returns the variables to merge into the helper's environment.
+ */
+/**
+ * Input-method variables, which live in `environment.d`.
+ *
+ * The session's IM settings (`GTK_IM_MODULE=fcitx` and friends) are only applied
+ * by the systemd *user* manager. `dsh web` runs as a system service, so its
+ * process tree never receives them and the helper — a GTK application — cannot
+ * talk to fcitx5 at all. They are read from the same files the user session
+ * reads.
+ */
+const IM_VARIABLES = [
+  'GTK_IM_MODULE', 'QT_IM_MODULE', 'QT4_IM_MODULE', 'XMODIFIERS',
+  'SDL_IM_MODULE', 'CLUTTER_IM_MODULE', 'INPUT_METHOD', 'GLFW_IM_MODULE',
+] as const
+
+function inputMethodEnvironment(): NodeJS.ProcessEnv {
+  const found: Record<string, string> = {}
+  const files: string[] = []
+  const configHome = process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config')
+  try {
+    for (const name of readdirSync(join(configHome, 'environment.d'))) {
+      if (name.endsWith('.conf')) files.push(join(configHome, 'environment.d', name))
+    }
+  } catch {
+    // No per-user overrides; the system files below still apply.
+  }
+  files.push('/etc/environment')
+  for (const file of files) {
+    let text: string
+    try {
+      text = readFileSync(file, 'utf8')
+    } catch {
+      continue
+    }
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed === '' || trimmed.startsWith('#')) continue
+      const eq = trimmed.indexOf('=')
+      if (eq <= 0) continue
+      const key = trimmed.slice(0, eq).trim()
+      if (!(IM_VARIABLES as readonly string[]).includes(key)) continue
+      found[key] = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '')
+    }
+  }
+  return found
+}
+
+function desktopSessionEnvironment(): NodeJS.ProcessEnv {
+  const runtime = process.env.XDG_RUNTIME_DIR?.trim() || `/run/user/${process.getuid?.() ?? 1000}`
+  // WAYLAND_DISPLAY is a socket name, DISPLAY is `:N`, and XAUTHORITY is a path:
+  // the three are not the same shape even though they come from one directory scan.
+  const waylandSocket = firstRuntimeEntry(runtime, /^wayland-[0-9]+$/)
+  const wayland = process.env.WAYLAND_DISPLAY?.trim()
+    ?? waylandSocket?.slice(waylandSocket.lastIndexOf('/') + 1)
+  const x11Socket = firstRuntimeEntry('/tmp/.X11-unix', /^X[0-9]+$/)
+  const x11 = process.env.DISPLAY?.trim()
+    ?? (x11Socket === undefined ? undefined : `:${x11Socket.slice(x11Socket.lastIndexOf('/') + 2)}`)
+  const xauth = process.env.XAUTHORITY?.trim() || firstRuntimeEntry(runtime, /^xauth_/)
+  return {
+    XDG_RUNTIME_DIR: runtime,
+    DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS?.trim() || `unix:path=${runtime}/bus`,
+    ...inputMethodEnvironment(),
+    ...wayland === undefined ? {} : { WAYLAND_DISPLAY: wayland },
+    ...x11 === undefined ? {} : { DISPLAY: x11 },
+    ...xauth === undefined ? {} : { XAUTHORITY: xauth },
+  }
+}
+
+/** Full path of the first entry in `directory` matching `pattern`. */
+function firstRuntimeEntry(directory: string, pattern: RegExp): string | undefined {
+  try {
+    const name = readdirSync(directory).find((entry: string) => pattern.test(entry))
+    return name === undefined ? undefined : join(directory, name)
+  } catch {
+    return undefined
+  }
+}
+
+function helperDataDirectory(profileDir: string): string {  const id = createHash('sha256').update(profileDir).digest('hex').slice(0, 16)
   return dshHomePath('dsh-orb', 'helper-data', id)
 }
 

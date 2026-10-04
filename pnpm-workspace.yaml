@@ -2,3 +2,5 @@ packages:
   - packages/*
 allowBuilds:
   koffi: true
+  # dbus-next falls back to node:net when this optional native socket is absent.
+  usocket: false

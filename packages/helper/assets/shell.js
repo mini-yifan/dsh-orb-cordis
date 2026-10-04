@@ -11,7 +11,6 @@ import {
 } from './icons.js'
 
 const api = window.dshOrb
-const COLLAPSE_MS = 180
 const ANIMATION_MS = 300
 const DOCK_HOVER_DELAY_MS = 800
 const DOCK_DRAG_OFF_PX = 24
@@ -255,15 +254,16 @@ function main() {
   let collapsing = false
   let skipClick = false
   let skipDockCommit = false
-  let suppressExpand = false
   let docked
   let dockHoverArmed = true
   let dockPointerInside = false
   let dockHoverTimer
-  let collapseTimer
   let collapseFrame
+  let collapseResolve
   let pointer
-  let lastOrigin
+  let moveFrame
+  let pendingDx = 0
+  let pendingDy = 0
   let permission = 'danger-full-access'
   let permissionOpen = false
   let historyOpen = false
@@ -471,8 +471,63 @@ function main() {
     applyDocked(result.docked)
   }
 
-  async function moveBall(x, y) {
-    applyDockedFrom(await api.move(x, y, !(running || asking())))
+  /**
+   * Follow the pointer while dragging.
+   *
+   * `canDock` stays false here: a docked ball used to hold its edge until the
+   * drag had travelled DOCK_DRAG_OFF past it, which reads as the ball refusing
+   * to move. Whether the ball ends up docked is decided on release, by
+   * {@link clampBall}.
+   */
+  /**
+   * Coalesce pointer deltas into one window move per frame.
+   *
+   * A drag emits pointer events far faster than the compositor applies window
+   * moves, and each request crossed the IPC boundary. The window fell behind the
+   * pointer during the drag and then snapped to wherever the pointer was released.
+   *
+   * Deltas, not positions: this page cannot name the ball's screen position —
+   * `window.screenX` and `event.screenX` disagree with the compositor's window
+   * geometry by a couple of hundred pixels here, so an absolute target dropped
+   * the window that far from the pointer.
+   */
+  function queueBallMove(dx, dy) {
+    pendingDx += dx
+    pendingDy += dy
+    if (moveFrame !== undefined) return
+    moveFrame = requestAnimationFrame(() => {
+      moveFrame = undefined
+      void sendQueuedMove()
+    })
+  }
+
+  /** Hand the accumulated delta to the host, which applies it to its own geometry. */
+  async function sendQueuedMove() {
+    const dx = pendingDx
+    const dy = pendingDy
+    pendingDx = 0
+    pendingDy = 0
+    if (dx === 0 && dy === 0) return
+    applyDockedFrom(await api.moveBy(dx, dy))
+  }
+
+  /** Apply whatever the frame queue still holds, before a one-shot correction. */
+  async function flushQueuedMove() {
+    if (moveFrame !== undefined) {
+      cancelAnimationFrame(moveFrame)
+      moveFrame = undefined
+    }
+    await sendQueuedMove()
+  }
+
+  /** Throw the queued delta away; the gesture is over or superseded. */
+  function discardQueuedMove() {
+    if (moveFrame !== undefined) {
+      cancelAnimationFrame(moveFrame)
+      moveFrame = undefined
+    }
+    pendingDx = 0
+    pendingDy = 0
   }
 
   async function clampBall() {
@@ -481,31 +536,54 @@ function main() {
 
   async function unsnapDocked() {
     if (docked === undefined) return
-    suppressExpand = true
     if (dragging) skipDockCommit = true
     applyDocked(undefined)
     applyDockedFrom(await api.unsnap())
   }
 
-  async function setExpanded(next, force = false) {
+  /**
+   * Drop a pending collapse wait. The waiter resolves `false`, so a collapse that
+   * is superseded by an expansion stops instead of hiding the panel it just opened.
+   */
+  function clearCollapse() {
+    if (collapseFrame === undefined) return
+    clearTimeout(collapseFrame)
+    collapseFrame = undefined
+    const resolve = collapseResolve
+    collapseResolve = undefined
+    resolve?.(false)
+  }
+
+  /** Resolves `true` once the panel's collapse transition has had time to play. */
+  function waitForCollapse() {
+    return new Promise((resolve) => {
+      collapseResolve = resolve
+      collapseFrame = setTimeout(() => {
+        collapseFrame = undefined
+        collapseResolve = undefined
+        resolve(true)
+      }, ANIMATION_MS)
+    })
+  }
+
+  async function setExpanded(next, force = false, animate = true) {
     if (pageClosed()) return
-    if (collapseTimer !== undefined) {
-      clearTimeout(collapseTimer)
-      collapseTimer = undefined
-    }
-    if (collapseFrame !== undefined) {
-      clearTimeout(collapseFrame)
-      collapseFrame = undefined
-    }
+    clearCollapse()
     if (next) {
       const state = await api.setExpanded(true)
       applyDocked(undefined)
       applyDirection(state)
       panel.hidden = false
+      // Commit the panel's collapsed start state (scale .18, opacity 0) before
+      // `expanded` flips it. Making both changes in one style pass let the
+      // browser skip the transition, so the panel snapped open instead of
+      // growing out of the ball.
+      void panel.offsetHeight
       expanded = true
       document.body.classList.add('expanded')
       stop.hidden = !running
       syncGif()
+      await revealBall()
       return
     }
     if (!force && (pinned || running || asking())) return
@@ -515,29 +593,60 @@ function main() {
     stop.hidden = true
     syncGif()
     if (force) {
+      // The forced path used to hide the panel outright, so clicking the ball
+      // closed it with a hard cut while opening was animated. Play the same
+      // transition first, then shrink the window underneath it. A drag passes
+      // `animate: false`: there the ball has to follow the pointer at once, and
+      // the panel is leaving because the gesture moved on, not to be watched.
+      if (animate) {
+        if (!await waitForCollapse()) return
+      } else {
+        clearCollapse()
+      }
       panel.hidden = true
+      await shrinkWindow(animate)
+      return
+    }
+    void waitForCollapse().then((played) => {
+      if (!played) return
+      panel.hidden = true
+      void shrinkWindow()
+    })
+  }
+
+  /**
+   * Shrink the window back to the ball.
+   *
+   * Growing the window is handled by the `orb:prepare` handshake; shrinking has
+   * no such round trip, and X11 keeps the old buffer's top-left corner when a
+   * window gets smaller — the ball, which sits in a corner of the panel, fell
+   * outside that crop and vanished for a frame before reappearing.
+   *
+   * A drag is the exception: hiding the ball would drop its pointer capture and
+   * end the gesture, so there the one-frame gap is left alone — the ball still
+   * ends up in the right place, it just blinks rather than jumps.
+   */
+  async function shrinkWindow(hide = true) {
+    if (!hide) {
       await api.setExpanded(false)
       return
     }
-    collapseFrame = setTimeout(() => {
-      collapseFrame = undefined
-      panel.hidden = true
-      void api.setExpanded(false)
-    }, ANIMATION_MS)
+    document.body.classList.add('layout-changing')
+    try {
+      await api.setExpanded(false)
+    } finally {
+      await revealBall()
+    }
   }
 
-  function ballGrabOffset(event) {
-    const rect = ball.getBoundingClientRect()
-    return { dx: event.clientX - rect.left, dy: event.clientY - rect.top }
-  }
-
-  function scheduleCollapse() {
-    if (pinned || running || asking() || dragging) return
-    if (collapseTimer !== undefined) clearTimeout(collapseTimer)
-    collapseTimer = setTimeout(() => {
-      collapseTimer = undefined
-      void setExpanded(false)
-    }, COLLAPSE_MS)
+  /** Bring the ball back once the compositor has drawn a frame at the new size. */
+  function revealBall() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        document.body.classList.remove('layout-changing')
+        resolve()
+      }))
+    })
   }
 
   function draftOverflows() {
@@ -1749,6 +1858,11 @@ function main() {
     if (pending === undefined || pending.id !== id) return
     pending = undefined
     syncQuestion()
+    // The question was what opened the panel; once it is answered or withdrawn
+    // the window goes back to being just the ball. Without this the panel stayed
+    // open forever, so every later window measurement was taken against a
+    // 344x444 window with a 72px ball in the corner of it.
+    if (expanded && !pinned) void setExpanded(false, true)
   }
 
   function isPrimaryButton(event) {
@@ -1762,18 +1876,16 @@ function main() {
   document.body.addEventListener('pointerenter', () => {
     dockPointerInside = true
     if (dragging || collapsing) return
-    if (docked !== undefined) {
-      if (dockHoverArmed) void unsnapDocked()
-      return
-    }
-    if (suppressExpand) return
-    void setExpanded(true)
+    // A docked tab still slides back out on hover: that handle is a thin edge
+    // strip, so reaching for it is unambiguous. The ball itself does not expand
+    // on hover — a pointer crossing it used to resize the window underneath the
+    // cursor, which both stuttered and opened the panel by accident.
+    if (docked === undefined || !dockHoverArmed) return
+    void unsnapDocked()
   })
   document.body.addEventListener('pointerleave', () => {
     dockPointerInside = false
-    suppressExpand = false
-    if (dragging || collapsing) return
-    scheduleCollapse()
+    // Nothing collapses on leave; the ball toggles the panel on click.
   })
 
   ball.addEventListener('pointerdown', (event) => {
@@ -1781,8 +1893,14 @@ function main() {
     dragging = false
     collapsing = false
     skipClick = false
-    lastOrigin = undefined
-    pointer = { ...ballGrabOffset(event), startX: event.screenX, startY: event.screenY }
+    // Only pointer *deltas* are used: this page cannot name the ball's screen
+    // position reliably, and the host applies each delta to its own geometry.
+    pointer = {
+      startX: event.screenX,
+      startY: event.screenY,
+      lastX: event.screenX,
+      lastY: event.screenY,
+    }
     ball.setPointerCapture(event.pointerId)
   })
   ball.addEventListener('pointermove', (event) => {
@@ -1791,45 +1909,46 @@ function main() {
       void finishPointer(event)
       return
     }
-    lastOrigin = { x: event.screenX - pointer.dx, y: event.screenY - pointer.dy }
+    const dx = event.screenX - pointer.lastX
+    const dy = event.screenY - pointer.lastY
+    pointer.lastX = event.screenX
+    pointer.lastY = event.screenY
     if (!dragging) {
       if (Math.hypot(event.screenX - pointer.startX, event.screenY - pointer.startY) <= 4) return
       dragging = true
-      if (running || asking()) {
-        void moveBall(lastOrigin.x, lastOrigin.y)
-        return
-      }
+      // A drag always shrinks the window to the ball first. It used to keep the
+      // panel open while a turn was running, which meant the pointer was moving
+      // a 344x444 window while aiming at a 72px ball in its corner — the ball
+      // looked like it was dragging a card around, and the grab felt offset.
       collapsing = true
       pinned = false
       document.body.classList.remove('pinned')
-      void setExpanded(false, true).then(() => {
-        collapsing = false
-        if (dragging && lastOrigin !== undefined) void moveBall(lastOrigin.x, lastOrigin.y)
-      })
+      // The ball keeps its spot on screen through the resize, so deltas measured
+      // before and after it describe the same movement; no need to wait.
+      void setExpanded(false, true, false).then(() => { collapsing = false })
       return
     }
-    if (!collapsing) void moveBall(lastOrigin.x, lastOrigin.y)
+    queueBallMove(dx, dy)
   })
   async function finishPointer(event) {
     if (dragging) {
       skipClick = true
       dragging = false
       collapsing = false
-      const origin = pointer === undefined
-        ? lastOrigin
-        : { x: event.screenX - pointer.dx, y: event.screenY - pointer.dy }
       pointer = undefined
-      lastOrigin = undefined
       const skipDock = skipDockCommit
       skipDockCommit = false
-      if (!skipDock) {
-        if (origin !== undefined) await moveBall(origin.x, origin.y)
-        await clampBall()
+      if (skipDock) {
+        discardQueuedMove()
+        return true
       }
+      // Everything the drag moved is already applied; send the last frame's
+      // delta and let the host pull the ball back inside the work area.
+      await flushQueuedMove()
+      await clampBall()
       return true
     }
     pointer = undefined
-    lastOrigin = undefined
     return false
   }
   ball.addEventListener('pointerup', async (event) => {
@@ -1844,7 +1963,15 @@ function main() {
     }
     pinned = !pinned
     document.body.classList.toggle('pinned', pinned)
+    // Both directions matter. Collapsing used to be driven by the pointer
+    // leaving the ball; now that the panel only opens on a click, the second
+    // click is the only way back — and without it the window stayed at panel
+    // size, so the ball was a small dot inside a 344x444 hit box.
     if (pinned) await setExpanded(true)
+    // Force: a click always closes the panel. Without it a running turn kept the
+    // window at panel size, which is the "ball is a giant window" complaint —
+    // the turn's progress stays visible on the ball itself.
+    else await setExpanded(false, true)
   })
   ball.addEventListener('pointercancel', (event) => { void finishPointer(event) })
   ball.addEventListener('lostpointercapture', (event) => { void finishPointer(event) })
@@ -1854,8 +1981,7 @@ function main() {
     dragging = false
     collapsing = false
     skipClick = true
-    lastOrigin = undefined
-    pointer = { dx: 0, dy: 0, startX: event.screenX, startY: event.screenY }
+    pointer = { startX: event.screenX, startY: event.screenY }
     dockTab.setPointerCapture(event.pointerId)
   })
   dockTab.addEventListener('pointermove', (event) => {
@@ -1864,7 +1990,6 @@ function main() {
       void finishPointer(event)
       return
     }
-    lastOrigin = { x: event.screenX, y: event.screenY }
     const inward = docked === 'right' ? pointer.startX - event.screenX : event.screenX - pointer.startX
     if (inward <= DOCK_DRAG_OFF_PX) return
     dragging = true
@@ -2100,6 +2225,17 @@ function main() {
     syncGif()
   })
   api.onStatus((text) => { status.textContent = typeof text === 'string' ? text : '' })
+  // The window grows only after this page says the ball is already in its new
+  // corner, and the ball stays hidden until the new frame is up: X11 paints the
+  // old 96x96 buffer into the grown window's top-left corner first, which put the
+  // ball there for a frame before it snapped to its real corner.
+  if (typeof api.onPrepare === 'function') {
+    api.onPrepare((state) => {
+      applyDirection(state)
+      document.body.classList.add('layout-changing')
+      requestAnimationFrame(() => requestAnimationFrame(() => api.prepared()))
+    })
+  }
   // The theme arrives as the helper's nativeTheme (the prefers-color-scheme
   // query above follows it); the locale switches the whole page dictionary.
   if (typeof api.onAppearance === 'function') {

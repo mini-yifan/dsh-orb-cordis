@@ -66,7 +66,7 @@ describe('orb-host plugin', () => {
     assert.equal(name, 'orb-host')
     assert.deepEqual(inject, ['webServer', 'connection', 'sessionController', 'workspaceController', 'sessions', 'agentDefaultModel'])
     assert.deepEqual(started.routes, [{ kind: 'prefix', path: '/.dsh-orb' }])
-    assert.deepEqual(started.provided, ['computerUseOverlayGuard', 'orbCodeAgentModel', 'orbCoordinateMode'])
+    assert.deepEqual(started.provided, ['computerUseOverlayGuard', 'orbCodeAgentModel', 'orbCoordinateMode', 'computerUseExcludedPids'])
     assert.equal(started.listeners.some((item) => item.name === 'user-questions/request' && item.prepend === true), true)
     assert.equal(started.listeners.some((item) => item.name === 'session/created'), true)
     assert.equal(errors.some((line) => line.includes('token=') || line.includes('secret')), false)

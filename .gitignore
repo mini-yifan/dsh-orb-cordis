@@ -61,3 +61,6 @@ Thumbs.db
 # Assembled by packages/bundle/scripts/assemble.mjs
 packages/bundle/lib/
 packages/bundle/client.js
+
+# Local probe scratch (scripts/linux-smoke.mjs writes its screenshots here)
+.probe/
