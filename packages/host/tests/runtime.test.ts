@@ -944,4 +944,66 @@ describe('ball control socket', { concurrency: 1 }, () => {
       harness.runtime.halt()
     }
   })
+
+  it('keeps draining the queued follow-up that starts right after the first turn ended', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      const sessionId = (client.messages.find((message) => message.type === 'session') as { sessionId: string }).sessionId
+      client.send({ type: 'prompt', text: '第一条' })
+      await waitFor(() => client.messages.some((message) => message.type === 'turn' && message.running === true))
+      const prompts = harness.calls.prompt.length
+
+      // onPrompt always submits with mode:'queue', and the agent loop appends turn/end and then the
+      // next turn/start back to back, so one drain sees both. finishTurn() stops the poll on
+      // turn/end and nothing re-armed it, so the poll stayed dead for the whole follow-up turn.
+      // `mark` matters: a plain `some(...)` would match the running:false that `new` already sent.
+      const mark = client.messages.length
+      harness.inject(sessionId, { type: 'turn/end', seq: 900, data: { turn: 1, reason: { kind: 'completed' } } })
+      harness.inject(sessionId, { type: 'turn/start', seq: 901, data: { turn: 2 } })
+      await waitFor(() => client.messages.slice(mark).some((message) => message.type === 'turn' && message.running === false))
+
+      // The work of the follow-up turn arrives afterwards and needs the poll to still be running.
+      harness.inject(sessionId, {
+        type: 'assistant/message',
+        seq: 902,
+        data: { turn: 2, step: 0, message: { content: [{ type: 'text', text: '第二条的结果' }] } },
+      })
+
+      await waitFor(() => client.messages.slice(mark).some((message) => message.type === 'block' && message.text === '第二条的结果'))
+      // A queued follow-up is not a second prompt: the agent loop is already running it.
+      assert.equal(harness.calls.prompt.length, prompts)
+    } finally {
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('does not leave a running turn behind when the ball is halted mid-turn', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      client.send({ type: 'prompt', text: '干活' })
+      await waitFor(() => client.messages.some((message) => message.type === 'turn' && message.running === true))
+
+      // halt() stops the only poll that can observe turn/end, so the running flag has to be
+      // cleared here. Otherwise the next ball inherits "running", spins forever, and the
+      // selection toolbar stays paused because pausedReads() still sees a running session.
+      harness.runtime.halt()
+      const reconnected = await connect(harness.runtime)
+      try {
+        const turn = reconnected.messages.find((message) => message.type === 'turn') as { running: boolean }
+        assert.equal(turn.running, false)
+      } finally {
+        reconnected.socket.end()
+      }
+    } finally {
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
 })
