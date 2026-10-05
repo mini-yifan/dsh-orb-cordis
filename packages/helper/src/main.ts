@@ -161,6 +161,19 @@ ipcMain.on('orb:new', (event) => {
   write({ type: 'new' })
 })
 
+ipcMain.on('orb:rename', (event, payload) => {
+  if (!fromBall(event)) return
+  if (typeof payload !== 'object' || payload === null) return
+  const record = payload as { sessionId?: unknown; title?: unknown }
+  if (typeof record.sessionId !== 'string' || typeof record.title !== 'string') return
+  write({ type: 'rename', sessionId: record.sessionId, title: record.title })
+})
+
+ipcMain.on('orb:delete', (event, sessionId) => {
+  if (!fromBall(event)) return
+  if (typeof sessionId === 'string') write({ type: 'delete', sessionId })
+})
+
 ipcMain.on('orb:permission', (event, preset) => {
   if (!fromBall(event)) return
   if (typeof preset === 'string') write({ type: 'permission', preset })
@@ -361,6 +374,10 @@ function deliver(message: unknown): void {
   }
   if (record.type === 'history') {
     win.webContents.send('orb:history', (record as { items?: unknown }).items)
+    return
+  }
+  if (record.type === 'history-error') {
+    win.webContents.send('orb:history-error', message)
     return
   }
   if (record.type === 'reset') {

@@ -27,6 +27,7 @@ interface Row {
   cwd: string
   origin: string
   running?: boolean
+  updatedAt?: number
   projections?: { values: Record<string, unknown> }
 }
 
@@ -45,6 +46,8 @@ interface Harness {
     prompt: { sessionId?: string; content?: { text?: string }[] }[]
     cancel: { sessionId?: string }[]
     selectModel: { sessionId?: string; model?: string; reasoningEffort?: string; saveAsDefault?: boolean }[]
+    rename: { sessionId?: string; title?: string }[]
+    archive: { sessionId?: string; stopActivity?: boolean }[]
     workspace?: { path?: string }
   }
   savedDefaults: { provider: string; model: string; reasoningEffort?: string }[]
@@ -71,7 +74,7 @@ function boot(extra: {
     writeFileSync(join(profile, 'millifraction-coordinates.json'), JSON.stringify({ enabled: extra.millifraction }))
   }
   const store = new ProfileStore(profile)
-  const calls: Harness['calls'] = { create: [], prompt: [], cancel: [], selectModel: [] }
+  const calls: Harness['calls'] = { create: [], prompt: [], cancel: [], selectModel: [], rename: [], archive: [] }
   const savedDefaults: Harness['savedDefaults'] = []
   const previousDefault = { provider: 'deepseek-official', model: 'deepseek-v4', reasoningEffort: 'high' }
   const sessions = new Map<string, { events: EventRow[]; header: { cwd: string; agentPreset: string } }>()
@@ -113,6 +116,11 @@ function boot(extra: {
         calls.workspace = request
         return { workspace: { workspaceId: 'ws-orb' } }
       },
+      async archiveSession(request: { sessionId: string; stopActivity?: boolean }) {
+        calls.archive.push(request)
+        listItems.splice(0, listItems.length, ...listItems.filter((row) => row.sessionId !== request.sessionId))
+        return { archivedSessionIds: [request.sessionId] }
+      },
     },
     sessionController: {
       async create(request: { workspaceId?: string; sessionId?: string; agentPreset?: string }) {
@@ -133,6 +141,14 @@ function boot(extra: {
       },
       async list() {
         return { items: listItems }
+      },
+      async rename(request: { sessionId: string; title: string }) {
+        calls.rename.push(request)
+        const row = listItems.find((item) => item.sessionId === request.sessionId)
+        if (row) {
+          row.projections = { values: { ...(row.projections?.values ?? {}), title: request.title } }
+        }
+        return { title: request.title, seq: 1 }
       },
       async selectModel(request: Harness['calls']['selectModel'][number]) {
         calls.selectModel.push(request)
@@ -304,6 +320,70 @@ describe('ball control socket', { concurrency: 1 }, () => {
       client.send({ type: 'open', sessionId: 'not-a-session' })
       await new Promise((resolve) => setTimeout(resolve, 40))
       assert.equal(harness.calls.create.length, creates)
+    } finally {
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('renames and archives chats from the ball history controls', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      harness.listItems.push(
+        {
+          sessionId: 'session-keep',
+          cwd: orb,
+          origin: 'user',
+          updatedAt: 2,
+          projections: { values: { agentPreset: 'computer-use', title: '旧标题' } },
+        },
+        {
+          sessionId: 'session-drop',
+          cwd: orb,
+          origin: 'user',
+          updatedAt: 1,
+          projections: { values: { agentPreset: 'computer-use', title: '待删' } },
+        },
+      )
+      client.send({ type: 'rename', sessionId: 'session-keep', title: '  新标题  ' })
+      await waitFor(() => harness.calls.rename.length === 1)
+      assert.equal(harness.calls.rename[0]?.sessionId, 'session-keep')
+      assert.equal(harness.calls.rename[0]?.title, '新标题')
+      await waitFor(() => client.messages.some((message) => {
+        if (message.type !== 'history') return false
+        const items = (message as { items?: { sessionId: string; title: string }[] }).items ?? []
+        return items.some((item) => item.sessionId === 'session-keep' && item.title === '新标题')
+      }))
+
+      const mark = client.messages.length
+      client.send({ type: 'delete', sessionId: 'session-drop' })
+      await waitFor(() => harness.calls.archive.length === 1)
+      assert.equal(harness.calls.archive[0]?.sessionId, 'session-drop')
+      assert.equal(harness.calls.archive[0]?.stopActivity, true)
+      await waitFor(() => client.messages.slice(mark).some((message) => {
+        if (message.type !== 'history') return false
+        const items = (message as { items?: { sessionId: string }[] }).items ?? []
+        return items.every((item) => item.sessionId !== 'session-drop')
+      }))
+
+      // Current chat cannot be deleted until the user switches away.
+      const openMark = client.messages.length
+      client.send({ type: 'open', sessionId: 'session-keep' })
+      await waitFor(() => client.messages.slice(openMark).some((message) => (
+        message.type === 'session' && (message as { sessionId?: string }).sessionId === 'session-keep'
+      )))
+      const archives = harness.calls.archive.length
+      const statusMark = client.messages.length
+      client.send({ type: 'delete', sessionId: 'session-keep' })
+      await waitFor(() => client.messages.slice(statusMark).some((message) => (
+        message.type === 'history-error' || (
+          message.type === 'status'
+          && typeof (message as { text?: string }).text === 'string'
+          && (message as { text: string }).text.includes('cannot delete the current chat')
+        )
+      )))
+      assert.equal(harness.calls.archive.length, archives)
     } finally {
       client.socket.end()
       harness.runtime.halt()
