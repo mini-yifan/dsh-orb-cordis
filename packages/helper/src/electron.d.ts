@@ -108,6 +108,10 @@ declare module 'electron' {
   }
 
   export const screen: {
+    on(event: 'display-added' | 'display-removed', listener: () => void): void
+    on(event: 'display-metrics-changed', listener: (event: unknown, display: Display, changedMetrics: string[]) => void): void
+    removeListener(event: 'display-added' | 'display-removed', listener: () => void): void
+    removeListener(event: 'display-metrics-changed', listener: (event: unknown, display: Display, changedMetrics: string[]) => void): void
     getPrimaryDisplay(): Display
     getAllDisplays(): Display[]
     getDisplayNearestPoint(point: { x: number; y: number }): Display
