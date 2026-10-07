@@ -600,8 +600,8 @@ function main() {
     applyDocked(result.docked)
   }
 
-  async function moveBall(x, y) {
-    pendingOrigin = { x, y }
+  async function moveBall(x, y, grab_) {
+    pendingOrigin = { x, y, grab: grab_ ?? dragGrab() }
     if (moveRequest) return
     // One move per frame: a Windows drag can deliver several pointermove events
     // per repaint, and one awaited IPC round-trip per event queues up and lets
@@ -612,7 +612,7 @@ function main() {
       while (pendingOrigin !== undefined) {
         const next = pendingOrigin
         pendingOrigin = undefined
-        const dockedState = await api.move(next.x, next.y, !(running || asking()))
+        const dockedState = await api.move(next.x, next.y, !(running || asking()), next.grab)
         // A newer position arrived while this one was in flight; its own result wins.
         if (next === pendingOrigin) applyDockedFrom(dockedState)
       }
@@ -634,11 +634,11 @@ function main() {
     if (session !== dragSession || pendingOrigin === undefined) return
     const next = pendingOrigin
     pendingOrigin = undefined
-    await moveBall(next.x, next.y)
+    await moveBall(next.x, next.y, next.grab)
   }
 
-  async function clampBall(origin) {
-    applyDockedFrom(await api.clamp(!(running || asking()), origin))
+  async function clampBall(origin, grab_) {
+    applyDockedFrom(await api.clamp(!(running || asking()), origin, grab_ ?? dragGrab()))
   }
 
   /** Window origin as the OS applied it, so pointer offsets stay exact mid-drag. */
@@ -683,6 +683,18 @@ function main() {
     const point = dragPointer(event)
     if (point === undefined) return undefined
     return { x: base.x + point.x - grab.x, y: base.y + point.y - grab.y }
+  }
+
+  /**
+   * Where inside the dragged element the cursor is holding it, while a gesture is live.
+   *
+   * Sent with every move so the helper can place the ball from its OWN absolute cursor
+   * reading. The window-relative target this file computes is unusable mid-drag: the
+   * window moves with the drag, so each target is measured in a frame the previous target
+   * has already shifted, and the ball advances about half the distance the cursor did.
+   */
+  function dragGrab() {
+    return pointerHeld ? { x: grab.x, y: grab.y } : undefined
   }
 
   function endDrag() {
@@ -2592,6 +2604,9 @@ function main() {
     const base = dragOrigin
     const moved = dragging
     const where = base === undefined ? undefined : dragPosition(event, base)
+    // Read the grab BEFORE releaseDrag clears pointerHeld, or the release would fall
+    // back to the window-relative target this gesture just proved wrong.
+    const held = dragGrab()
     skipClick = moved
     setDragging(false)
     collapsing = false
@@ -2600,11 +2615,11 @@ function main() {
     const skipDock = skipDockCommit
     skipDockCommit = false
     if (!skipDock) {
-      if (where !== undefined) await moveBall(where.x, where.y)
+      if (where !== undefined) await moveBall(where.x, where.y, held)
       // `where` may be undefined (a lost capture hands us an event with no pointer
       // coordinates); the clamp still has to run so the dock commits, because the
       // main process judges the release from the window bounds it applied.
-      await clampBall(where)
+      await clampBall(where, held)
     }
     return true
   }

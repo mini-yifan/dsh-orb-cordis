@@ -55,7 +55,7 @@ describe('floating ball drag input', () => {
   })
 
   it('coalesces moves so one frame cannot queue several IPC round-trips', async () => {
-    assert.match(shell, /pendingOrigin = \{ x, y \}\s*\n\s*if \(moveRequest\) return/)
+    assert.match(shell, /pendingOrigin = \{ x, y, grab: grab_ \?\? dragGrab\(\) \}\s*\n\s*if \(moveRequest\) return/)
     assert.match(shell, /while \(pendingOrigin !== undefined\)/)
     // The collapse that starts a drag must flush the newest position, not the one
     // that crossed the threshold, and must not fire into a later gesture.
@@ -88,7 +88,7 @@ describe('floating ball drag input', () => {
   })
 
   it('commits the dock even when a lost capture delivers no coordinates', () => {
-    assert.match(shell, /await clampBall\(where\)/)
+    assert.match(shell, /await clampBall\(where, held\)/)
     assert.match(shell, /const where = base === undefined \? undefined : dragPosition\(event, base\)/)
   })
 

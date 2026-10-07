@@ -1,11 +1,19 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('dshOrb', {
-  move(x, y, canDock) {
-    return ipcRenderer.invoke('orb:move', { x, y, canDock: canDock !== false })
+  /**
+   * Ask for a move. `grab` is where inside the dragged element the cursor is holding it.
+   *
+   * It is what lets the helper place the ball from its OWN absolute cursor reading: the
+   * `x`/`y` here are window-relative, so during a drag they are measured against the very
+   * window the drag is moving. Feeding those back moves the ball about half the distance,
+   * because each move also shifts the frame the next one is measured in.
+   */
+  move(x, y, canDock, grab) {
+    return ipcRenderer.invoke('orb:move', { x, y, canDock: canDock !== false, grab })
   },
-  clamp(canDock, origin) {
-    return ipcRenderer.invoke('orb:clamp', { canDock: canDock !== false, origin })
+  clamp(canDock, origin, grab) {
+    return ipcRenderer.invoke('orb:clamp', { canDock: canDock !== false, origin, grab })
   },
   origin() {
     return ipcRenderer.invoke('orb:origin')

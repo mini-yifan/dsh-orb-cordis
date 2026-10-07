@@ -176,16 +176,44 @@ ipcMain.handle('orb:expand', (event, expanded) => {
 
 ipcMain.handle('orb:move', (event, request) => {
   if (!fromBall(event) || !placement || !isMove(request)) return { docked: undefined }
-  return remember(placement.move(request.x, request.y, request.canDock))
+  const ball = ballOriginForMove(request, { x: request.x, y: request.y })
+  if (ball === undefined) return { docked: undefined }
+  return remember(placement.move(ball.x, ball.y, request.canDock))
 })
 
 ipcMain.handle('orb:clamp', async (event, payload) => {
   if (!fromBall(event) || !placement) return { docked: undefined }
   const request = readClampRequest(payload)
-  const result = await placement.clamp(request.canDock, request.origin)
-  logDockDiagnostics(result, request.origin)
+  // A clamp carries the ball position the renderer measured, and optionally the grab.
+  // With a grab the helper recomputes the release point from the real cursor; without
+  // one the reported origin stands, which is what an older page sends.
+  const ball = ballOriginForMove(request, request.origin)
+  const result = await placement.clamp(request.canDock, ball)
+  logDockDiagnostics(result, ball ?? request.origin)
   return remember(result)
 })
+
+/**
+ * The ball origin a move or release asked for, in DIP screen coordinates.
+ *
+ * A drag reports where the cursor holds the ball, not where the ball should be: the
+ * renderer's own window-relative numbers are measured against the window the drag is
+ * moving, so a target built from them chases its own displacement and lands about half
+ * way. The cursor reading here is absolute, and `screen.getCursorScreenPoint()` is the
+ * freshest one available.
+ *
+ * `fallback` is the renderer's own estimate, used when no grab came with the call: an
+ * older preload, a programmatic move, or a release that lost its pointer coordinates.
+ */
+function ballOriginForMove(
+  request: { grab?: { x: number; y: number } },
+  fallback?: { x: number; y: number },
+): { x: number; y: number } | undefined {
+  const grab = request.grab
+  if (grab === undefined) return fallback
+  const cursor = screen.getCursorScreenPoint()
+  return { x: cursor.x - grab.x, y: cursor.y - grab.y }
+}
 
 /** The renderer offsets pointer coordinates by this instead of `event.screenX`. */
 ipcMain.handle('orb:origin', (event) => {
@@ -738,6 +766,10 @@ function chromeWindowIds(): number[] {
  */
 function applyStrip(present: boolean): void {
   if (!placement) return
+  // Deliberately NOT through `remember`: the cursor poll keeps its own copy of the
+  // expand state, and letting a bookmark arriving refresh it would make the strip
+  // respond to a bare hover. The strip has always been something you act on, and the
+  // poll's picture of the ball and the panel is enough for the drag and hover it drives.
   const state = placement.setStrip(present ? AGENT_STRIP_WIDTH : 0)
   if (win && !win.isDestroyed()) win.webContents.send('orb:expand-state', state)
 }
@@ -775,23 +807,38 @@ function write(message: unknown): void {
   live.write(`${JSON.stringify(message)}\n`)
 }
 
-function isMove(value: unknown): value is { x: number; y: number; canDock: boolean } {
+function isMove(value: unknown): value is { x: number; y: number; canDock: boolean; grab?: { x: number; y: number } } {
   if (typeof value !== 'object' || value === null) return false
-  const point = value as { x?: unknown; y?: unknown; canDock?: unknown }
+  const point = value as { x?: unknown; y?: unknown; canDock?: unknown; grab?: unknown }
   return typeof point.x === 'number' && typeof point.y === 'number'
     && Number.isFinite(point.x) && Number.isFinite(point.y)
     && Math.abs(point.x) <= 100_000 && Math.abs(point.y) <= 100_000
     && typeof point.canDock === 'boolean'
+    && (point.grab === undefined || isGrab(point.grab))
+}
+
+/** A cursor offset inside the dragged element: small, finite, non-negative. */
+function isGrab(value: unknown): value is { x: number; y: number } {
+  if (typeof value !== 'object' || value === null) return false
+  const point = value as { x?: unknown; y?: unknown }
+  return typeof point.x === 'number' && typeof point.y === 'number'
+    && Number.isFinite(point.x) && Number.isFinite(point.y)
+    && point.x >= -64 && point.x <= 512 && point.y >= -64 && point.y <= 512
 }
 
 /** Accepts the legacy bare `canDock` boolean and the `{ canDock, origin }` payload. */
-function readClampRequest(value: unknown): { canDock: boolean; origin?: { x: number; y: number } } {
+function readClampRequest(value: unknown): {
+  canDock: boolean
+  origin?: { x: number; y: number }
+  grab?: { x: number; y: number }
+} {
   if (typeof value === 'boolean') return { canDock: value }
   if (typeof value !== 'object' || value === null) return { canDock: true }
-  const record = value as { canDock?: unknown; origin?: unknown }
+  const record = value as { canDock?: unknown; origin?: unknown; grab?: unknown }
   const canDock = record.canDock !== false
   const origin = isPoint(record.origin) ? { x: record.origin.x, y: record.origin.y } : undefined
-  return { canDock, origin }
+  const grab = isGrab(record.grab) ? { x: record.grab.x, y: record.grab.y } : undefined
+  return { canDock, origin, grab }
 }
 
 function isPoint(value: unknown): value is { x: number; y: number } {
