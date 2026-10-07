@@ -12,12 +12,17 @@
   --prompt-pad: calc((var(--ball) - var(--prompt-line)) / 2);
   --composer-max: calc(var(--ball) + var(--prompt-line) * 3);
   --chrome: 12px;
-  /* The panel is no longer pinned to the window `inset`: the ball owns a fixed window
-   * position (see `#ball`) and the panel slides to the side of it the direction names.
-   * The window is FIXED_WINDOW_SIZE (592x792) and the ball sits at BALL_ANCHOR
-   * (260, 360), so each direction still reaches its own panel rectangle without moving
-   * the window origin — a moved origin is the stale frame Windows copies. */
-  --panel-left: 12px;
+  /* The panel is not pinned to the window `inset`: the ball owns a fixed window position
+   * (see `#ball`) and the panel slides to the side of it the direction names.
+   * The window is FIXED_WINDOW_SIZE (1008x792) with the ball at BALL_ANCHOR (468, 360) in
+   * the centre, so `--panel-left` is either CHROME_INSET + AGENT_STRIP_WIDTH (220, panel
+   * left of the ball) or BALL_ANCHOR.x (468, panel right of it); `--panel-top` is 12 or
+   * BALL_ANCHOR.y (360). Every direction reaches its own panel rectangle without moving
+   * the window origin — a moved origin is the stale frame Windows copies.
+   * The 208px + chrome each side of the ball that the panel does NOT use is the bookmark
+   * strip: the strip reserve is part of the constant window, so a bookmark appearing or
+   * clearing never re-bounds it either. */
+  --panel-left: 220px;
   --panel-top: 12px;
   --panel-w: 320px;
   --panel-h: 420px;
@@ -40,6 +45,14 @@
   --error: #a33;
   --ball-shadow: 0 3px 8px rgba(17, 17, 17, 0.32);
   --panel-shadow: 0 4px 8px rgba(17, 17, 17, 0.22);
+  /* Bookmark strip: reserved window width and per-conversation attribution hues. */
+  --strip-w: 0px;
+  /* How far the chips slide underneath the panel edge: the tucked-ribbon look. */
+  --strip-tuck: 12px;
+  --agent-c0: #3573d0;
+  --agent-c1: #0f9b8e;
+  --agent-c2: #d9730d;
+  --agent-c3: #7a5af5;
 }
 
 body[data-ds-dark-theme] {
@@ -52,6 +65,10 @@ body[data-ds-dark-theme] {
   --error: rgb(242, 90, 90);
   --ball-shadow: 0 3px 8px rgba(0, 0, 0, 0.48);
   --panel-shadow: 0 4px 8px rgba(0, 0, 0, 0.45);
+  --agent-c0: #6ea8ff;
+  --agent-c1: #45d0c2;
+  --agent-c2: #ffb066;
+  --agent-c3: #b39cff;
 }
 
 html,
@@ -106,11 +123,11 @@ body {
  * correct. One axis per rule makes that class of bug unrepresentable, and no rule here
  * touches a physical left/top/right/bottom. */
 body.expand-left {
-  --panel-left: 12px;
+  --panel-left: 220px;
 }
 
 body.expand-right {
-  --panel-left: 260px;
+  --panel-left: 468px;
 }
 
 body.expand-up {
@@ -145,6 +162,149 @@ body.expanded #panel {
   pointer-events: auto;
   border: 1px solid var(--border);
   box-shadow: var(--panel-shadow);
+}
+
+/* The strip needs no panel rule: the panel is placed by `direction` alone and the strip
+ * reserve is already in the window, so the strip just fills the side the panel leaves
+ * free. A window that grew for the strip would move its origin (the flicker) and shift
+ * the panel out from under a pointer that is already on it. */
+
+#agent-strip {
+  position: absolute;
+  /* Start below the panel's rounded corner, like ribbons tucked behind a card. */
+  top: calc(var(--chrome) + var(--panel-radius));
+  bottom: var(--chrome);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+#agent-strip[hidden] {
+  display: none;
+}
+
+/* `.strip-left` means the strip hugs the LEFT window edge, i.e. the panel opened to the
+ * right of the ball and this is the side it left free. The container spans the window
+ * edge to --strip-tuck past the panel's far edge, so the chips tuck behind the panel
+ * instead of floating beside it and align against it: `flex-end` on the left, so they
+ * grow rightward under the panel; `flex-start` on the right, so they grow leftward.
+ *
+ * The width is `--strip-w` + chrome + tuck, the same 232px upstream used. The window is
+ * symmetric about the ball and the panel's far edge sits exactly `--strip-w` + chrome in
+ * from its own window edge, so measuring from the window edge needs no panel term and
+ * stays correct in both directions. */
+body.has-strip.strip-left #agent-strip {
+  left: 0;
+  width: calc(var(--strip-w) + var(--chrome) + var(--strip-tuck));
+  align-items: flex-end;
+}
+
+body.has-strip.strip-right #agent-strip {
+  right: 0;
+  width: calc(var(--strip-w) + var(--chrome) + var(--strip-tuck));
+  align-items: flex-start;
+}
+
+.agent-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  flex: none;
+  width: 64px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--agent-color, var(--pin));
+  border-radius: 10px;
+  background: var(--white);
+  color: var(--black);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(17, 17, 17, 0.18);
+  /* Shrinking waits out the pointer leaving; growing is immediate. */
+  transition: width 160ms ease 200ms;
+}
+
+.agent-chip:hover,
+.agent-chip:focus-visible {
+  width: 100%;
+  transition-delay: 0ms;
+}
+
+.agent-chip-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--agent-color, var(--pin));
+}
+
+.agent-chip[data-state="stopped"] .agent-chip-status {
+  color: var(--pin);
+}
+
+.agent-chip[data-state="ended"] .agent-chip-status {
+  color: var(--error);
+}
+
+.agent-spinner {
+  width: 11px;
+  height: 11px;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--agent-color, var(--pin)) 30%, transparent);
+  border-top-color: var(--agent-color, var(--pin));
+  border-radius: 50%;
+  animation: agent-spin 900ms linear infinite;
+}
+
+@keyframes agent-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-chip-time {
+  flex: none;
+  font-size: 11px;
+  color: var(--pin);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-chip-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.agent-chip:hover .agent-chip-name,
+.agent-chip:focus-visible .agent-chip-name {
+  opacity: 1;
+}
+
+.agent-chip-unread {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--error);
 }
 
 body.expand-down #panel {
@@ -464,6 +624,10 @@ body.expand-left #selection-chip {
 body.expand-right #selection-chip {
   right: 16px;
 }
+
+/* #selection-chip is a child of #panel, and `100%` is the panel: 320px wide in every
+ * state, with the strip reserve outside it. No strip-side variant is needed. (Upstream
+ * shifted it by `--strip-w` while the panel was still the whole window.) */
 
 body.expand-up #selection-chip {
   bottom: var(--composer-height);
@@ -873,11 +1037,13 @@ body.composer-capped #prompt::before {
 #ball {
   position: absolute;
   z-index: 1;
-  /* BALL_ANCHOR (260, 360) = 12 + 320 - 72 and 12 + 420 - 72. The ball is FIXED in the
-   * window and the panel moves around it, so expand/collapse never moves the window
-   * origin and no direction rule touches this element. */
-  top: calc(var(--chrome) + 348px);
-  left: calc(var(--chrome) + 248px);
+  /* BALL_ANCHOR: dead centre of FIXED_WINDOW_SIZE (1008x792), i.e. (1008 - 72) / 2 and
+   * (792 - 72) / 2. The ball is FIXED in the window and the panel moves around it, so
+   * expand/collapse never moves the window origin and no direction rule touches this
+   * element. Mirrored by BALL_ANCHOR in src/geometry.ts; tests/ball-corner-css.test.ts
+   * keeps the two in step. */
+  left: 468px;
+  top: 360px;
   width: var(--ball);
   height: var(--ball);
   border: 0;
@@ -1002,6 +1168,9 @@ body.expand-left #stop {
 body.expand-right #stop {
   left: calc(var(--panel-left) + var(--panel-w) - 58px);
 }
+
+/* #stop is a window child but measured from `--panel-left`/`--panel-top`, which already
+ * name the panel's own side, so the strip reserve needs no variant here either. */
 
 body.expand-up #stop {
   top: calc(var(--panel-top) + var(--panel-h) - 58px);

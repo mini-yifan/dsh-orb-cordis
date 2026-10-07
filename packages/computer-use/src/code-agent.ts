@@ -14,6 +14,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { SessionCreateRequest, SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types'
 import { watchCodeAgentCompletion } from './code-agent-completion.ts'
+import { sharedCodeAgentRegistry } from './code-agent-registry.ts'
 import { attachUnattendedCodeAgent } from './code-agent-unattended.ts'
 import { selectModelKeepDefault, type SelectModelKeepDefaultHost } from './select-model.ts'
 import type {} from '@deepseek-ai/dsh-agent'
@@ -214,6 +215,7 @@ function rememberCaller(
   callerId: SessionId,
   byCaller: Map<SessionId, Map<SessionId, Delegation>>,
   remembered: WeakSet<Agent>,
+  registry: { dropCaller(callerId: SessionId): void },
 ): void {
   if (remembered.has(liveCaller)) return
   remembered.add(liveCaller)
@@ -221,6 +223,7 @@ function rememberCaller(
     liveCaller.ctx.effect(() => {
       return () => {
         byCaller.delete(callerId)
+        registry.dropCaller(callerId)
         remembered.delete(liveCaller)
       }
     })
@@ -260,6 +263,10 @@ export function apply(ctx: Context): void {
   const byCaller = new Map<SessionId, Map<SessionId, Delegation>>()
   const rememberedCallers = new WeakSet<Agent>()
   const unattended = new WeakSet<Agent>()
+  // Provided app-level (code-agent-registry's apply): a provide from inside
+  // this preset fails the official mount audit ("Preset services require
+  // isolate realms: codeAgentRegistry").
+  const registry = sharedCodeAgentRegistry()
 
   ctx.tools.register(defineTool({
     name: TOOL_NAME,
@@ -385,7 +392,7 @@ export function apply(ctx: Context): void {
       const liveCaller = agents?.get(caller.id)
       const code = agents?.get(sessionId)
       if (liveCaller !== undefined) {
-        rememberCaller(liveCaller, caller.id, byCaller, rememberedCallers)
+        rememberCaller(liveCaller, caller.id, byCaller, rememberedCallers, registry)
       }
       if (code !== undefined) attachUnattendedCodeAgent(code, unattended)
       let watch: AbortController | undefined
@@ -400,6 +407,15 @@ export function apply(ctx: Context): void {
         })
       }
       recordDelegation(delegations, sessionId, task, cwd, watch)
+      registry.record({
+        sessionId,
+        callerId: caller.id,
+        task,
+        cwd,
+        requestId,
+        ...(watch === undefined ? {} : { watch }),
+        ...(code === undefined ? {} : { agent: code }),
+      })
       return { accepted: true, created, session_id: sessionId }
     },
   }))
@@ -504,6 +520,7 @@ export function apply(ctx: Context): void {
         )
       }
       for (const watch of known.watches.splice(0)) watch.abort()
+      registry.markStopped(sessionId)
       ctx.get('agents')?.get(sessionId)?.cancel({ kind: 'user' })
       return { accepted: true, session_id: sessionId }
     },

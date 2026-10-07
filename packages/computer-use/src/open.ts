@@ -134,6 +134,12 @@ export async function resolveFinderOpen(
     : trimmed.startsWith('~/')
       ? join(home, trimmed.slice(2))
       : trimmed
+  // Blacklist the input before existence: `/etc` never realpaths on Windows, and
+  // a system path must read as forbidden there too. The check below still runs on
+  // the resolved path so a symlink cannot sneak past the blacklist.
+  if (isForbiddenOpenPath(expanded)) {
+    throw new Error(`computer-use: opening a system path is forbidden: ${expanded}`)
+  }
   let resolved: string
   try {
     resolved = await realpath(expanded)

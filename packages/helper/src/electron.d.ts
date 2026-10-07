@@ -9,6 +9,7 @@ declare module 'electron' {
   interface Display {
     bounds: Rectangle
     workArea: Rectangle
+    scaleFactor: number
   }
 
   interface WebContents {

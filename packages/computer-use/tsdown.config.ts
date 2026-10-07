@@ -18,11 +18,12 @@ const external = [
   '@deepseek-ai/dsh-user-questions',
 ]
 
-/** Bundle the GUI plugin and the code-agent entry. Leave Host packages external. */
+/** Bundle the GUI plugin, the code-agent entry, and the registry provider. Leave Host packages external. */
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'code-agent': 'src/code-agent.ts',
+    'code-agent-registry': 'src/code-agent-registry.ts',
   },
   outDir: 'lib',
   format: ['esm'],

@@ -1,8 +1,25 @@
 {
   "name": "dsh-orb",
-  "version": "0.0.0",
+  "version": "0.1.4",
   "type": "module",
   "description": "Installable Orb bundle. Inserts the Computer Use preset and the floating-ball host.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "computer-use",
+    "floating-ball",
+    "desktop"
+  ],
+  "homepage": "https://github.com/mini-yifan/dsh-orb-cordis#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mini-yifan/dsh-orb-cordis.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mini-yifan/dsh-orb-cordis/issues"
+  },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
@@ -22,6 +39,10 @@
     "./computer-use/code-agent": {
       "types": "./dist/computer-use/code-agent.d.ts",
       "default": "./dist/computer-use/code-agent.js"
+    },
+    "./computer-use/code-agent-registry": {
+      "types": "./dist/computer-use/code-agent-registry.d.ts",
+      "default": "./dist/computer-use/code-agent-registry.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"

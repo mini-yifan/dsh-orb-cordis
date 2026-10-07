@@ -36,6 +36,26 @@ describe('profile preferences', () => {
     assert.equal(store.ballEnabled(), true)
     assert.equal(store.avatarVersion(), 0)
     assert.equal(store.readAvatar(), undefined)
+    // Nothing has been checked yet: no remembered version, and the automatic check is on.
+    assert.deepEqual(store.updateRecord(), { checkedAt: 0, latestVersion: '', notifiedVersion: '', autoCheck: true })
+  })
+
+  it('remembers the last update check and survives a half-written file', () => {
+    const path = dir('update')
+    const store = new ProfileStore(path)
+    store.setUpdateRecord({ checkedAt: 1700000000000, latestVersion: '0.2.0', notifiedVersion: '0.2.0' })
+    const stored = JSON.parse(readFileSync(join(path, 'orb-update.json'), 'utf8')) as { autoCheck: boolean }
+    assert.equal(stored.autoCheck, true, 'an untouched field keeps its default')
+    assert.deepEqual(new ProfileStore(path).updateRecord(), {
+      checkedAt: 1700000000000,
+      latestVersion: '0.2.0',
+      notifiedVersion: '0.2.0',
+      autoCheck: true,
+    })
+    store.setUpdateRecord({ autoCheck: false })
+    assert.equal(new ProfileStore(path).updateRecord().autoCheck, false)
+    writeFileSync(join(path, 'orb-update.json'), '{')
+    assert.equal(new ProfileStore(path).updateRecord().latestVersion, '')
   })
 
   it('keeps the two model tracks and the selection language apart', () => {
@@ -63,10 +83,20 @@ describe('profile preferences', () => {
     }
     assert.equal(selection.enabled, true)
     assert.equal(selection.translateTargetLanguage, 'en')
-    assert.equal(store.coordinateMode(), 'pixel')
+    // With no profile file, the default follows the platform (pixel on macOS, millifraction on Windows).
+    assert.equal(store.coordinateMode(), defaultMillifraction() ? 'millifraction' : 'pixel')
     store.setMillifractionEnabled(true)
     assert.equal(store.coordinateMode(), 'millifraction')
     assert.equal(JSON.parse(readFileSync(join(path, 'millifraction-coordinates.json'), 'utf8')).enabled, true)
+  })
+
+  it('keeps the observation ribbon on by default and remembers it switched off', () => {
+    const path = dir('observation-frame')
+    const store = new ProfileStore(path)
+    assert.equal(store.observationFrameEnabled(), true)
+    store.setObservationFrameEnabled(false)
+    assert.equal(JSON.parse(readFileSync(join(path, 'observation-frame.json'), 'utf8')).enabled, false)
+    assert.equal(new ProfileStore(path).observationFrameEnabled(), false)
   })
 
   it('turns the ball off in ball-enabled.json and accepts only gif, png, and webp avatars', () => {

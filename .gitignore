@@ -61,3 +61,6 @@ Thumbs.db
 # Assembled by packages/bundle/scripts/assemble.mjs
 packages/bundle/lib/
 packages/bundle/client.js
+
+# Local-only release manual (handbook, never publish)
+RELEASE.md

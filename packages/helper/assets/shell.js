@@ -27,6 +27,8 @@ const COMPOSER_LINE_PX = 20
 const COMPOSER_MAX_PX = COMPOSER_MIN_PX + COMPOSER_LINE_PX * 3
 const RECOMMENDED_SUFFIX = /\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$/i
 const PERMISSION_PRESETS = ['read-only', 'workspace-write', 'danger-full-access']
+const AGENT_STOP_ICON = '<rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor" stroke="none"></rect>'
+const AGENT_ALERT_ICON = '<path d="M8 2.2L14.6 13.4H1.4L8 2.2Z" stroke="currentColor" stroke-linejoin="round"></path><path d="M8 6.6V9.4" stroke="currentColor"></path><path d="M8 11.4V11.5" stroke="currentColor" stroke-linecap="round"></path>'
 
 const zh = {
   title: '桌面 agent',
@@ -71,22 +73,30 @@ const zh = {
   tccFooter: '打开开关后，请完全退出 {name} 再打开。只关主窗口无效。插件不能替你重启官方应用。',
   tccLater: '稍后',
   tccDismiss: '关闭',
-  voiceStart: '语音输入',
-  voiceStop: '停止并识别',
-  voiceCancel: '取消录音',
-  voiceRequesting: '请允许使用麦克风…',
-  voiceRecording: '正在录音…',
-  voiceTranscribing: '识别中…',
-  voiceEmpty: '未识别到语音',
-  voiceCancelled: '已取消语音输入。',
-  voiceUnavailable: '当前配置未启用语音输入。',
-  voiceNotReady: '语音模型尚未就绪。请在主窗口完成语音设置后重试。',
-  voicePermission: '麦克风权限未开启。请在系统设置中允许后重试。',
-  voiceInterrupted: '录音中断，请重试。',
-  voiceFailed: '语音识别失败：{message}',
-  voiceTooLarge: '录音过长，请缩短后重试。',
-  voiceRetry: '重试语音输入',
-  voiceInserted: '已将识别文字插入草稿。',
+        voiceStart: '语音输入',
+        voiceStop: '停止并识别',
+        voiceCancel: '取消录音',
+        voiceRequesting: '请允许使用麦克风…',
+        voiceRecording: '正在录音…',
+        voiceTranscribing: '识别中…',
+        voiceEmpty: '未识别到语音',
+        voiceCancelled: '已取消语音输入。',
+        voiceUnavailable: '当前配置未启用语音输入。',
+        voiceNotReady: '语音模型尚未就绪。请在主窗口完成语音设置后重试。',
+        voicePermission: '麦克风权限未开启。请在系统设置中允许后重试。',
+        voiceInterrupted: '录音中断，请重试。',
+        voiceFailed: '语音识别失败：{message}',
+        voiceTooLarge: '录音过长，请缩短后重试。',
+        voiceRetry: '重试语音输入',
+        voiceInserted: '已将识别文字插入草稿。',
+        agentRunning: '运行中',
+        agentDone: '已完成',
+        agentStopped: '已停止',
+        agentEnded: '已结束',
+        agentFrom: '来自对话',
+        agentDir: '工作目录',
+        agentOpen: '点击在主窗口打开',
+        noticeTitle: '后台任务报告',
 }
 const en = {
   title: 'Desktop agent',
@@ -131,22 +141,30 @@ const en = {
   tccFooter: 'After the switches are on, quit {name} completely and open it again. Closing the main window does not quit. This plugin cannot restart the official app.',
   tccLater: 'Later',
   tccDismiss: 'Dismiss',
-  voiceStart: 'Voice input',
-  voiceStop: 'Stop and transcribe',
-  voiceCancel: 'Cancel recording',
-  voiceRequesting: 'Allow microphone access…',
-  voiceRecording: 'Recording…',
-  voiceTranscribing: 'Transcribing…',
-  voiceEmpty: 'No speech recognized',
-  voiceCancelled: 'Voice input cancelled.',
-  voiceUnavailable: 'Voice input is unavailable in this profile.',
-  voiceNotReady: 'The speech model is not ready. Open the main window and finish its setup.',
-  voicePermission: 'Microphone access is off. Allow it in system settings and try again.',
-  voiceInterrupted: 'Recording was interrupted. Please try again.',
-  voiceFailed: 'Speech recognition failed: {message}',
-  voiceTooLarge: 'The recording is too long. Try a shorter one.',
-  voiceRetry: 'Retry voice input',
-  voiceInserted: 'Inserted the transcript into the draft.',
+        voiceStart: 'Voice input',
+        voiceStop: 'Stop and transcribe',
+        voiceCancel: 'Cancel recording',
+        voiceRequesting: 'Allow microphone access…',
+        voiceRecording: 'Recording…',
+        voiceTranscribing: 'Transcribing…',
+        voiceEmpty: 'No speech recognized',
+        voiceCancelled: 'Voice input cancelled.',
+        voiceUnavailable: 'Voice input is unavailable in this profile.',
+        voiceNotReady: 'The speech model is not ready. Open the main window and finish its setup.',
+        voicePermission: 'Microphone access is off. Allow it in system settings and try again.',
+        voiceInterrupted: 'Recording was interrupted. Please try again.',
+        voiceFailed: 'Speech recognition failed: {message}',
+        voiceTooLarge: 'The recording is too long. Try a shorter one.',
+        voiceRetry: 'Retry voice input',
+        voiceInserted: 'Inserted the transcript into the draft.',
+        agentRunning: 'Running',
+        agentDone: 'Done',
+        agentStopped: 'Stopped',
+        agentEnded: 'Ended',
+        agentFrom: 'From chat',
+        agentDir: 'Folder',
+        agentOpen: 'Click to open in the main window',
+        noticeTitle: 'Background task report',
 }
 
 const PROMPT_LIMIT = 8000
@@ -278,6 +296,7 @@ function main() {
   const questionContinue = document.querySelector('#question-continue')
   const questionCancel = document.querySelector('#question-cancel')
   const historyList = document.querySelector('#history-list')
+  const agentStrip = document.querySelector('#agent-strip')
   const status = document.querySelector('#status')
   const prompt = document.querySelector('#prompt')
   const composer = document.querySelector('#composer')
@@ -328,7 +347,24 @@ function main() {
   let collapseTimer
   let collapseFrame
   let pointer
-  let lastOrigin
+  /**
+   * Drag bookkeeping. `pointerHeld` spans the whole time a button is down, so
+   * enter/leave cannot flip the panel while a gesture is in flight; the pointer
+   * origin is derived from the OS window position plus `clientX/Y` (never from
+   * `screenX`, which Chromium computes off a cached window origin and therefore
+   * reports stale values exactly while the ball is moving under the cursor).
+   */
+  let pointerHeld = false
+  let pointerPointerId
+  let grab = { x: 0, y: 0 }
+  let grabAt = { x: 0, y: 0 }
+  let dragOrigin
+  let dragStart
+  /** Bumped per gesture so a collapse flush cannot apply a stale position. */
+  let dragSession = 0
+  let pendingOrigin
+  let moveRequest
+  /** Last pointer position inside the window, for re-answering the region question. */
   let lastPointer
   // The helper drives hover from its own cursor poll when the preload offers it. With the
   // window panel-sized in both states, `pointerenter` fires for every pixel of transparent
@@ -338,6 +374,8 @@ function main() {
   let permission = 'danger-full-access'
   let permissionOpen = false
   let historyOpen = false
+  let agentItems = []
+  let agentClock
   let pending
   let sessionId = ''
   let avatarSrc = 'deepseek-avatar-square.gif'
@@ -398,6 +436,7 @@ function main() {
     applyStaticText()
     renderPermission()
     renderHistory()
+    renderAgentStrip()
     if (pending !== undefined) renderQuestion()
     if (tccGateVisible && lastTccStatus) showTccGate(lastTccStatus)
     refreshProcessLabel(processGroup)
@@ -410,6 +449,11 @@ function main() {
       const block = blockData.get(key)
       if (block === undefined) continue
       if (block.kind === 'user') continue
+      if (block.kind === 'notice') {
+        const title = node.querySelector('.think-title')
+        if (title !== null) title.textContent = messages.noticeTitle
+        continue
+      }
       if (block.kind === 'reasoning') {
         node.querySelector('.think-title').textContent = messages.think
         node.querySelector('.visually-hidden').textContent = block.running ? messages.running : ''
@@ -506,6 +550,16 @@ function main() {
     document.body.classList.toggle('expand-right', state.horizontal === 'right')
     document.body.classList.toggle('expand-up', state.vertical === 'up')
     document.body.classList.toggle('expand-down', state.vertical === 'down')
+    // The strip rides the expansion side: the window's strip reserve is on that same
+    // side, past the panel's far edge, so `horizontal` already names it. The panel cannot
+    // shift to make room, because its position is pinned by the ball anchor: the reserve
+    // is part of the constant window, so a bookmark arriving re-bounds nothing and the
+    // panel stays put under a pointer that is already on it.
+    const strip = typeof state.strip === 'number' && Number.isFinite(state.strip) ? Math.max(0, Math.round(state.strip)) : 0
+    document.body.classList.toggle('has-strip', strip > 0)
+    document.body.classList.toggle('strip-left', strip > 0 && state.horizontal === 'left')
+    document.body.classList.toggle('strip-right', strip > 0 && state.horizontal === 'right')
+    document.body.style.setProperty('--strip-w', `${strip}px`)
   }
 
   function clearDockHoverTimer() {
@@ -547,11 +601,118 @@ function main() {
   }
 
   async function moveBall(x, y) {
-    applyDockedFrom(await api.move(x, y, !(running || asking())))
+    pendingOrigin = { x, y }
+    if (moveRequest) return
+    // One move per frame: a Windows drag can deliver several pointermove events
+    // per repaint, and one awaited IPC round-trip per event queues up and lets
+    // the ball fall behind the cursor. A request that lands while a move is in
+    // flight replaces the pending one instead of queueing behind it.
+    moveRequest = true
+    try {
+      while (pendingOrigin !== undefined) {
+        const next = pendingOrigin
+        pendingOrigin = undefined
+        const dockedState = await api.move(next.x, next.y, !(running || asking()))
+        // A newer position arrived while this one was in flight; its own result wins.
+        if (next === pendingOrigin) applyDockedFrom(dockedState)
+      }
+    } finally {
+      moveRequest = false
+      pendingOrigin = undefined
+    }
   }
 
-  async function clampBall() {
-    applyDockedFrom(await api.clamp(!(running || asking())))
+  /**
+   * Latest position the finger asked for, applied when a busy loop (the panel
+   * collapsing at drag start) finishes. Without it the moves that land during the
+   * collapse are dropped and the ball starts from a stale spot.
+   */
+  async function moveBallWhenIdle() {
+    const session = dragSession
+    while (moveRequest) await new Promise((resolve) => { setTimeout(resolve, 8) })
+    // The gesture may have ended (or a new one begun) while the collapse ran.
+    if (session !== dragSession || pendingOrigin === undefined) return
+    const next = pendingOrigin
+    pendingOrigin = undefined
+    await moveBall(next.x, next.y)
+  }
+
+  async function clampBall(origin) {
+    applyDockedFrom(await api.clamp(!(running || asking()), origin))
+  }
+
+  /** Window origin as the OS applied it, so pointer offsets stay exact mid-drag. */
+  function windowOrigin() {
+    if (dragOrigin !== undefined) return dragOrigin
+    // A page paired with an older preload has no bridge method; the drag then keeps
+    // its previous input path instead of failing outright.
+    if (typeof api.origin !== 'function') return Promise.resolve(undefined)
+    return api.origin().then((point) => {
+      if (point !== undefined && point !== null) dragOrigin = point
+      return dragOrigin
+    })
+  }
+
+  /**
+   * Start a gesture on `element`: freeze the window origin, remember where inside
+   * the element the cursor grabbed, and capture the pointer so the drag survives
+   * the window moving out from under the cursor.
+   */
+  function beginDrag(element, event) {
+    const rect = element.getBoundingClientRect()
+    grab = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    grabAt = { x: event.clientX, y: event.clientY }
+    pointerPointerId = event.pointerId
+    pointerHeld = true
+    dragSession += 1
+    dragOrigin = undefined
+    dragStart = undefined
+    void windowOrigin()
+    element.setPointerCapture(event.pointerId)
+  }
+
+  /** Pointer coordinates while a gesture is live; undefined once it ended. */
+  function dragPointer(event) {
+    if (pointerPointerId === undefined) return undefined
+    if (event.pointerId !== undefined && event.pointerId !== pointerPointerId) return undefined
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return undefined
+    return { x: event.clientX, y: event.clientY }
+  }
+
+  function dragPosition(event, base) {
+    const point = dragPointer(event)
+    if (point === undefined) return undefined
+    return { x: base.x + point.x - grab.x, y: base.y + point.y - grab.y }
+  }
+
+  function endDrag() {
+    pointerHeld = false
+    pointerPointerId = undefined
+    pointer = undefined
+  }
+
+  // A gesture that ends outside the window (or while the compositor holds the
+  // capture) must never leave the panel locked shut.
+  window.addEventListener('blur', () => {
+    if (pointerHeld) releaseDrag()
+  })
+
+  /** Drop the origin cache once a gesture ends: the window may move before the next one. */
+  function releaseDrag() {
+    endDrag()
+    dragSession += 1
+    dragOrigin = undefined
+    dragStart = undefined
+  }
+
+  function syncExpand() {
+    if (pointerHeld || dragging || collapsing) return
+    if (docked !== undefined) {
+      if (dockHoverArmed) void unsnapDocked()
+      return
+    }
+    if (suppressExpand) return
+    void setExpanded(true)
   }
 
   async function unsnapDocked() {
@@ -580,6 +741,7 @@ function main() {
       expanded = true
       document.body.classList.add('expanded')
       stop.hidden = !running
+      renderAgentStrip()
       syncGif()
       refreshPointerRegion()
       return
@@ -587,6 +749,7 @@ function main() {
     if (!force && (pinned || running || asking())) return
     expanded = false
     document.body.classList.remove('expanded')
+    renderAgentStrip()
     if (docked !== undefined) dockTab.hidden = false
     stop.hidden = true
     syncGif()
@@ -603,11 +766,6 @@ function main() {
     }, ANIMATION_MS)
   }
 
-  function ballGrabOffset(event) {
-    const rect = ball.getBoundingClientRect()
-    return { dx: event.clientX - rect.left, dy: event.clientY - rect.top }
-  }
-
   function scheduleCollapse() {
     if (pinned || running || asking() || dragging) return
     // A recording in progress must not lose the panel to the leave timer. A
@@ -619,6 +777,13 @@ function main() {
       collapseTimer = undefined
       void setExpanded(false)
     }, COLLAPSE_MS)
+  }
+
+  /** Input clicks only pin; unpinning stays a ball click (or drag). */
+  function pinBall() {
+    if (pinned) return
+    pinned = true
+    document.body.classList.add('pinned')
   }
 
   function draftOverflows() {
@@ -1011,7 +1176,8 @@ function main() {
     node.toggleAttribute('data-preview', !node.hasAttribute('data-expanded') && summary !== '')
   }
 
-  function createThink(node) {
+  function createThink(node, options = {}) {
+    const iconMarkup = options.iconMarkup ?? THINK
     node.dataset.variant = 'think'
     const status = document.createElement('span')
     status.className = 'visually-hidden'
@@ -1026,7 +1192,7 @@ function main() {
     leading.className = 'think-leading'
     const idle = document.createElement('span')
     idle.className = 'think-icon-idle'
-    idle.append(icon(THINK))
+    idle.append(icon(iconMarkup))
     const hover = document.createElement('span')
     hover.className = 'think-chevron-hover'
     hover.append(icon(CHEVRON_DOWN))
@@ -1036,7 +1202,7 @@ function main() {
     leading.append(idle, hover, openChevron)
     const title = document.createElement('span')
     title.className = 'think-title'
-    title.textContent = messages.think
+    title.textContent = options.title ?? messages.think
     const separator = document.createElement('span')
     separator.className = 'think-separator'
     separator.setAttribute('aria-hidden', 'true')
@@ -1050,6 +1216,12 @@ function main() {
     body.className = 'think-body'
     disclosure.append(row, body)
     node.append(status, disclosure)
+    // A notice card ships settled: its one-line summary and body are filled here.
+    if (options.summary !== undefined) {
+      summaryText.textContent = options.summary
+      node.dataset.preview = 'true'
+    }
+    if (options.body !== undefined) renderMarkdownBody(body, options.body, { compact: true })
     const toggle = () => {
       const open = !node.hasAttribute('data-expanded')
       node.toggleAttribute('data-expanded', open)
@@ -1071,7 +1243,7 @@ function main() {
    * process body; a reply closes that run, so later tools open a new one.
    */
   function placeBlock(node, kind) {
-    if (kind === 'user') {
+    if (kind === 'user' || kind === 'notice') {
       closeProcess()
       transcript.append(node)
       return
@@ -1758,6 +1930,11 @@ function main() {
     }
   }
 
+  /** The notice card's one-line summary: its first non-empty line. */
+  function noticeSummary(text) {
+    return String(text).split('\n').find((line) => line.trim() !== '') ?? ''
+  }
+
   function upsertBlock(block) {
     if (typeof block?.key !== 'string' || typeof block.text !== 'string') return
     blockData.set(block.key, block)
@@ -1773,6 +1950,17 @@ function main() {
         actions.className = 'user-actions'
         actions.append(messageCopyButton(() => bubble.textContent ?? ''))
         node.append(bubble, actions)
+      } else if (block.kind === 'notice') {
+        node = document.createElement('article')
+        node.className = 'block'
+        node.dataset.kind = 'notice'
+        // Folded like the main window's process cards: one summary line until clicked.
+        createThink(node, {
+          iconMarkup: SPARKLE,
+          title: messages.noticeTitle,
+          summary: noticeSummary(block.text),
+          body: block.text,
+        })
       } else if (block.kind === 'assistant') {
         node = document.createElement('article')
         node.className = 'block'
@@ -1809,6 +1997,8 @@ function main() {
     node.toggleAttribute('data-response', block.response === true)
     if (block.kind === 'user') {
       node.querySelector('.user-bubble').textContent = block.text
+    } else if (block.kind === 'notice') {
+      // Settled at creation; nothing per-update.
     } else if (block.kind === 'reasoning') {
       const summary = reasoningSummary(block.text, block.running === true)
       node.querySelector('.think-summary-text').textContent = summary
@@ -1878,6 +2068,129 @@ function main() {
       })
       historyList.append(button)
     }
+  }
+
+  function agentStateText(state) {
+    if (state === 'completed') return messages.agentDone
+    if (state === 'stopped') return messages.agentStopped
+    if (state === 'ended') return messages.agentEnded
+    return messages.agentRunning
+  }
+
+  function agentDurationText(totalMs) {
+    const minutes = Math.floor(Math.max(0, totalMs) / 60_000)
+    if (minutes < 1) return '<1m'
+    if (minutes < 100) return `${minutes}m`
+    return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}`
+  }
+
+  function agentElapsedText(item) {
+    const start = typeof item.startedAt === 'number' ? item.startedAt : 0
+    const end = item.state === 'running'
+      ? Date.now()
+      : (typeof item.endedAt === 'number' ? item.endedAt : Date.now())
+    return agentDurationText(end - start)
+  }
+
+  function agentTip(item) {
+    const parts = [`${agentStateText(item.state)} · ${agentElapsedText(item)}`]
+    if (typeof item.task === 'string' && item.task !== '') parts.push(item.task)
+    if (typeof item.callerTitle === 'string' && item.callerTitle !== '') parts.push(`${messages.agentFrom}: ${item.callerTitle}`)
+    if (typeof item.cwd === 'string' && item.cwd !== '') parts.push(`${messages.agentDir}: ${item.cwd}`)
+    if (typeof item.outcome === 'string' && item.outcome !== '') parts.push(item.outcome)
+    parts.push(messages.agentOpen)
+    return parts.join('\n')
+  }
+
+  function agentChip(item) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'agent-chip'
+    chip.dataset.state = typeof item.state === 'string' ? item.state : 'running'
+    const color = Number(item.colorIndex)
+    chip.style.setProperty('--agent-color', `var(--agent-c${Number.isFinite(color) ? Math.abs(color) % 4 : 0})`)
+    chip.setAttribute('role', 'listitem')
+    const status = document.createElement('span')
+    status.className = 'agent-chip-status'
+    if (item.state === 'completed') {
+      status.innerHTML = icon(CHECK)
+    } else if (item.state === 'stopped') {
+      status.innerHTML = icon(AGENT_STOP_ICON)
+    } else if (item.state === 'ended') {
+      status.innerHTML = icon(AGENT_ALERT_ICON)
+    } else {
+      const spinner = document.createElement('span')
+      spinner.className = 'agent-spinner'
+      status.append(spinner)
+    }
+    const time = document.createElement('span')
+    time.className = 'agent-chip-time'
+    time.dataset.state = chip.dataset.state
+    time.dataset.startedAt = String(item.startedAt ?? '')
+    time.dataset.endedAt = String(item.endedAt ?? '')
+    time.textContent = agentElapsedText(item)
+    const name = document.createElement('span')
+    name.className = 'agent-chip-name'
+    name.textContent = typeof item.task === 'string' ? item.task : ''
+    chip.append(status, time, name)
+    if (item.unread === true) {
+      const dot = document.createElement('span')
+      dot.className = 'agent-chip-unread'
+      chip.append(dot)
+    }
+    chip.title = agentTip(item)
+    chip.setAttribute('aria-label', `${agentStateText(item.state)}: ${name.textContent}`)
+    chip.addEventListener('click', () => {
+      if (typeof item.sessionId === 'string') api.openAgent?.(item.sessionId)
+    })
+    return chip
+  }
+
+  function renderAgentStrip() {
+    if (agentStrip === null) return
+    agentStrip.replaceChildren()
+    const visible = expanded && agentItems.length > 0
+    agentStrip.hidden = !visible
+    if (!visible) {
+      stopAgentClock()
+      return
+    }
+    for (const item of agentItems) agentStrip.append(agentChip(item))
+    startAgentClock()
+  }
+
+  function startAgentClock() {
+    stopAgentClock()
+    agentClock = setInterval(refreshAgentTimes, 1000)
+  }
+
+  function stopAgentClock() {
+    if (agentClock === undefined) return
+    clearInterval(agentClock)
+    agentClock = undefined
+  }
+
+  function refreshAgentTimes() {
+    if (agentStrip === null) return
+    for (const time of agentStrip.querySelectorAll('.agent-chip-time')) {
+      const start = Number(time.dataset.startedAt)
+      const endedAt = Number(time.dataset.endedAt)
+      const end = time.dataset.state === 'running' || !Number.isFinite(endedAt) || endedAt <= 0
+        ? Date.now()
+        : endedAt
+      time.textContent = agentDurationText(end - (Number.isFinite(start) ? start : 0))
+    }
+  }
+
+  function sortAgentItems(items) {
+    items.sort((left, right) => {
+      const leftRunning = left.state === 'running'
+      const rightRunning = right.state === 'running'
+      if (leftRunning !== rightRunning) return leftRunning ? -1 : 1
+      if (leftRunning) return (left.startedAt ?? 0) - (right.startedAt ?? 0)
+      return (right.endedAt ?? 0) - (left.endedAt ?? 0)
+    })
+    return items
   }
 
   function clearTranscript() {
@@ -2096,13 +2409,12 @@ function main() {
    * The window keeps the panel size while collapsed so that expanding never moves its
    * origin — a moved origin is the flicker. Everything outside the ball and the panel
    * is transparent chrome, and the helper turns it click-through so the desktop below
-   * still gets those clicks. Reports pause while a button is held: that is a ball or
-   * tab drag, and the window has to stay interactive for the moves to keep arriving.
+   * still gets those clicks.
    */
   function reportPointerRegion(event) {
     if (pageClosed()) return
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return
     lastPointer = { x: event.clientX, y: event.clientY }
-    if ((event.buttons & 1) === 1) return
     reportRegionAt(lastPointer.x, lastPointer.y)
   }
 
@@ -2123,7 +2435,7 @@ function main() {
     // A drag must keep the window interactive no matter where the pointer is: the
     // helper moves the window one round-trip behind the cursor, so a fast drag would
     // otherwise test the cursor against a stale rectangle and drop the ball.
-    if (dragging) {
+    if (dragging || pointerHeld) {
       api.setInteractive(true)
       return
     }
@@ -2132,6 +2444,10 @@ function main() {
       return
     }
     if (within(ball.getBoundingClientRect(), x, y)) {
+      api.setInteractive(true)
+      return
+    }
+    if (expanded && agentStrip !== null && !agentStrip.hidden && within(agentStrip.getBoundingClientRect(), x, y)) {
       api.setInteractive(true)
       return
     }
@@ -2153,7 +2469,8 @@ function main() {
    * a pending question, a drag and a docked tab all keep the panel as it is.
    */
   function requestExpandFromHelper() {
-    if (pageClosed() || expanded || dragging || collapsing) return
+    if (pageClosed() || expanded || dragging) return
+    if (collapsing || pointerHeld) return
     if (suppressExpand) return
     if (docked !== undefined) return
     void setExpanded(true)
@@ -2174,9 +2491,13 @@ function main() {
    */
   function requestCollapseFromHelper() {
     if (pageClosed()) return
+    // The strip is interactive chrome outside the panel: the helper excludes it from the
+    // leave test, but a page paired with an older helper would not, so re-check here.
+    if (agentStrip !== null && !agentStrip.hidden && lastPointer !== undefined
+      && within(agentStrip.getBoundingClientRect(), lastPointer.x, lastPointer.y)) return
     dockPointerInside = false
     suppressExpand = false
-    if (!dragging && docked === undefined) lastPointer = undefined
+    if (!dragging && !pointerHeld && docked === undefined) lastPointer = undefined
     // The side effects above run on every leave, because the helper sends one at rest as
     // well. Only a panel that is actually showing has anything to close; without this the
     // resting signal would keep re-running the collapse teardown for a folded panel.
@@ -2187,28 +2508,25 @@ function main() {
   document.body.addEventListener('pointermove', reportPointerRegion)
   document.body.addEventListener('pointerenter', (event) => {
     dockPointerInside = true
+    // A dropped pointerup (capture stolen, window hidden mid-gesture) would leave the
+    // drag flags stuck and the panel permanently unable to expand. Only a reported
+    // "no buttons" counts: an absent field must not end a live drag.
+    if (pointerHeld && typeof event.buttons === 'number' && event.buttons === 0) releaseDrag()
     reportPointerRegion(event)
-    if (dragging || collapsing) return
-    if (docked !== undefined) {
-      if (dockHoverArmed) void unsnapDocked()
-      return
-    }
-    if (suppressExpand) return
-    // The poll is the authority on where the pointer is. What is left here is the fallback
-    // for a build whose preload has no poll: the enter itself says nothing about the ball,
-    // because the window is panel-sized and stays under the cursor after the ball is left.
+    // The poll is the authority; this is the fallback for a build without it.
     if (helperDrivesHover) return
-    void setExpanded(true)
+    syncExpand()
+
   })
   document.body.addEventListener('pointerleave', () => {
     dockPointerInside = false
     suppressExpand = false
-    // The pointer is off the window, so nothing here is under it any more. Without
-    // this the last hover would keep the transparent chrome swallowing clicks over
-    // the 344x444 window while the pointer sits somewhere else entirely.
-    // A docked tab keeps the whole narrow window interactive; only a free ball drops
-    // the claim, or the pointer would leave behind a window that still eats clicks.
-    if (pointer === undefined && !dragging && docked === undefined) {
+    if (pointerHeld) return
+    // The pointer is off the window, so nothing here is under it any more. Without this
+    // the last hover would keep the transparent chrome swallowing clicks over the window
+    // while the pointer sits somewhere else entirely. A docked tab keeps the whole narrow
+    // window interactive; only a free ball drops the claim.
+    if (!dragging && docked === undefined) {
       lastPointer = undefined
       api.setInteractive(false)
     }
@@ -2221,62 +2539,74 @@ function main() {
     setDragging(false)
     collapsing = false
     skipClick = false
-    lastOrigin = undefined
-    pointer = { ...ballGrabOffset(event), startX: event.screenX, startY: event.screenY }
-    ball.setPointerCapture(event.pointerId)
+    beginDrag(ball, event)
   })
   ball.addEventListener('pointermove', (event) => {
-    if (pointer === undefined) return
+    if (pointerPointerId === undefined) return
     if (!primaryButtonHeld(event)) {
       void finishPointer(event)
       return
     }
-    lastOrigin = { x: event.screenX - pointer.dx, y: event.screenY - pointer.dy }
-    if (!dragging) {
-      if (Math.hypot(event.screenX - pointer.startX, event.screenY - pointer.startY) <= 4) return
-      setDragging(true)
-      if (running || asking()) {
-        void moveBall(lastOrigin.x, lastOrigin.y)
-        return
-      }
-      collapsing = true
-      pinned = false
-      document.body.classList.remove('pinned')
-      void setExpanded(false, true).then(() => {
-        collapsing = false
-        if (dragging && lastOrigin !== undefined) void moveBall(lastOrigin.x, lastOrigin.y)
+        const start = { x: event.clientX - grab.x, y: event.clientY - grab.y }
+        dragStart = start
+        const base = dragOrigin
+        if (base === undefined) {
+          // The cached window origin has not answered yet. Only the motion threshold
+          // is live; re-emit the latest position once it lands so the start is not lost.
+          void windowOrigin().then((point) => {
+            if (!pointerHeld || dragging || point === undefined || dragOrigin === undefined || dragStart === undefined) return
+            applyDragStart({ x: point.x + dragStart.x, y: point.y + dragStart.y }, dragOrigin)
+
       })
       return
     }
-    if (!collapsing) void moveBall(lastOrigin.x, lastOrigin.y)
-  })
-  async function finishPointer(event) {
+    const origin = { x: base.x + start.x, y: base.y + start.y }
     if (dragging) {
-      skipClick = true
-      collapsing = false
-      const origin = pointer === undefined
-        ? lastOrigin
-        : { x: event.screenX - pointer.dx, y: event.screenY - pointer.dy }
-      pointer = undefined
-      lastOrigin = undefined
-      const skipDock = skipDockCommit
-      skipDockCommit = false
-      if (!skipDock) {
-        if (origin !== undefined) await moveBall(origin.x, origin.y)
-        await clampBall()
-      }
-      // The window has moved under a stationary pointer; the old answer no longer
-      // describes where that pointer is. Body moves resume once the button is up.
-      // Released only once the window has stopped: the helper keeps the window
-      // interactive for the whole move, or a drop away from the cursor would land
-      // on a rectangle the poll has not caught up with yet.
-      setDragging(false)
-      reportPointerRegion(event)
-      return true
+          // Record even while the panel is still collapsing: the collapse resolves
+          // into a move of the latest position, not of the one that started the drag.
+          void moveBall(origin.x, origin.y)
+          return
     }
-    pointer = undefined
-    lastOrigin = undefined
-    return false
+    if (Math.hypot(event.clientX - grabAt.x, event.clientY - grabAt.y) <= 4) return
+    applyDragStart(origin, base)
+  })
+
+  /** The gesture passed the motion threshold: collapse the panel, then start moving. */
+  function applyDragStart(origin, base) {
+    setDragging(true)
+    if (running || asking()) {
+      void moveBall(origin.x, origin.y)
+      return
+    }
+    collapsing = true
+    pinned = false
+    document.body.classList.remove('pinned')
+    void setExpanded(false, true).then(() => {
+      collapsing = false
+      // The pointer kept moving while the panel collapsed; that loop applies the
+      // newest of those positions rather than the one that started the gesture.
+      void moveBallWhenIdle()
+    })
+  }
+  async function finishPointer(event) {
+    const base = dragOrigin
+    const moved = dragging
+    const where = base === undefined ? undefined : dragPosition(event, base)
+    skipClick = moved
+    setDragging(false)
+    collapsing = false
+    releaseDrag()
+    if (!moved) return false
+    const skipDock = skipDockCommit
+    skipDockCommit = false
+    if (!skipDock) {
+      if (where !== undefined) await moveBall(where.x, where.y)
+      // `where` may be undefined (a lost capture hands us an event with no pointer
+      // coordinates); the clamp still has to run so the dock commits, because the
+      // main process judges the release from the window bounds it applied.
+      await clampBall(where)
+    }
+    return true
   }
   ball.addEventListener('pointerup', async (event) => {
     if (!isPrimaryButton(event)) {
@@ -2300,20 +2630,18 @@ function main() {
     setDragging(false)
     collapsing = false
     skipClick = true
-    lastOrigin = undefined
-    pointer = { dx: 0, dy: 0, startX: event.screenX, startY: event.screenY }
-    dockTab.setPointerCapture(event.pointerId)
+    pointer = { x: event.clientX, y: event.clientY }
+    beginDrag(dockTab, event)
   })
   dockTab.addEventListener('pointermove', (event) => {
-    if (pointer === undefined || docked === undefined) return
+    if (pointerPointerId === undefined || docked === undefined) return
     if (!primaryButtonHeld(event)) {
       void finishPointer(event)
       return
     }
-    lastOrigin = { x: event.screenX, y: event.screenY }
-    const inward = docked === 'right' ? pointer.startX - event.screenX : event.screenX - pointer.startX
-    if (inward <= DOCK_DRAG_OFF_PX) return
-    setDragging(true)
+        const pulled = docked === 'right' ? pointer.x - event.clientX : event.clientX - pointer.x
+        if (pulled <= DOCK_DRAG_OFF_PX) return
+        setDragging(true)
     void unsnapDocked()
   })
   dockTab.addEventListener('pointerup', (event) => { void finishPointer(event) })
@@ -2442,8 +2770,13 @@ function main() {
     insertPlainText(prompt, event.clipboardData?.getData('text/plain') ?? '')
     syncComposerHeight()
   })
+  // Clicking into the input pins the panel, so a draft survives the pointer leaving.
+  prompt.addEventListener('click', () => { pinBall() })
   composer.addEventListener('click', (event) => {
-    if (event.target === composer) prompt.focus()
+    if (event.target === composer) {
+      prompt.focus()
+      pinBall()
+    }
   })
 
   for (const preset of PERMISSION_PRESETS) {
@@ -2519,6 +2852,15 @@ function main() {
   api.onHistory((items) => {
     historyItems = Array.isArray(items) ? items : []
     if (historyOpen) renderHistory()
+  })
+  api.onAgents?.((items) => {
+    agentItems = sortAgentItems(Array.isArray(items)
+      ? items.filter((item) => item !== null && typeof item === 'object' && typeof item.sessionId === 'string')
+      : [])
+    renderAgentStrip()
+  })
+  api.onExpandState?.((state) => {
+    if (state !== null && typeof state === 'object') applyDirection(state)
   })
   api.onPermission((preset) => {
     if (typeof preset !== 'string') return

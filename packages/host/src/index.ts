@@ -9,6 +9,7 @@ import { registerOrbRoutes } from './routes.ts'
 import { installOrbServices, watchOrbPermissions } from './services.ts'
 import { watchAppearance } from './appearance.ts'
 import { OrbRuntime, type OrbContext } from './orb.ts'
+import { exemptReleaseAge, ownPackage, UpdateChecker } from './update.ts'
 
 /** Cordis plugin name. */
 export const name = 'orb-host'
@@ -34,10 +35,27 @@ export type { OrbContext }
 export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): void {
   logWebPort(ctx)
   const store = new ProfileStore(profileDirectory(ctx))
+  // pnpm appends a `name@version` rule for every young release it installs and reads
+  // only the first rule per package name, so a profile that installed this plugin
+  // through the market or `dsh plugin install` holds an exemption that shadows the
+  // installed version — and then removing ANY other plugin fails with
+  // ERR_PNPM_RESOLUTION_POLICY_VIOLATIONS_UNHANDLED. Re-canonicalise the list at
+  // start, whatever route installed the version.
+  const own = ownPackage()
+  if (own !== undefined) exemptReleaseAge(store.dir, own.name)
   const tcc = new TccMonitor()
   const runtime = new OrbRuntime(ctx, store, { tcc })
   installOrbServices(ctx, store)
+  // The official plugin manager mounts after this plugin, so it is read live and an
+  // absent one only costs the one-click upgrade: the check and the notice stay.
+  const updater = new UpdateChecker({
+    store,
+    manager: () => ctx.get('pluginManager'),
+    notify: (version) => { runtime.setUpdateAvailable(version) },
+  })
+  runtime.useUpdater(updater)
   console.error(`dsh-orb: profile ${store.dir}`)
+  console.error(`dsh-orb: version ${updater.state().currentVersion || 'unknown'}`)
   ctx.effect(() => {
     const detachQuestions = runtime.attachQuestions()
     const detachPermissions = watchOrbPermissions(ctx, store)
@@ -45,6 +63,7 @@ export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): vo
     // Theme and locale follow the official settings document; a missing
     // settings service leaves the ball on its system defaults.
     const detachAppearance = watchAppearance(ctx, (appearance) => { runtime.setAppearance(appearance) })
+    const detachUpdates = updater.start()
     const start = process.platform !== 'linux' && config.autoStart !== false && store.ballEnabled()
     if (start) {
       void runtime.start().catch((error: unknown) => {
@@ -56,6 +75,7 @@ export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): vo
       detachPermissions()
       detachRoutes()
       detachAppearance()
+      detachUpdates()
       runtime.halt()
     }
   })

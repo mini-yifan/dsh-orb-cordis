@@ -8,6 +8,8 @@ export interface ContextMenuState {
   readonly background: MenuSelection
   readonly millifractionEnabled: boolean
   readonly openMain: boolean
+  /** Newer published version, or null when the ball has nothing to offer. */
+  readonly update: string | null
 }
 
 export interface ContextMenuActions {
@@ -15,6 +17,7 @@ export interface ContextMenuActions {
   setOverlay(selection: MenuSelection): void
   setBackground(selection: MenuSelection): void
   setMillifraction(enabled: boolean): void
+  update(): void
   disable(): void
 }
 
@@ -44,6 +47,10 @@ export function contextMenuTemplate(state: ContextMenuState, zh: boolean, action
       checked: state.millifractionEnabled,
       click: (item) => { actions.setMillifraction(item.checked) },
     },
+    ...typeof state.update === 'string' && state.update !== '' ? [{
+      label: zh ? `更新到 ${state.update}` : `Update to ${state.update}`,
+      click: () => { actions.update() },
+    }] : [],
     { type: 'separator' },
     {
       label: zh ? '停用悬浮球' : 'Disable floating ball',

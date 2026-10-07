@@ -26,6 +26,7 @@ import {
   transcribeWithSpeech,
 } from './speech.ts'
 import { isTccRight, type TccMonitor, type TccStatus } from './tcc.ts'
+import type { UpdateState } from './update.ts'
 
 const PREFIX = '/.dsh-orb'
 const HELPER_HEADER = 'x-dsh-orb-helper'
@@ -57,8 +58,20 @@ export interface OrbControl {
   setBackgroundModel(selection: AgentModelSelection): Promise<void>
   setSelectionEnabled(enabled: boolean): Promise<void>
   setMillifractionEnabled(enabled: boolean): Promise<void>
+  setObservationFrameEnabled(enabled: boolean): Promise<void>
   setBallEnabled(enabled: boolean): Promise<void>
   helperStatus?(): string
+  /** 'downloading'/'extracting' while the helper runtime is prepared; '' otherwise. */
+  helperPhase?(): string
+  /** The pending ball-initiated jump target, or null once consumed or expired. */
+  takeJump(): { sessionId: string; at: number } | null
+  /** Consumes the jump target armed by a matching bookmark click. */
+  confirmJump(sessionId: string): void
+  updateState(): UpdateState
+  checkUpdate(): Promise<void>
+  /** Starts the upgrade and returns at once; the page polls {@link updateState} while it runs. */
+  installUpdate(approvedBuilds?: string[]): void
+  setAutoCheck(enabled: boolean): void
 }
 
 interface RouteDeps {
@@ -109,6 +122,49 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
   }
   if (method === 'GET' && path === `${PREFIX}/tcc`) {
     sendJson(res, 200, deps.tcc.status())
+    return
+  }
+  // Update management sits above the platform gate: Linux has no ball but still runs this host.
+  if (method === 'GET' && path === `${PREFIX}/update`) {
+    sendJson(res, 200, deps.control.updateState())
+    return
+  }
+  if (method === 'POST' && path === `${PREFIX}/update/check`) {
+    await deps.control.checkUpdate()
+    sendJson(res, 200, await snapshot(deps))
+    return
+  }
+  if (method === 'POST' && path === `${PREFIX}/update/install`) {
+    const builds = stringListField(await readJson(req), 'approvedBuilds')
+    deps.control.installUpdate(builds)
+    sendJson(res, 200, await snapshot(deps))
+    return
+  }
+  if (method === 'POST' && path === `${PREFIX}/update/auto`) {
+    const enabled = booleanField(await readJson(req))
+    if (enabled === undefined) {
+      sendJson(res, 400, { error: 'invalid-auto-check' })
+      return
+    }
+    deps.control.setAutoCheck(enabled)
+    sendJson(res, 200, await snapshot(deps))
+    return
+  }
+  // Bookmark jumps sit above the platform gate: the target is armed by the ball,
+  // and the client plugin in the main window consumes it with a retain call.
+  if (method === 'GET' && path === `${PREFIX}/jump`) {
+    const target = deps.control.takeJump()
+    sendJson(res, 200, { sessionId: target?.sessionId ?? null, at: target?.at ?? null })
+    return
+  }
+  if (method === 'POST' && path === `${PREFIX}/jump`) {
+    const sessionId = asRecord(await readJson(req))?.sessionId
+    if (typeof sessionId !== 'string' || sessionId === '') {
+      sendJson(res, 400, { error: 'invalid-session' })
+      return
+    }
+    deps.control.confirmJump(sessionId)
+    sendJson(res, 200, { ok: true })
     return
   }
   if ((method === 'GET' || method === 'HEAD') && path === `${PREFIX}/avatar`) {
@@ -174,6 +230,16 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
       return
     }
     await deps.control.setMillifractionEnabled(enabled)
+    sendJson(res, 200, await snapshot(deps))
+    return
+  }
+  if (method === 'POST' && path === `${PREFIX}/observation-frame`) {
+    const enabled = booleanField(await readJson(req))
+    if (enabled === undefined) {
+      sendJson(res, 400, { error: 'invalid-observation-frame' })
+      return
+    }
+    await deps.control.setObservationFrameEnabled(enabled)
     sendJson(res, 200, await snapshot(deps))
     return
   }
@@ -247,10 +313,13 @@ async function snapshot(deps: RouteDeps): Promise<{
   background: AgentModelSelection
   selectionEnabled: boolean
   millifractionEnabled: boolean
+  observationFrameEnabled: boolean
   tcc: TccStatus
   helperError: string
+  helperPhase: string
   selectionAvailable: boolean
   permissionFallback: boolean
+  update: UpdateState
 }> {
   const models = deps.store.models()
   const version = Math.trunc(deps.store.avatarVersion())
@@ -267,10 +336,13 @@ async function snapshot(deps: RouteDeps): Promise<{
     background: models.background,
     selectionEnabled: deps.store.selectionEnabled(),
     millifractionEnabled: deps.store.millifractionEnabled(),
+    observationFrameEnabled: deps.store.observationFrameEnabled(),
     tcc: deps.tcc.status(),
     helperError: deps.control.helperStatus?.() ?? '',
+    helperPhase: deps.control.helperPhase?.() ?? '',
     selectionAvailable: selectionRuntimeAvailable(),
     permissionFallback: deps.store.permissionFallback(),
+    update: deps.control.updateState(),
   }
 }
 
@@ -403,6 +475,14 @@ function selectionFrom(value: unknown): AgentModelSelection | undefined {
 function booleanField(value: unknown): boolean | undefined {
   const enabled = asRecord(value)?.enabled
   return typeof enabled === 'boolean' ? enabled : undefined
+}
+
+/** Optional list of package names, absent when the field is missing or empty. */
+function stringListField(value: unknown, key: string): string[] | undefined {
+  const list = asRecord(value)?.[key]
+  if (!Array.isArray(list)) return undefined
+  const names = list.filter((item): item is string => typeof item === 'string' && item !== '')
+  return names.length === 0 ? undefined : names
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

@@ -14,6 +14,10 @@
       "types": "./lib/code-agent.d.ts",
       "default": "./lib/code-agent.js"
     },
+    "./code-agent-registry": {
+      "types": "./lib/code-agent-registry.d.ts",
+      "default": "./lib/code-agent-registry.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

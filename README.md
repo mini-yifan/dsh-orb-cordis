@@ -82,23 +82,39 @@ Helper (its own downloaded Electron, isolated userData)
 
 ### From a release
 
-Once published to npm, install by package name:
+Releases are published to the npm registry and served from npmmirror. The install unit is the release tarball — **not the repository itself**: pasting the repo URL into a plugin page installs the monorepo root package, which fails with "this package declares no bundle".
 
-- **Desktop app**: in the app, open the plugin page and add the package name `dsh-orb`.
-- **CLI** (`dsh web`): `dsh plugin add dsh-orb`.
+- **By name** — add `dsh-orb` in the desktop app's plugin page, or:
+
+  ```sh
+  dsh plugin add dsh-orb
+  ```
+
+- **By version** — `dsh-orb@<version>`. An explicit version skips the release-age gate, and pnpm records `integrity` from registry metadata. Do not paste a remote tarball URL such as `https://registry.npmmirror.com/dsh-orb/-/dsh-orb-<version>.tgz`: pnpm 11.7, which the official client bundles, rejects that URL because the lockfile entry has no `integrity`.
+
+**A just-published version can resolve to the previous one for up to 24 hours.** The official client bundles pnpm 11, whose `minimumReleaseAge` default (1440 minutes) makes a named install settle for the newest version published more than 24 hours ago — a supply-chain guard, not a network problem. To get a fresh release immediately, install `dsh-orb@<version>`, or exempt the package in the profile's `pnpm-workspace.yaml`:
+
+```yaml
+minimumReleaseAgeExclude:
+  - dsh-orb
+```
+
+With an older version installed there is no need to reinstall: the floating-ball card in the main window's settings page checks for and installs updates, and records the exemption itself.
+
+**Does the in-app update fail with `operation-error`?** Releases through 0.1.4 handed pnpm 11.7 (the client bundles that version) an npmmirror tarball URL. That URL is stored without an `integrity` field, so pnpm rejects it before downloading (`ERR_PNPM_MISSING_TARBALL_INTEGRITY`) and the card only shows the generic `operation-error`. Install `dsh-orb@<version>` from the plugin page — not the tarball URL. After that, the update button installs by version and asks npmmirror first. The raw failure detail lives in the profile's `.plugin-manager/logs/operation-*/pnpm.log`.
 
 ### From a local build
 
 ```sh
 pnpm install
 pnpm build
-pnpm --filter dsh-orb pack        # produces ./dsh-orb-0.0.0.tgz
+pnpm --filter dsh-orb pack        # produces ./dsh-orb-<version>.tgz
 ```
 
 Then either add the tarball in the desktop app's plugin page, or:
 
 ```sh
-dsh plugin add ./dsh-orb-0.0.0.tgz
+dsh plugin add ./dsh-orb-<version>.tgz
 ```
 
 After the first installation the helper's Electron runtime is downloaded on first use of the ball, then cached.

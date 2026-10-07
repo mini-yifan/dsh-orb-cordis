@@ -44,6 +44,10 @@ window.__ModuleLoader__.load({
       millifractionDescription: '新建对话使用截图的 0–1000 比例。关闭后使用已附加图片的像素。更改此项会新建对话。',
       millifractionToggle: '使用千分比坐标',
       millifractionConfirm: '新编码只在新对话中生效。当前对话不变，仍可从历史记录打开。取消不写入、不新建。',
+      frameTitle: '观察框彩带',
+      frameDescription: 'Computer Use 操作某个窗口时，窗口周围显示这条彩带。关闭后不再显示。',
+      frameToggle: '显示观察框彩带',
+      runtimePreparing: '正在准备悬浮球：首次使用需要下载约 124–150 MB 的运行时，完成后悬浮球会自动出现。',
       tccTitle: 'Mac 权限',
       tccDescription: 'Computer Use 需要屏幕录制与辅助功能。点按钮打开系统设置对应页。',
       tccAppHint: '在列表里打开 {name}。',
@@ -59,6 +63,21 @@ window.__ModuleLoader__.load({
       tccGranted: '已开启',
       tccRelaunch: '已开启，请退出后重开',
       tccFooter: '打开开关后必须完全退出 {name} 再打开。只关主窗口无效。',
+      updateTitle: '插件更新',
+      updateCurrent: '当前版本 {version}。',
+      updateAvailable: '新版本 {version} 可用。',
+      updateNow: '更新',
+      updating: '正在更新到 {version}…',
+      updateDone: '已更新到 {version}，重启 {name} 后生效。',
+      updateFailed: '更新失败：',
+      updateOffline: '无法连接镜像或 npm，请检查网络后重试。',
+      updateBuildBlocked: '新版本依赖的安装脚本未获授权，安装已停止。',
+      updateAllowBuilds: '允许安装脚本并重试',
+      updateCheck: '检查更新',
+      updateChecking: '正在检查…',
+      updateAuto: '自动检查更新',
+      updateAutoDescription: '每天一次向 npmmirror（失败回退 npm）查询新版本，不发送任何标识信息。',
+      updateManual: '当前 Harness 没有提供插件管理服务，请在插件页手动更新。',
     }
     const en = {
       nav: 'Floating ball',
@@ -98,6 +117,10 @@ window.__ModuleLoader__.load({
       millifractionDescription: 'New chats use 0–1000 fractions of the screenshot. Turn off to use pixels of the attached image. Changing this creates a new conversation.',
       millifractionToggle: 'Use millifraction coordinates',
       millifractionConfirm: 'The new encoding takes effect in a new conversation. The current conversation stays unchanged and remains in History. Cancel leaves the default and this chat as they are.',
+      frameTitle: 'Observation ribbon',
+      frameDescription: 'Draws the coloured ribbon around the window Computer Use is working on. Turn it off to hide it.',
+      frameToggle: 'Show the observation ribbon',
+      runtimePreparing: 'Preparing the floating ball: the first launch downloads a ~124–150 MB runtime, then the ball appears on its own.',
       tccTitle: 'Mac permissions',
       tccDescription: 'Computer Use needs Screen Recording and Accessibility. Each button opens that System Settings pane.',
       tccAppHint: 'In the list, turn on {name}.',
@@ -113,6 +136,21 @@ window.__ModuleLoader__.load({
       tccGranted: 'On',
       tccRelaunch: 'On — quit and reopen',
       tccFooter: 'After you turn the switches on, quit {name} fully, then open it again. Closing the main window does not quit.',
+      updateTitle: 'Plugin update',
+      updateCurrent: 'Version {version}.',
+      updateAvailable: 'Version {version} is available.',
+      updateNow: 'Update',
+      updating: 'Updating to {version}…',
+      updateDone: 'Updated to {version}. Restart {name} to apply it.',
+      updateFailed: 'Update failed: ',
+      updateOffline: 'no registry could be reached. Check the network and try again.',
+      updateBuildBlocked: 'A dependency of the new version needs install-script approval, so the install stopped.',
+      updateAllowBuilds: 'Allow these scripts and retry',
+      updateCheck: 'Check for updates',
+      updateChecking: 'Checking…',
+      updateAuto: 'Check for updates automatically',
+      updateAutoDescription: 'Asks npmmirror once a day (falling back to npm) for the newest version. Nothing identifying is sent.',
+      updateManual: 'This Harness build ships no plugin manager — update from the Plugins page instead.',
     }
 
     // The main window's resolved locale rides <html lang> (dsh-client-locale);
@@ -269,6 +307,41 @@ window.__ModuleLoader__.load({
         return () => { window.removeEventListener?.('focus', onFocus) }
       }, [])
 
+      // An install runs for minutes inside the host; the page polls it instead of holding a request open.
+      const installing = state.snapshot?.update?.updating === true
+      React.useEffect(() => {
+        if (!installing) return undefined
+        const timer = setInterval(() => { void refreshUpdate() }, 2000)
+        return () => { clearInterval(timer) }
+      }, [installing])
+
+      // The first launch prepares the helper runtime inside the host; poll until
+      // the ball lands or the failure surfaces, so the waiting line tracks it.
+      const preparing = typeof state.snapshot?.helperPhase === 'string' && state.snapshot.helperPhase !== ''
+      React.useEffect(() => {
+        if (!preparing) return undefined
+        const timer = setInterval(() => { void refreshSettings() }, 2000)
+        return () => { clearInterval(timer) }
+      }, [preparing])
+
+      async function refreshSettings() {
+        try {
+          const snapshot = await request('/.dsh-orb/settings')
+          setState((prev) => prev.snapshot ? { ...prev, snapshot } : prev)
+        } catch {
+          // Keep the last known state; the next poll or a page reload tries again.
+        }
+      }
+
+      async function refreshUpdate() {
+        try {
+          const update = await request('/.dsh-orb/update')
+          setState((prev) => prev.snapshot ? { ...prev, snapshot: { ...prev.snapshot, update } } : prev)
+        } catch {
+          // Keep the last known state; the next poll or a page reload tries again.
+        }
+      }
+
       async function mutate(path, body, avatarError) {
         setState((prev) => ({ ...prev, busy: true, avatarError: avatarError || '' }))
         try {
@@ -313,10 +386,12 @@ window.__ModuleLoader__.load({
           ? h('p', { className: 'dsh-orb-set-error', role: 'alert' }, `${text.saveError} ${state.error}`)
           : null,
         snap.supported ? null : h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.linux),
-        helperNotice(text, snap),
+        helperNotice(text, snap, disabled, mutate),
         snap.permissionFallback === true
           ? h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.permissionFallback)
           : null,
+        // Outside the fieldset: an update is worth offering even where the ball itself is off.
+        updateCard(text, snap, mutate),
         h('fieldset', { className: 'dsh-orb-set-fields', disabled },
           card(text.ball, text.ballDescription, h(Toggle, {
             checked: snap.ballEnabled === true,
@@ -382,15 +457,112 @@ window.__ModuleLoader__.load({
               void mutate('/.dsh-orb/millifraction', { enabled })
             },
           })),
+          card(text.frameTitle, text.frameDescription, h(Toggle, {
+            checked: snap.observationFrameEnabled !== false,
+            label: text.frameToggle,
+            disabled,
+            onChange: (enabled) => {
+              if (enabled === snap.observationFrameEnabled) return
+              void mutate('/.dsh-orb/observation-frame', { enabled })
+            },
+          })),
           snap.tcc && snap.tcc.applicable ? tccCard(text, snap, disabled, mutate) : null))
     }
 
-    function helperNotice(text, snap) {
+    /**
+     * Why the ball is not on screen yet: preparing (first-launch runtime), or
+     * failed with a retry. Nothing shows while a ball is up or the ball is off.
+     */
+    function helperNotice(text, snap, disabled, mutate) {
+      if (snap.ballEnabled === false) return null
+      const retry = () => {
+        // POST the toggle's own value: the host restarts the helper and grants
+        // a fresh download budget.
+        void mutate('/.dsh-orb/ball', { enabled: true })
+      }
       if (snap.helperError === 'helper-exited') {
-        return h('p', { className: 'dsh-orb-set-error', role: 'alert' }, text.helperFailed)
+        return h('div', { className: 'dsh-orb-set-banner' },
+          h('p', { className: 'dsh-orb-set-error', role: 'alert' }, text.helperFailed),
+          h('div', { className: 'dsh-orb-set-actions' },
+            h('button', { type: 'button', className: 'dsh-orb-set-button dsh-orb-set-ghost', disabled, onClick: retry }, text.retry)))
       }
       if (snap.helperError === 'runtime-download') {
-        return h('p', { className: 'dsh-orb-set-error', role: 'alert' }, text.runtimeFailed)
+        return h('div', { className: 'dsh-orb-set-banner' },
+          h('p', { className: 'dsh-orb-set-error', role: 'alert' }, text.runtimeFailed),
+          h('div', { className: 'dsh-orb-set-actions' },
+            h('button', { type: 'button', className: 'dsh-orb-set-button dsh-orb-set-ghost', disabled, onClick: retry }, text.retry)))
+      }
+      if (typeof snap.helperPhase === 'string' && snap.helperPhase !== '') {
+        return h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.runtimePreparing)
+      }
+      return null
+    }
+
+    /** Current version, the newest published one, and the one-click upgrade. */
+    function updateCard(text, snap, mutate) {
+      const update = snap.update
+      // No version means an unknown install layout (a source checkout): stay out of the way.
+      if (!update || !update.currentVersion) return null
+      const installed = update.installedVersion || update.currentVersion
+      const control = update.available
+        ? h('button', {
+          type: 'button',
+          className: 'dsh-orb-set-button',
+          disabled: update.updating,
+          onClick: () => { void mutate('/.dsh-orb/update/install', {}) },
+        }, update.updating ? text.updating.replaceAll('{version}', update.latestVersion || installed) : text.updateNow)
+        : h('button', {
+          type: 'button',
+          className: 'dsh-orb-set-button dsh-orb-set-ghost',
+          disabled: update.checking,
+          onClick: () => { void mutate('/.dsh-orb/update/check', {}) },
+        }, update.checking ? text.updateChecking : text.updateCheck)
+      const allowBuilds = update.error === 'build-blocked' && Array.isArray(update.pendingBuilds) && update.pendingBuilds.length > 0
+        ? h('button', {
+          type: 'button',
+          className: 'dsh-orb-set-button',
+          onClick: () => { void mutate('/.dsh-orb/update/install', { approvedBuilds: update.pendingBuilds }) },
+        }, text.updateAllowBuilds)
+        : null
+      return h('section', { className: 'dsh-orb-set-card' },
+        h('h3', null, text.updateTitle),
+        updateNotice(text, snap, update),
+        allowBuilds,
+        h('div', { className: 'dsh-orb-set-row' },
+          h('div', null, h('p', null, text.updateCurrent.replaceAll('{version}', installed))),
+          control),
+        update.canUpdate ? null : h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.updateManual),
+        h('div', { className: 'dsh-orb-set-row' },
+          h('div', null, h('p', null, text.updateAutoDescription)),
+          h(Toggle, {
+            checked: update.autoCheck === true,
+            label: text.updateAuto,
+            disabled: false,
+            onChange: (enabled) => { void mutate('/.dsh-orb/update/auto', { enabled }) },
+          })))
+    }
+
+    function updateNotice(text, snap, update) {
+      if (update.updating) {
+        return h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.updating.replaceAll('{version}', update.latestVersion || update.installedVersion))
+      }
+      if (update.error) {
+        const detail = update.error === 'network'
+          ? text.updateOffline
+          : update.error === 'build-blocked'
+            ? text.updateBuildBlocked
+            : update.error
+        return h('p', { className: 'dsh-orb-set-error', role: 'alert' }, `${text.updateFailed}${detail}`)
+      }
+      if (update.restartRequired) {
+        const app = snap.tcc && snap.tcc.appName ? snap.tcc.appName : 'DeepSeek Harness'
+        return h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.updateDone
+          .replaceAll('{version}', update.installedVersion)
+          .replaceAll('{name}', app))
+      }
+      if (update.available) {
+        return h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.updateAvailable
+          .replaceAll('{version}', update.latestVersion))
       }
       return null
     }
@@ -497,6 +669,62 @@ window.__ModuleLoader__.load({
         label: () => copy().nav,
         inject: () => ({}),
       }, OrbSettingsSection))
+      // Bookmark jump bridge: the ball arms a target on click, the main window
+      // consumes it by opening that session. Switching must go through the
+      // workspace navigator: a bare sessions.retain would stack a second
+      // mainView reference while the current session keeps its own, and the
+      // main view would never move. The armed target is confirmed with a POST
+      // via request() — mutate() lives inside the settings component and is
+      // not in scope here.
+      ctx.effect(() => {
+        let openedKey = ''
+        const poll = setInterval(() => { void consume() }, 2000)
+        async function consume() {
+          let target
+          try {
+            target = await request('/.dsh-orb/jump')
+          } catch {
+            return
+          }
+          const sessionId = target && typeof target.sessionId === 'string' ? target.sessionId : ''
+          if (sessionId === '') {
+            openedKey = ''
+            return
+          }
+          // The arm timestamp makes the key: reading the same armed target
+          // twice means the earlier confirm failed — re-confirm only, never
+          // re-open, or every poll would yank the main view back.
+          const key = `${sessionId}:${typeof target.at === 'number' ? target.at : 0}`
+          if (key !== openedKey) {
+            let workspace
+            try {
+              workspace = ctx.get('uiWorkspace')
+            } catch {
+              workspace = undefined
+            }
+            if (workspace === undefined || typeof workspace.openSession !== 'function') return
+            try {
+              workspace.openSession(sessionId)
+            } catch {
+              // The session may not be listed yet; the target stays armed until it expires.
+              return
+            }
+            openedKey = key
+          }
+          try {
+            await request('/.dsh-orb/jump', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ sessionId }),
+            })
+          } catch {
+            // Consuming is best-effort; the same-target guard above stops any yank loop.
+          }
+        }
+        return () => {
+          clearInterval(poll)
+        }
+      }, 'dsh-orb: bookmark jump bridge')
     }
 
     exports.apply = apply

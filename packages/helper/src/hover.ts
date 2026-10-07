@@ -17,7 +17,9 @@ import {
   BALL_ANCHOR,
   BALL_SIZE,
   CHROME_INSET,
+  PANEL_INSET,
   PANEL_SIZE,
+  STRIP_TUCK,
   type Direction,
   type Rect,
 } from './geometry.ts'
@@ -33,6 +35,8 @@ export interface HoverState {
   readonly expanded: boolean
   /** True while the ball rides a display edge as a narrow tab. */
   readonly docked: boolean
+  /** Reserved bookmark-strip width; 0 when no strip is showing. */
+  readonly strip: number
   /**
    * True while the page is dragging the ball.
    *
@@ -86,10 +90,31 @@ export function ballRectInWindow(state: HoverState): Rect {
 export function panelRectInWindow(state: HoverState): Rect {
   const bounds = state.window
   return {
-    x: bounds.x + (state.direction.horizontal === 'left' ? CHROME_INSET : BALL_ANCHOR.x),
+    x: bounds.x + (state.direction.horizontal === 'left' ? PANEL_INSET : BALL_ANCHOR.x),
     y: bounds.y + (state.direction.vertical === 'up' ? CHROME_INSET : BALL_ANCHOR.y),
     width: PANEL_SIZE.width,
     height: PANEL_SIZE.height,
+  }
+}
+
+/**
+ * The bookmark strip's band, on the same window edge as the panel's far side.
+ *
+ * The chips have to keep the panel open. They sit OUTSIDE the panel's own rectangle, so
+ * without this the cursor reaching for a chip reads as a leave and folds the panel away
+ * exactly when the user is aiming at it. Only the reserved width plus the chrome and the
+ * tuck is claimed: the rest of the far side stays chrome, so the window can still be
+ * click-through past the strip.
+ */
+export function stripRectInWindow(state: HoverState): Rect | undefined {
+  if (state.strip <= 0) return undefined
+  const bounds = state.window
+  const width = state.strip + CHROME_INSET + STRIP_TUCK
+  return {
+    x: state.direction.horizontal === 'left' ? bounds.x : bounds.x + bounds.width - width,
+    y: bounds.y,
+    width,
+    height: bounds.height,
   }
 }
 
@@ -120,10 +145,10 @@ export function containsPoint(rect: Rect, x: number, y: number): boolean {
  * - a docked tab is never asked to expand: hovering it means the slide back in, which
  *   the renderer runs from the pointer events the 34px window really delivers
  *
- * While the panel is open the whole window stays interactive. The ball and the panel are
- * the only drawn chrome, but the pointer has to be able to cross the 12px of transparent
- * margin around them without falling through to the desktop, and a pointer inside the
- * 592x792 rectangle is one the renderer can still resolve on its own.
+ * While the panel is open the whole window stays interactive. The ball, the panel and any
+ * bookmark strip are the drawn chrome, but the pointer has to be able to cross the 12px
+ * of transparent margin around them without falling through to the desktop, and a
+ * pointer inside the window is one the renderer can still resolve on its own.
  *
  * A request is only a request: pinned, running, asking, dragging and microphone state all
  * stay with the renderer, which is free to refuse.
@@ -135,8 +160,10 @@ export function decideHover(state: HoverState): HoverDecision {
   const { x, y } = state.cursor
   const onBall = containsPoint(ballRectInWindow(state), x, y)
   const onPanel = state.expanded && containsPoint(clipRect(panelRectInWindow(state), state.window), x, y)
+  const strip = stripRectInWindow(state)
+  const onStrip = strip !== undefined && containsPoint(clipRect(strip, state.window), x, y)
   const interactive = onBall || state.expanded
   if (onBall && !state.expanded) return { request: 'expand', interactive }
-  if (!onBall && !onPanel) return { request: 'collapse', interactive }
+  if (!onBall && !onPanel && !onStrip) return { request: 'collapse', interactive }
   return { request: undefined, interactive }
 }

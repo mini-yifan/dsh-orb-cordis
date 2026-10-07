@@ -5,6 +5,7 @@ import {
   BALL_SIZE,
   CHROME_INSET,
   FIXED_WINDOW_SIZE,
+  PANEL_INSET,
   PANEL_SIZE,
   ballOriginFromWindow,
   type Direction,
@@ -43,6 +44,7 @@ function state(overrides: Partial<HoverState> = {}): HoverState {
     expanded: false,
     docked: false,
     dragging: false,
+    strip: 0,
     ...overrides,
   }
 }
@@ -86,7 +88,7 @@ describe('the ball rectangle the cursor is tested against', () => {
       const panel = panelRectInWindow(state({ direction }))
       const ball = ballRectInWindow(state({ direction }))
       const relative = { x: panel.x - WINDOW.x, y: panel.y - WINDOW.y }
-      assert.equal(relative.x, direction.horizontal === 'left' ? CHROME_INSET : BALL_ANCHOR.x)
+      assert.equal(relative.x, direction.horizontal === 'left' ? PANEL_INSET : BALL_ANCHOR.x)
       assert.equal(relative.y, direction.vertical === 'up' ? CHROME_INSET : BALL_ANCHOR.y)
       assert.equal(panel.width, PANEL_SIZE.width)
       assert.equal(panel.height, PANEL_SIZE.height)

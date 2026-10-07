@@ -197,4 +197,12 @@ describe('ball page module', () => {
     const floating = readFileSync(join(here, '../assets/floating.css'), 'utf8')
     assert.match(floating, /#transcript \{[^}]*user-select: text/s)
   })
+
+  it('pins from an input click and keeps unpinning on the ball only', () => {
+    const shell = readFileSync(join(here, '../assets/shell.js'), 'utf8')
+    assert.match(shell, /prompt\.addEventListener\('click', \(\) => \{ pinBall\(\) \}\)/)
+    // pinBall is set-only; the toggle (and the unpin) stays on the ball's pointerup.
+    assert.match(shell, /function pinBall\(\) \{\s*\n\s*if \(pinned\) return\s*\n\s*pinned = true/)
+    assert.match(shell, /pinned = !pinned/)
+  })
 })

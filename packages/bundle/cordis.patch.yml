@@ -26,6 +26,7 @@
                 Continue a GUI action in this turn only when it does not need that result; otherwise end the turn.
                 Call code_agent_status or code_agent_stop when the user asks about or stops background work.
                 When a plugin notice reports that work finished, decide again: do remaining GUI, or call code_agent with that session_id for another stretch, then tell the user the short conclusion.
+                If the notice says the user stopped that background session, tell the user briefly and do not call code_agent for it again unless the user asks.
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -62,6 +63,8 @@
               postActionWaitMs: 600
           - id: tool-code-agent
             name: 'dsh-orb/computer-use/code-agent'
+    - id: orb-code-agent-registry
+      name: 'dsh-orb/computer-use/code-agent-registry'
     - id: orb-host
       name: 'dsh-orb/host'
       config:

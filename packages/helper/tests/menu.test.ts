@@ -111,7 +111,7 @@ describe('ball menu', () => {
     }), [{ label: '没有可用的模型。', enabled: false }])
   })
 
-  it('lists open, both models, coordinates, and disable', () => {
+  it('lists open, both models, coordinates, update, and disable', () => {
     const actions: string[] = []
     const template = contextMenuTemplate({
       catalog,
@@ -119,11 +119,13 @@ describe('ball menu', () => {
       background: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
       millifractionEnabled: false,
       openMain: true,
+      update: '0.2.0',
     }, true, {
       openMain: () => { actions.push('open') },
       setOverlay: () => { actions.push('overlay') },
       setBackground: () => { actions.push('background') },
       setMillifraction: (enabled) => { actions.push(`fraction:${enabled}`) },
+      update: () => { actions.push('update') },
       disable: () => { actions.push('disable') },
     })
     assert.deepEqual(template.map((item) => item.label ?? item.type), [
@@ -131,32 +133,39 @@ describe('ball menu', () => {
       '悬浮球 Agent 模型',
       '后台 Agent 模型',
       '千分比坐标',
+      '更新到 0.2.0',
       'separator',
       '停用悬浮球',
     ])
     assert.equal(template[0]?.enabled, true)
     template[0]?.click?.({ checked: false })
     template[3]?.click?.({ checked: true })
-    template[5]?.click?.({ checked: false })
+    template[4]?.click?.({ checked: false })
+    template[6]?.click?.({ checked: false })
     const background = template[2]?.submenu?.find((item) => item.label === '✓ Flash')
     assert.equal(background?.submenu?.find((item) => item.label === 'Max')?.checked, true)
     background?.submenu?.[0]?.click?.({ checked: true })
-    assert.deepEqual(actions, ['open', 'fraction:true', 'disable', 'background'])
+    assert.deepEqual(actions, ['open', 'fraction:true', 'update', 'disable', 'background'])
     const english = contextMenuTemplate({
       catalog: { groups: [] },
       overlay: { provider: 'deepseek-official', model: 'plain' },
       background: { provider: 'deepseek-official', model: 'plain' },
       millifractionEnabled: false,
       openMain: false,
+      update: null,
     }, false, {
       openMain() {},
       setOverlay() {},
       setBackground() {},
       setMillifraction() {},
+      update() {},
       disable() {},
     })
     assert.equal(english[0]?.label, 'Open Main Window')
     assert.equal(english[0]?.enabled, false)
+    // Without a version waiting there is no row to click, and no gap either.
+    assert.equal(english.some((item) => String(item.label ?? '').startsWith('Update to')), false)
+    assert.deepEqual(english.map((item) => item.label ?? item.type).slice(-2), ['separator', 'Disable floating ball'])
     assert.equal(english.at(-1)?.label, 'Disable floating ball')
   })
 

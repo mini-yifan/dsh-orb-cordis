@@ -26,12 +26,18 @@ export const PINNED_SHA256: Readonly<Record<string, string>> = {
   'electron-v44.0.0-win32-x64.zip': 'e61aa3bcea8152bc0730abd015e47c032d778a0ef10e2a1c78ba3c4ea47942f9',
 }
 
+/** What {@link resolveElectronBinary} is busy with, for the settings page's progress line. */
+export type ElectronRuntimePhase = 'downloading' | 'extracting'
+
 /**
  * Resolve the helper executable.
  * `DSH_ORB_ELECTRON_PATH` wins. Otherwise use the cached official zip, downloading it once.
+ * @param report - optional phase callback; fires only when a download is actually needed.
  * @returns absolute path to the Electron executable.
  */
-export async function resolveElectronBinary(): Promise<string> {
+export async function resolveElectronBinary(
+  report?: (phase: ElectronRuntimePhase) => void,
+): Promise<string> {
   const override = process.env.DSH_ORB_ELECTRON_PATH?.trim()
   if (override) {
     await access(override)
@@ -41,24 +47,31 @@ export async function resolveElectronBinary(): Promise<string> {
   const binary = join(dest, binaryRelative())
   const marker = join(dest, `.complete-${ELECTRON_VERSION}`)
   if (await exists(binary) && await exists(marker)) return binary
-  await downloadRuntime(dest, binary, marker)
+  await downloadRuntime(dest, binary, marker, report)
   return binary
 }
 
-async function downloadRuntime(dest: string, binary: string, marker: string): Promise<void> {
+async function downloadRuntime(
+  dest: string,
+  binary: string,
+  marker: string,
+  report?: (phase: ElectronRuntimePhase) => void,
+): Promise<void> {
   const parent = dirname(dest)
   await mkdir(parent, { recursive: true })
   await withDownloadLock(parent, async () => {
     if (await exists(binary) && await exists(marker)) return
     const fileName = assetName()
     console.error(`dsh-orb: downloading Electron ${ELECTRON_VERSION} (${fileName})`)
-    const sums = await fetchText(`${RELEASE_BASE}/SHASUMS256.txt`)
+    const sums = await fetchText('SHASUMS256.txt')
     const expected = expectedHash(sums, fileName)
     const stamp = randomBytes(8).toString('hex')
     const zipPath = join(parent, `.electron-${stamp}.zip`)
     const staging = join(parent, `.electron-staging-${stamp}`)
     try {
+      report?.('downloading')
       await downloadVerifiedZip(fileName, expected, zipPath)
+      report?.('extracting')
       await mkdir(staging, { recursive: true })
       await extractZip(zipPath, staging)
       const stagedBinary = join(staging, binaryRelative())
@@ -183,23 +196,56 @@ function hashFromSums(sums: string, fileName: string): string {
 
 const CURL_HTTPS = ['--proto', '=https', '--proto-redir', '=https']
 
-async function fetchText(url: string): Promise<string> {
-  const { stdout } = await run('curl', ['-fsSL', ...CURL_HTTPS, '--max-time', '60', url])
-  return stdout
+/** The Windows schannel backend aborts when a revocation check cannot complete
+ * (common behind proxies); every download is checksum-verified anyway. Other
+ * TLS backends ignore the flag. */
+const CURL_TLS = process.platform === 'win32' ? ['--ssl-no-revoke'] : []
+
+/** How long a dead host may burn before curl gives up and the next source is asked. */
+const CONNECT_TIMEOUT_SECONDS = '5'
+
+/**
+ * Mirrors of an Electron release, in the order they are asked.
+ * npmmirror goes first: github.com is unreachable for a large part of the audience,
+ * and a silently dropped connection there would otherwise stall the first ball launch.
+ * Every download is checked against the compiled-in SHA-256, so the order costs no trust.
+ */
+function releaseUrls(path: string): string[] {
+  return [
+    `https://cdn.npmmirror.com/binaries/electron/v${ELECTRON_VERSION}/${path}`,
+    `${RELEASE_BASE}/${path}`,
+  ]
+}
+
+/** First source that answers wins; a dead host costs one connect timeout, not the whole transfer. */
+async function fetchText(path: string): Promise<string> {
+  let lastError: unknown
+  for (const url of releaseUrls(path)) {
+    try {
+      const { stdout } = await run('curl', [
+        '-fsSL', ...CURL_HTTPS, ...CURL_TLS,
+        '--connect-timeout', CONNECT_TIMEOUT_SECONDS,
+        '--max-time', '60', url,
+      ])
+      return stdout
+    } catch (error) {
+      lastError = error
+      console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`dsh-orb: failed to download ${path}`)
 }
 
 async function downloadVerifiedZip(fileName: string, expected: string, dest: string): Promise<void> {
-  // Official checksums decide what is accepted. A second URL only helps when GitHub is too slow.
-  const urls = [
-    `${RELEASE_BASE}/${fileName}`,
-    `https://cdn.npmmirror.com/binaries/electron/v${ELECTRON_VERSION}/${fileName}`,
-  ]
+  // Official checksums decide what is accepted. The mirror only decides how fast it arrives.
+  const urls = releaseUrls(fileName)
   let lastError: unknown
   for (const url of urls) {
     try {
       await rm(dest, { force: true })
       await run('curl', [
-        '-fsSL', ...CURL_HTTPS, '--retry', '2', '--retry-delay', '1',
+        '-fsSL', ...CURL_HTTPS, ...CURL_TLS, '--retry', '2', '--retry-delay', '1',
+        '--connect-timeout', CONNECT_TIMEOUT_SECONDS,
         '--speed-limit', '100000', '--speed-time', '20',
         '--max-time', '300', '-o', dest, url,
       ])

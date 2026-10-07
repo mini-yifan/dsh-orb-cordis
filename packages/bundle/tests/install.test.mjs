@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, basename, join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
@@ -35,7 +35,13 @@ function profileWith(install) {
 
 function checkInstalled(profile, root) {
   const names = ownNames()
-  assert.deepEqual(names.sort(), ['dsh-orb', 'dsh-orb/computer-use', 'dsh-orb/computer-use/code-agent', 'dsh-orb/host'])
+  assert.deepEqual(names.sort(), [
+    'dsh-orb',
+    'dsh-orb/computer-use',
+    'dsh-orb/computer-use/code-agent',
+    'dsh-orb/computer-use/code-agent-registry',
+    'dsh-orb/host',
+  ])
   for (const specifier of names) {
     const file = resolveFromProfile(profile, specifier)
     assert.ok(existsSync(file), `${specifier} -> ${file}`)
@@ -70,6 +76,11 @@ function checkInstalled(profile, root) {
   assert.equal(readdirSync(join(root, 'dist/host')).includes('index.js'), true)
 }
 
+/** A link a test can create: junctions need no privilege on Windows, symlinks do. */
+function linkDir(target, link) {
+  symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+}
+
 describe('dsh-orb install layout', () => {
   // Assembled into a scratch folder so a linked desktop install is never rewritten while it runs.
   const assembled = join(scratch, 'assembled')
@@ -77,11 +88,11 @@ describe('dsh-orb install layout', () => {
     const built = spawnSync(process.execPath, [join(bundle, 'scripts/assemble.mjs'), '--out', assembled], { stdio: 'pipe', encoding: 'utf8' })
     assert.equal(built.status, 0, built.stderr)
     // A real link resolves dependencies from the package's own folder; give the copy the same view.
-    symlinkSync(join(bundle, 'node_modules'), join(assembled, 'node_modules'), 'dir')
+    linkDir(join(bundle, 'node_modules'), join(assembled, 'node_modules'))
   })
 
   it('resolves every patch row from the profile root when the folder is linked', async () => {
-    const profile = profileWith((target) => symlinkSync(assembled, target, 'dir'))
+    const profile = profileWith((target) => linkDir(assembled, target))
     checkInstalled(profile, join(profile, 'node_modules', 'dsh-orb'))
     const host = await import(pathToFileURL(resolveFromProfile(profile, 'dsh-orb/host')).href)
     assert.equal(typeof host.apply, 'function')
@@ -89,25 +100,47 @@ describe('dsh-orb install layout', () => {
   })
 
   it('resolves every patch row when the tarball is unpacked into the profile', () => {
+    const { version } = JSON.parse(readFileSync(join(bundle, 'package.json'), 'utf8'))
     const packed = spawnSync(process.execPath, [join(bundle, 'scripts/pack.mjs')], { cwd: repo, stdio: 'pipe', encoding: 'utf8' })
     assert.equal(packed.status, 0, packed.stderr)
-    const tarball = join(repo, 'dsh-orb-0.0.0.tgz')
+    const tarball = join(repo, `dsh-orb-${version}.tgz`)
     assert.ok(existsSync(tarball))
     try {
       const profile = profileWith((target) => {
         mkdirSync(target, { recursive: true })
-        const untar = spawnSync('tar', ['-xzf', tarball, '-C', target, '--strip-components=1'], { encoding: 'utf8' })
-        assert.equal(untar.status, 0, untar.stderr)
+        // Extract by bare name beside the cwd: GNU tar (Git for Windows) reads a
+        // drive-letter path in `-f` or `-C` as a remote host, so no absolute
+        // path may reach tar.
+        const local = join(target, basename(tarball))
+        copyFileSync(tarball, local)
+        try {
+          const untar = spawnSync('tar', ['-xzf', basename(tarball), '--strip-components=1'], { cwd: target, encoding: 'utf8' })
+          assert.equal(untar.status, 0, untar.stderr)
+        } finally {
+          rmSync(local, { force: true })
+        }
       })
       const root = join(profile, 'node_modules', 'dsh-orb')
       checkInstalled(profile, root)
       const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
       assert.equal(manifest.devDependencies, undefined)
       assert.equal(manifest.scripts, undefined)
-      for (const spec of Object.values({ ...manifest.dependencies })) {
-        assert.doesNotMatch(String(spec), /^(file|link|workspace):/)
+      // Self-contained: no dependency resolves from a registry. The runtime deps ship
+      // inside the package (koffi with its platform prebuilds, scriptless so pnpm has
+      // nothing to gate); the @deepseek-ai peers stay declared for the host's check.
+      assert.equal(manifest.dependencies, undefined)
+      assert.deepEqual(Object.keys(manifest.peerDependencies ?? {}).length > 0, true)
+      for (const rel of [
+        'node_modules/koffi/package.json',
+        'node_modules/zod/package.json',
+        'node_modules/@koromix/koffi-darwin-arm64/darwin_arm64/koffi.node',
+        'node_modules/@koromix/koffi-darwin-x64/darwin_x64/koffi.node',
+        'node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node',
+      ]) {
+        assert.ok(existsSync(join(root, rel)), rel)
       }
-      assert.deepEqual(Object.keys(manifest.dependencies).sort(), ['koffi', 'zod'])
+      const koffi = JSON.parse(readFileSync(join(root, 'node_modules/koffi/package.json'), 'utf8'))
+      assert.equal(koffi.scripts, undefined, 'no install script for pnpm to gate')
     } finally {
       rmSync(tarball, { force: true })
     }

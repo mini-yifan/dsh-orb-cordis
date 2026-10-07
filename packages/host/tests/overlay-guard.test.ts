@@ -42,3 +42,39 @@ describe('overlay guard capture exclusion', () => {
     assert.deepEqual(seen, [[11]])
   })
 })
+
+describe('observation ribbon preference', () => {
+  const bounds = { x: 1, y: 2, width: 30, height: 40 }
+
+  function recorder(overrides: Partial<OverlayGuardTransport> = {}) {
+    const messages: { type: string; bounds?: unknown }[] = []
+    const guard = createOverlayGuard({
+      hasHelper: () => true,
+      send: async (message) => { messages.push(message) },
+      setHidInput: () => undefined,
+      ...overrides,
+    })
+    return { messages, guard }
+  }
+
+  it('draws the frame when the preference is on or unknown', async () => {
+    const on = recorder({ observationFrameEnabled: () => true })
+    await on.guard.setObservationFrame(bounds)
+    const unset = recorder()
+    await unset.guard.setObservationFrame(bounds)
+    assert.deepEqual(on.messages.map((message) => message.bounds), [bounds])
+    assert.deepEqual(unset.messages.map((message) => message.bounds), [bounds])
+  })
+
+  it('collapses a show into a hide while the ribbon is switched off', async () => {
+    const off = recorder({ observationFrameEnabled: () => false })
+    await off.guard.setObservationFrame(bounds)
+    assert.deepEqual(off.messages.map((message) => message.bounds), [null])
+  })
+
+  it('still passes the caller-requested hide while the ribbon is off', async () => {
+    const off = recorder({ observationFrameEnabled: () => false })
+    await off.guard.setObservationFrame(null)
+    assert.deepEqual(off.messages.map((message) => message.bounds), [null])
+  })
+})

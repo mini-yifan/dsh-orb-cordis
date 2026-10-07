@@ -3,12 +3,12 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { BALL_ANCHOR, CHROME_INSET } from '../src/geometry.ts'
+import { BALL_ANCHOR, CHROME_INSET, PANEL_INSET } from '../src/geometry.ts'
 
 /**
  * The renderer's half of the fixed-origin contract, checked against the real stylesheet.
  *
- * The window is one 592x792 rectangle in every direction and the ball is parked at
+ * The window is one 1008x792 rectangle in every direction and the ball is parked at
  * `BALL_ANCHOR` inside it, so `#ball` must NOT vary with the expand direction at all.
  * What varies is the PANEL: each `body.expand-*` rule contributes exactly one of
  * `--panel-left` / `--panel-top`, and `#panel` reads them.
@@ -78,13 +78,14 @@ describe('the ball never varies with the expand direction', () => {
 
   it('pins the ball to the anchor with direction-independent declarations', () => {
     const block = ballBaseRule()
-    // The ball sits at BALL_ANCHOR (260,360) in the free window and never moves with
-    // the direction: that fixed position is what lets the window origin stay put on a
-    // direction flip, which is what removes the stale frame. Written from --chrome so
-    // the inset stays the single source of truth, and it must not be moved by an
+    // The ball sits at BALL_ANCHOR (468,360) in the free window and never moves with the
+    // direction: that fixed position is what lets the window origin stay put on a
+    // direction flip, which is what removes the stale frame. Written as literal pixels
+    // derived from the shared constants rather than from --chrome, because the anchor is
+    // the window's centre and no longer a chrome inset. It must not be moved by an
     // `auto` side or a transform.
-    assert.equal(value(block, 'left'), 'calc(var(--chrome) + 248px)')
-    assert.equal(value(block, 'top'), 'calc(var(--chrome) + 348px)')
+    assert.equal(value(block, 'left'), `${BALL_ANCHOR.x}px`)
+    assert.equal(value(block, 'top'), `${BALL_ANCHOR.y}px`)
     assert.ok(!sets(block, 'right'), '#ball must not also set `right`')
     assert.ok(!sets(block, 'bottom'), '#ball must not also set `bottom`')
     assert.ok(!sets(block, 'transform'), '#ball must not be offset by a transform')
@@ -119,8 +120,11 @@ describe('each direction rule owns exactly one panel offset', () => {
   })
 
   it('resolves the four panel offsets to the contracted values', () => {
+    // `left` opens the panel on the LEFT, so its near edge is one strip reserve in from
+    // the window edge; `right` puts the panel's near edge on the ball. Vertically nothing
+    // changed: the strip is horizontal only.
     const expected: Record<string, string> = {
-      left: `${CHROME_INSET}px`,
+      left: `${PANEL_INSET}px`,
       right: `${BALL_ANCHOR.x}px`,
       up: `${CHROME_INSET}px`,
       down: `${BALL_ANCHOR.y}px`,
@@ -142,9 +146,11 @@ describe('each direction rule owns exactly one panel offset', () => {
     assert.ok(chrome, '--chrome is not declared in floating.css')
     assert.equal(chrome[1].trim(), '12px')
     assert.equal(CHROME_INSET, 12)
-    // The anchor the four offsets are expressed against, from the shared constants.
-    assert.equal(BALL_ANCHOR.x, 260)
+    // The anchor the four offsets are expressed against, from the shared constants: the
+    // ball is the window's centre, with a panel and a strip slot to either side.
+    assert.equal(BALL_ANCHOR.x, 468)
     assert.equal(BALL_ANCHOR.y, 360)
+    assert.equal(PANEL_INSET, 220)
   })
 
   it('positions the panel from those two variables', () => {

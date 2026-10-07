@@ -73,14 +73,36 @@ describe('settings routes', () => {
     mkdirSync(profile, { recursive: true })
     const store = new ProfileStore(profile)
     const calls: unknown[] = []
+    let autoCheck = true
     const control: OrbControl = {
       helperAuthorized: (token) => tokensMatch(token, 'helper-secret'),
+      takeJump: () => null,
+      confirmJump() {},
       async publishChrome() { calls.push('chrome') },
       async setOverlayModel(selection) { store.setOverlay(selection); calls.push(['overlay', selection]) },
       async setBackgroundModel(selection) { store.setBackground(selection); calls.push(['background', selection]) },
       async setSelectionEnabled(enabled) { store.setSelectionEnabled(enabled) },
       async setMillifractionEnabled(enabled) { store.setMillifractionEnabled(enabled) },
+      async setObservationFrameEnabled(enabled) { store.setObservationFrameEnabled(enabled) },
       async setBallEnabled(enabled) { store.setBallEnabled(enabled) },
+      helperPhase: () => 'downloading',
+      updateState: () => ({
+        currentVersion: '0.1.0',
+        installedVersion: '0.1.0',
+        latestVersion: '0.2.0',
+        available: true,
+        checking: false,
+        updating: false,
+        canUpdate: true,
+        autoCheck,
+        checkedAt: 1700000000000,
+        restartRequired: false,
+        error: null,
+        pendingBuilds: [],
+      }),
+      async checkUpdate() { calls.push('check') },
+      installUpdate(builds) { calls.push(['install', builds]) },
+      setAutoCheck(enabled) { autoCheck = enabled; calls.push(['auto', enabled]) },
     }
     let handler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined
     const dispose = registerOrbRoutes({
@@ -130,17 +152,34 @@ describe('settings routes', () => {
     const snapshot = JSON.parse(settings.body.toString('utf8')) as {
       avatarUrl: string
       ballEnabled: boolean
+      helperPhase: string
       overlay: { model: string }
       supported: boolean
       permissionFallback: boolean
+      update: { currentVersion: string; latestVersion: string; available: boolean; autoCheck: boolean }
     }
     assert.equal(settings.status, 200)
+    assert.equal(snapshot.helperPhase, 'downloading', 'the settings page can show the runtime wait')
     assert.equal(snapshot.avatarUrl, '/.dsh-orb/avatar?v=0')
     assert.equal(snapshot.avatarUrl.includes('token'), false)
     assert.equal(snapshot.ballEnabled, true)
     assert.equal(snapshot.overlay.model, 'deepseek-flash')
     assert.equal(snapshot.supported, process.platform === 'darwin' || process.platform === 'win32')
     assert.equal(snapshot.permissionFallback, false)
+    assert.deepEqual(snapshot.update, {
+      currentVersion: '0.1.0',
+      installedVersion: '0.1.0',
+      latestVersion: '0.2.0',
+      available: true,
+      checking: false,
+      updating: false,
+      canUpdate: true,
+      autoCheck: true,
+      checkedAt: 1700000000000,
+      restartRequired: false,
+      error: null,
+      pendingBuilds: [],
+    })
 
     const models = response()
     await handler(request('GET', '/.dsh-orb/models', undefined, { 'x-dsh-user': 'ok' }), models)
@@ -170,6 +209,11 @@ describe('settings routes', () => {
     await handler(request('POST', '/.dsh-orb/millifraction', JSON.stringify({ enabled: true }), { 'x-dsh-user': 'ok' }), fraction)
     assert.equal(JSON.parse(fraction.body.toString('utf8')).millifractionEnabled, true)
     assert.equal(store.coordinateMode(), 'millifraction')
+
+    const frame = response()
+    await handler(request('POST', '/.dsh-orb/observation-frame', JSON.stringify({ enabled: false }), { 'x-dsh-user': 'ok' }), frame)
+    assert.equal(JSON.parse(frame.body.toString('utf8')).observationFrameEnabled, false)
+    assert.equal(store.observationFrameEnabled(), false)
 
     const ball = response()
     await handler(request('POST', '/.dsh-orb/ball', JSON.stringify({ enabled: false }), { 'x-dsh-user': 'ok' }), ball)
@@ -241,6 +285,142 @@ describe('settings routes', () => {
     dispose()
   })
 
+  it('exposes the update state, the manual check, and the install request', async () => {
+    const profile = join(root, 'profile-update')
+    mkdirSync(profile, { recursive: true })
+    const store = new ProfileStore(profile)
+    const calls: unknown[] = []
+    const control: OrbControl = {
+      helperAuthorized: () => false,
+      takeJump: () => null,
+      confirmJump() {},
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setObservationFrameEnabled() {},
+      async setBallEnabled() {},
+      updateState: () => ({ ...emptyUpdate, currentVersion: '0.1.0', installedVersion: '0.1.0' }),
+      async checkUpdate() { calls.push('check') },
+      installUpdate(builds) { calls.push(['install', builds]) },
+      setAutoCheck(enabled) { calls.push(['auto', enabled]) },
+    }
+    let handler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined
+    const dispose = registerOrbRoutes({
+      ctx: {
+        webServer: { register(route) { handler = route.handler; return () => { handler = undefined } } },
+        connection: {
+          admit(req) {
+            return req.headers['x-dsh-user'] === 'ok' ? { peer: { id: 'local' } } : { rejection: 401 }
+          },
+        },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+      },
+      store,
+      tcc: new TccMonitor(),
+      control,
+    })
+    assert.ok(handler)
+
+    const denied = response()
+    await handler(request('GET', '/.dsh-orb/update'), denied)
+    assert.equal(denied.status, 401)
+
+    const state = response()
+    await handler(request('GET', '/.dsh-orb/update', undefined, { 'x-dsh-user': 'ok' }), state)
+    assert.equal(state.status, 200)
+    assert.equal((JSON.parse(state.body.toString('utf8')) as { currentVersion: string }).currentVersion, '0.1.0')
+
+    const checked = response()
+    await handler(request('POST', '/.dsh-orb/update/check', '{}', { 'x-dsh-user': 'ok' }), checked)
+    assert.equal(checked.status, 200)
+    assert.equal(calls.includes('check'), true)
+    assert.deepEqual((JSON.parse(checked.body.toString('utf8')) as { update: { currentVersion: string } }).update.currentVersion, '0.1.0')
+
+    // The install answers at once with a snapshot: the page polls instead of waiting it out.
+    const installed = response()
+    await handler(request('POST', '/.dsh-orb/update/install', JSON.stringify({ approvedBuilds: ['koffi'] }), { 'x-dsh-user': 'ok' }), installed)
+    assert.equal(installed.status, 200)
+    assert.deepEqual(calls.at(-1), ['install', ['koffi']])
+
+    const bare = response()
+    await handler(request('POST', '/.dsh-orb/update/install', '{}', { 'x-dsh-user': 'ok' }), bare)
+    assert.deepEqual(calls.at(-1), ['install', undefined])
+
+    const auto = response()
+    await handler(request('POST', '/.dsh-orb/update/auto', JSON.stringify({ enabled: false }), { 'x-dsh-user': 'ok' }), auto)
+    assert.deepEqual(calls.at(-1), ['auto', false])
+
+    const invalid = response()
+    await handler(request('POST', '/.dsh-orb/update/auto', JSON.stringify({ enabled: 'yes' }), { 'x-dsh-user': 'ok' }), invalid)
+    assert.equal(invalid.status, 400)
+    assert.equal(JSON.parse(invalid.body.toString('utf8')).error, 'invalid-auto-check')
+    dispose()
+  })
+
+  it('hands a bookmark jump target to the main window once', async () => {
+    let armed: string | undefined = 'session-agent-9'
+    const control: OrbControl = {
+      helperAuthorized: () => false,
+      takeJump: () => armed === undefined ? null : { sessionId: armed, at: 1234 },
+      confirmJump(sessionId) {
+        if (armed === sessionId) armed = undefined
+      },
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setObservationFrameEnabled() {},
+      async setBallEnabled() {},
+      updateState: () => ({ ...emptyUpdate }),
+      async checkUpdate() {},
+      installUpdate() {},
+      setAutoCheck() {},
+    }
+    let handler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined
+    const profile = join(root, 'profile-jump')
+    mkdirSync(profile, { recursive: true })
+    const dispose = registerOrbRoutes({
+      ctx: {
+        webServer: { register(route) { handler = route.handler; return () => { handler = undefined } } },
+        connection: {
+          admit(req) {
+            return req.headers['x-dsh-user'] === 'ok' ? { peer: { id: 'local' } } : { rejection: 401 }
+          },
+        },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+      },
+      store: new ProfileStore(profile),
+      tcc: new TccMonitor(),
+      control,
+    })
+    assert.ok(handler)
+
+    const denied = response()
+    await handler(request('GET', '/.dsh-orb/jump'), denied)
+    assert.equal(denied.status, 401)
+
+    const armed1 = response()
+    await handler(request('GET', '/.dsh-orb/jump', undefined, { 'x-dsh-user': 'ok' }), armed1)
+    assert.equal(armed1.status, 200)
+    assert.equal((JSON.parse(armed1.body.toString('utf8')) as { sessionId: string }).sessionId, 'session-agent-9')
+
+    const confirmed = response()
+    await handler(request('POST', '/.dsh-orb/jump', JSON.stringify({ sessionId: 'session-agent-9' }), { 'x-dsh-user': 'ok' }), confirmed)
+    assert.equal(confirmed.status, 200)
+
+    const consumed = response()
+    await handler(request('GET', '/.dsh-orb/jump', undefined, { 'x-dsh-user': 'ok' }), consumed)
+    assert.equal((JSON.parse(consumed.body.toString('utf8')) as { sessionId: string | null }).sessionId, null)
+
+    const invalidPost = response()
+    await handler(request('POST', '/.dsh-orb/jump', '{}', { 'x-dsh-user': 'ok' }), invalidPost)
+    assert.equal(invalidPost.status, 400)
+    dispose()
+  })
+
   it('proxies a ball recording to the optional speech service and degrades cleanly', async () => {
     const profile = join(root, 'speech-profile')
     mkdirSync(profile, { recursive: true })
@@ -272,7 +452,13 @@ describe('settings routes', () => {
             return () => { handlers.current = undefined }
           },
         },
-        connection: { isAuthenticated: () => true },
+        connection: {
+          admit(req) {
+            return req.headers['x-dsh-user'] === 'ok' || req.headers['x-dsh-orb-helper'] === 'helper-secret'
+              ? { peer: { id: 'local' } }
+              : { rejection: 401 }
+          },
+        },
         sessionController: { modelCatalog: () => ({ groups: [] }) },
         get: (name) => (name === 'speechToText' ? speech : undefined),
       },
@@ -358,7 +544,13 @@ describe('settings routes', () => {
             return () => { handlers.current = undefined }
           },
         },
-        connection: { isAuthenticated: () => true },
+        connection: {
+          admit(req) {
+            return req.headers['x-dsh-user'] === 'ok' || req.headers['x-dsh-orb-helper'] === 'helper-secret'
+              ? { peer: { id: 'local' } }
+              : { rejection: 401 }
+          },
+        },
         sessionController: { modelCatalog: () => ({ groups: [] }) },
       },
       store,
@@ -396,7 +588,13 @@ describe('settings routes', () => {
             return () => { handlers.current = undefined }
           },
         },
-        connection: { isAuthenticated: () => true },
+        connection: {
+          admit(req) {
+            return req.headers['x-dsh-user'] === 'ok' || req.headers['x-dsh-orb-helper'] === 'helper-secret'
+              ? { peer: { id: 'local' } }
+              : { rejection: 401 }
+          },
+        },
         sessionController: { modelCatalog: () => ({ groups: [] }) },
         get: (name) => (name === 'speechToText'
           ? {
@@ -441,7 +639,13 @@ describe('settings routes', () => {
             return () => { handlers.current = undefined }
           },
         },
-        connection: { isAuthenticated: () => true },
+        connection: {
+          admit(req) {
+            return req.headers['x-dsh-user'] === 'ok' || req.headers['x-dsh-orb-helper'] === 'helper-secret'
+              ? { peer: { id: 'local' } }
+              : { rejection: 401 }
+          },
+        },
         sessionController: { modelCatalog: () => ({ groups: [] }) },
         get: (name) => (name === 'speechToText'
           ? {
@@ -464,6 +668,22 @@ describe('settings routes', () => {
     assert.equal(JSON.parse(notReady.body.toString('utf8')).error, 'voice-not-ready')
   })
 })
+
+/** Update state a host without a checker answers, for tests that only exercise one route. */
+const emptyUpdate = {
+  currentVersion: '',
+  installedVersion: '',
+  latestVersion: null,
+  available: false,
+  checking: false,
+  updating: false,
+  canUpdate: false,
+  autoCheck: false,
+  checkedAt: null,
+  restartRequired: false,
+  error: null,
+  pendingBuilds: [],
+}
 
 /** One canonical 16 kHz mono PCM16 WAV with `seconds` of silence. */
 function canonicalWave(seconds: number): Buffer {

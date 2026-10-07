@@ -13,6 +13,14 @@
   gap: 6px;
 }
 
+/* Transcript children never compress — the container scrolls instead. Without
+ * this, the contain:size notice card has a zero automatic minimum height and
+ * collapses under flex-shrink when the conversation overflows, painting its
+ * content over the neighboring blocks. */
+#transcript > * {
+  flex-shrink: 0;
+}
+
 /* ----- User message (MessageItem) ----- */
 
 .user-row {
@@ -36,6 +44,10 @@
   word-break: break-word;
   overflow-wrap: anywhere;
 }
+
+/* Plugin notices (the code_agent completion report) render as a .block with
+ * data-variant="think": the reasoning card's fold mechanics apply as-is —
+ * a one-line summary until the user expands it. */
 
 /* ----- Message actions (MessageIconActions: copy / turn-usage pill) ----- */
 

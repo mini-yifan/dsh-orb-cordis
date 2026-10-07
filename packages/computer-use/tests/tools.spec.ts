@@ -975,3 +975,60 @@ describe('computer-use session coordinate modes', () => {
     })
   })
 })
+
+describe('cross-session screen lock', () => {
+  function agentWithId(id: string): object {
+    return {
+      id: SessionId(id),
+      options: { provider: 'visual', model: 'vision-model' },
+      session: { requestHeader: () => ({ config: { provider: 'visual', model: 'vision-model' } }) },
+    }
+  }
+
+  function executeAs(ctx: Context, agent: object, tool: string, args: unknown) {
+    return ctx.tools.execute({
+      signal: SIGNAL,
+      callId: ToolCallId(`cu-lock-${++call}`),
+      name: tool,
+      arguments: args,
+      agent: agent as never,
+    })
+  }
+
+  it('fails a second session HID action fast while the first session holds the screen', async () => {
+    const { ctx, backend } = await setup()
+    const gate = Promise.withResolvers<void>()
+    const entered = Promise.withResolvers<void>()
+    const inner = backend.click.bind(backend)
+    let gated = true
+    ;(backend as { click: typeof backend.click }).click = async (input, signal) => {
+      if (gated) {
+        gated = false
+        entered.resolve()
+        await gate.promise
+      }
+      return inner(input, signal)
+    }
+
+    const first = executeAs(ctx, agentWithId('session-first'), 'click', { screen_index: 0, position: [100, 200] })
+    await entered.promise
+    const busy = await executeAs(ctx, agentWithId('session-second'), 'click', { screen_index: 0, position: [300, 400] })
+    expect(busy.isError).toBe(true)
+    expect(text(busy)).toContain('Another Computer Use session is operating the screen')
+    expect(backend.actions).toHaveLength(0)
+
+    gate.resolve()
+    expect((await first).isError).toBe(false)
+    expect(backend.actions).toHaveLength(1)
+    const retry = await executeAs(ctx, agentWithId('session-second'), 'click', { screen_index: 0, position: [300, 400] })
+    expect(retry.isError).toBe(false)
+    expect(backend.actions).toHaveLength(2)
+  })
+
+  it('does not hold the screen across capture-only actions', async () => {
+    const { ctx } = await setup()
+    const result = await executeAs(ctx, agentWithId('session-a'), 'list_apps', {})
+    expect(result.isError).toBe(false)
+    expect(text(result)).toContain('Running apps: Pages, Safari')
+  })
+})

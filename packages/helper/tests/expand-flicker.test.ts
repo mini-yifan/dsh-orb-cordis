@@ -7,6 +7,7 @@ import {
   DOCK_HIT_WIDTH,
   FIXED_WINDOW_SIZE,
   FloatingPlacement,
+  PANEL_INSET,
   PANEL_SIZE,
   ballOriginFromWindow,
   defaultFloatingBallOrigin,
@@ -134,7 +135,7 @@ describe('the panel abuts the ball on the side it opens', () => {
           ball.x + BALL_SIZE,
           'the panel must end exactly on the ball right edge',
         )
-        assert.equal(panel.x, CHROME_INSET, 'an opening-left panel starts at the chrome inset')
+        assert.equal(panel.x, PANEL_INSET, 'an opening-left panel starts past its strip slot')
       } else {
         assert.equal(panel.x, ball.x, 'the panel must start exactly on the ball left edge')
         assert.equal(panel.x, BALL_ANCHOR.x)
@@ -168,16 +169,17 @@ describe('the panel abuts the ball on the side it opens', () => {
       }
     }
     assert.deepEqual([...offsets].sort(), [
-      `${CHROME_INSET},${CHROME_INSET}`,
-      `${CHROME_INSET},${BALL_ANCHOR.y}`,
+      `${PANEL_INSET},${CHROME_INSET}`,
+      `${PANEL_INSET},${BALL_ANCHOR.y}`,
       `${BALL_ANCHOR.x},${CHROME_INSET}`,
       `${BALL_ANCHOR.x},${BALL_ANCHOR.y}`,
     ])
     // Anchor the constants the CSS hardcodes, so a geometry change cannot silently
     // leave floating.css declaring the old offsets.
     assert.equal(CHROME_INSET, 12)
-    assert.equal(BALL_ANCHOR.x, 260)
+    assert.equal(BALL_ANCHOR.x, 468)
     assert.equal(BALL_ANCHOR.y, 360)
+    assert.equal(PANEL_INSET, 220)
   })
 })
 
@@ -235,7 +237,7 @@ describe('a docked tab still narrows the window', () => {
 function panelRectInWindow(workArea: Rect, direction: Direction): Rect {
   const ball = defaultFloatingBallOrigin(workArea)
   return {
-    x: direction.horizontal === 'left' ? CHROME_INSET : BALL_ANCHOR.x,
+    x: direction.horizontal === 'left' ? PANEL_INSET : BALL_ANCHOR.x,
     y: direction.vertical === 'up' ? CHROME_INSET : BALL_ANCHOR.y,
     width: PANEL_SIZE.width,
     height: PANEL_SIZE.height,

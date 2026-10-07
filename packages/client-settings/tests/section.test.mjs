@@ -16,9 +16,14 @@ function loadSection() {
   const calls = []
   let mode = 'ready'
   let confirm = false
+  let jump = null
+  let workspace
+  const intervals = []
   const snapshot = {
     supported: true,
     ballEnabled: true,
+    helperError: '',
+    helperPhase: '',
     avatarUrl: '/.dsh-orb/avatar?v=0',
     avatarPresetId: null,
     avatarPresets: AVATAR_PRESETS.map((preset) => ({ id: preset.id, url: `/.dsh-orb/avatar/preset/${preset.id}` })),
@@ -26,7 +31,22 @@ function loadSection() {
     background: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
     selectionEnabled: false,
     millifractionEnabled: false,
+    observationFrameEnabled: true,
     tcc: { applicable: true, appName: 'DeepSeek Harness', screen: 'missing', accessibility: 'granted' },
+    update: {
+      currentVersion: '0.1.0',
+      installedVersion: '0.1.0',
+      latestVersion: null,
+      available: false,
+      checking: false,
+      updating: false,
+      canUpdate: true,
+      autoCheck: true,
+      checkedAt: null,
+      restartRequired: false,
+      error: null,
+      pendingBuilds: [],
+    },
   }
   const catalog = {
     groups: [{
@@ -90,17 +110,36 @@ function loadSection() {
     fetch: async (path, options = {}) => {
       calls.push({ path, options })
       if (String(path).includes('token') || String(path).startsWith('http')) throw new Error(`credentialed fetch ${path}`)
+      if (path === '/.dsh-orb/jump') {
+        if (options.method === 'POST') return json({ ok: true })
+        if (jump === null) return { ok: false, status: 404, async text() { return JSON.stringify({ error: 'missing' }) } }
+        return json(jump)
+      }
       if (path === '/.dsh-orb/settings') {
         return json(mode === 'linux' ? { ...snapshot, supported: false, tcc: { ...snapshot.tcc, applicable: false } } : snapshot)
       }
       if (path === '/.dsh-orb/models') return json(catalog)
+      if (path === '/.dsh-orb/update') return json(snapshot.update)
       if (options.method === 'POST' && path === '/.dsh-orb/ball') snapshot.ballEnabled = JSON.parse(options.body).enabled
       if (options.method === 'POST' && path === '/.dsh-orb/millifraction') snapshot.millifractionEnabled = JSON.parse(options.body).enabled
+      if (options.method === 'POST' && path === '/.dsh-orb/observation-frame') snapshot.observationFrameEnabled = JSON.parse(options.body).enabled
       if (options.method === 'POST' && path === '/.dsh-orb/overlay-model') snapshot.overlay = JSON.parse(options.body)
       if (options.method === 'POST' && path === '/.dsh-orb/avatar/preset') snapshot.avatarPresetId = JSON.parse(options.body).preset
+      if (options.method === 'POST' && path === '/.dsh-orb/update/check') {
+        snapshot.update = { ...snapshot.update, latestVersion: '0.2.0', available: true, checkedAt: 1700000000000 }
+      }
+      if (options.method === 'POST' && path === '/.dsh-orb/update/install') {
+        const builds = JSON.parse(options.body).approvedBuilds
+        snapshot.update = builds
+          ? { ...snapshot.update, error: null, pendingBuilds: [], updating: true }
+          : { ...snapshot.update, updating: true }
+      }
+      if (options.method === 'POST' && path === '/.dsh-orb/update/auto') snapshot.update = { ...snapshot.update, autoCheck: JSON.parse(options.body).enabled }
       if (options.method === 'POST') return json(snapshot)
       return { ok: false, status: 404, async text() { return JSON.stringify({ error: 'missing' }) } }
     },
+    setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length },
+    clearInterval: () => {},
     console,
   }
   sandbox.window.__ModuleLoader__ = {
@@ -118,6 +157,10 @@ function loadSection() {
       inject(_name, register) { register() },
       register(spec, Component) { registered = { spec, Component } },
     },
+    get(name) {
+      return name === 'uiWorkspace' ? workspace : undefined
+    },
+    effect(run) { return run() },
   }
   plugin.apply(ctx)
 
@@ -136,12 +179,32 @@ function loadSection() {
   return {
     calls,
     spec: registered.spec,
+    snapshot,
     render,
     flush,
+    /** Re-render the page, then run every registered interval once (timers persist). */
+    async tick() {
+      ran.clear()
+      for (let index = 0; index < effects.length; index += 1) {
+        if (effects[index] === undefined || ran.has(index)) continue
+        ran.add(index)
+        await effects[index]()
+      }
+      await settle()
+      for (const interval of [...intervals]) await interval.fn()
+      await settle()
+      return intervals.length
+    },
     setMode(next) { mode = next },
     setConfirm(next) { confirm = next },
+    /** Arm (or clear) the ball-initiated jump target the bridge polls for. */
+    setJump(next) { jump = next },
+    /** Provide (or remove) the workspace navigator the bridge opens sessions through. */
+    setWorkspace(next) { workspace = next },
     setFile(next) { file = next },
     setLang(next) { sandbox.document.documentElement.lang = next },
+    /** Replace the whole update block, or drop it as a host without a version would. */
+    setUpdate(next) { snapshot.update = next === null ? undefined : { ...snapshot.update, ...next } },
     reset() {
       stateSlots.length = 0
       effects.length = 0
@@ -194,6 +257,13 @@ describe('settings section', () => {
     await settle()
     const fractionCall = page.calls.find((call) => call.path === '/.dsh-orb/millifraction')
     assert.equal(JSON.parse(fractionCall.options.body).enabled, true)
+
+    view = page.render()
+    const frame = find(view, (node) => node.props?.['aria-label'] === '显示观察框彩带')[0]
+    frame.props.onClick()
+    await settle()
+    const frameCall = page.calls.find((call) => call.path === '/.dsh-orb/observation-frame')
+    assert.equal(JSON.parse(frameCall.options.body).enabled, false)
 
     view = page.render()
     const overlay = find(view, (node) => node.type === 'select' && node.props['aria-label'] === '悬浮球 Agent')[0]
@@ -250,12 +320,41 @@ describe('settings section', () => {
     assert.deepEqual(pkg.dsh.client.inject, ['@deepseek-ai/dsh-client-ui-settings'])
     const patch = readFileSync(join(root, 'packages/bundle/cordis.patch.yml'), 'utf8')
     assert.match(patch, /id: ui-settings-orb/)
-    assert.match(patch, /id: ui-settings-orb\n\s+name: dsh-orb\n/)
+    // \r? so a Windows checkout of the patch (CRLF) matches the same way.
+    assert.match(patch, /id: ui-settings-orb\r?\n\s+name: dsh-orb\r?\n/)
     const client = readFileSync(join(here, '../client.js'), 'utf8')
     // The selection toolbar is disabled (buggy): no settings entry point may ship.
     assert.equal(client.includes('划词'), false)
     assert.equal(client.includes('selectionToggle'), false)
     assert.equal(client.includes('authenticatedUrl'), false)
+  })
+
+  it('explains the first-launch runtime wait and offers a retry when it failed', async () => {
+    const page = loadSection()
+    page.snapshot.helperPhase = 'downloading'
+    let view = page.render()
+    await page.flush()
+    view = page.render()
+    assert.equal(
+      find(view, (node) => node.children?.includes('正在准备悬浮球：首次使用需要下载约 124–150 MB 的运行时，完成后悬浮球会自动出现。')).length,
+      1,
+      'the waiting line tells the user the ball is being prepared',
+    )
+
+    page.snapshot.helperPhase = ''
+    page.snapshot.helperError = 'runtime-download'
+    await page.tick()
+    view = page.render()
+    assert.equal(find(view, (node) => node.children?.includes('悬浮球运行时没有下载成功。关闭后再打开可再试一次。')).length, 1)
+    const retry = find(view, (node) => node.type === 'button' && node.children?.includes('重试'))[0]
+    assert.ok(retry, 'the failure line carries a retry button')
+    retry.props.onClick()
+    await settle()
+    const call = page.calls.at(-1)
+    assert.equal(call.path, '/.dsh-orb/ball')
+    assert.equal(JSON.parse(call.options.body).enabled, true, 'retry asks the host to start the ball again')
+
+    page.snapshot.helperError = ''
   })
 
   it('follows the main window locale on <html lang>', () => {
@@ -267,6 +366,107 @@ describe('settings section', () => {
     assert.equal(page.spec.label(), '悬浮球')
     page.setLang('')
     assert.equal(page.spec.label(), '悬浮球', 'no lang falls back to the browser languages')
+  })
+
+  it('opens the armed jump target once and confirms it without re-opening', async () => {
+    const page = loadSection()
+    const opened = []
+    page.setWorkspace({ openSession(id) { opened.push(id) } })
+    page.setJump({ sessionId: 'session-agent-9', at: 7 })
+    await page.tick()
+    assert.deepEqual(opened, ['session-agent-9'])
+    const posts = () => page.calls.filter((call) => call.path === '/.dsh-orb/jump' && call.options.method === 'POST')
+    assert.equal(posts().length, 1, 'the confirmed target is consumed with a POST')
+    assert.deepEqual(JSON.parse(posts()[0].options.body), { sessionId: 'session-agent-9' })
+
+    // The same armed target read again (confirm lost) must re-confirm only:
+    // re-opening would yank the main view back on every poll.
+    page.setJump({ sessionId: 'session-agent-9', at: 7 })
+    await page.tick()
+    assert.deepEqual(opened, ['session-agent-9'])
+    assert.equal(posts().length, 2)
+
+    // A re-armed target (new timestamp) is a fresh click and opens again.
+    page.setJump({ sessionId: 'session-agent-9', at: 99 })
+    await page.tick()
+    assert.deepEqual(opened, ['session-agent-9', 'session-agent-9'])
+    assert.equal(posts().length, 3)
+  })
+
+  it('offers the new version and installs it without leaving the page', async () => {
+    const page = loadSection()
+    let view = page.render()
+    await page.flush()
+    view = page.render()
+    const text = (node) => (node.children ?? []).filter((child) => typeof child === 'string').join('')
+    const texts = () => find(view, (node) => typeof node.type === 'string').map(text).join(' ')
+    assert.match(texts(), /当前版本 0\.1\.0。/)
+    assert.ok(find(view, (node) => node.props?.['aria-label'] === '自动检查更新')[0], 'the automatic check is switchable')
+    assert.equal(find(view, (node) => node.type === 'button' && text(node) === '更新').length, 0, 'no update is offered before one is known')
+
+    // The check finds a newer version: the card turns into a banner plus a button.
+    const check = find(view, (node) => node.type === 'button' && text(node) === '检查更新')[0]
+    assert.ok(check, 'a manual check is always available')
+    check.props.onClick()
+    await settle()
+    view = page.render()
+    assert.equal(page.calls.at(-1).path, '/.dsh-orb/update/check')
+    assert.match(texts(), /新版本 0\.2\.0 可用。/)
+    const install = find(view, (node) => node.type === 'button' && text(node) === '更新')[0]
+    assert.ok(install)
+
+    // Installing POSTs and then polls until the host reports the new state.
+    install.props.onClick()
+    await settle()
+    const installCall = page.calls.at(-1)
+    assert.equal(installCall.path, '/.dsh-orb/update/install')
+    assert.deepEqual(JSON.parse(installCall.options.body), {})
+    view = page.render()
+    assert.match(texts(), /正在更新到 0\.2\.0…/)
+    const before = page.calls.length
+    // The settings poll runs alongside the bookmark jump bridge's poll, so the
+    // interval count is only "at least the install poll".
+    assert.ok(await page.tick() >= 1, 'the page polls while the install runs')
+    assert.equal(page.calls.slice(before).some((call) => call.path === '/.dsh-orb/update'), true)
+
+    // A blocked install offers the approval retry with the pending package names.
+    page.setUpdate({ updating: false, available: true, error: 'build-blocked', pendingBuilds: ['koffi'] })
+    page.reset()
+    view = page.render()
+    await page.flush()
+    view = page.render()
+    assert.match(texts(), /更新失败：新版本依赖的安装脚本未获授权/)
+    const allow = find(view, (node) => node.type === 'button' && text(node) === '允许安装脚本并重试')[0]
+    assert.ok(allow)
+    allow.props.onClick()
+    await settle()
+    assert.deepEqual(JSON.parse(page.calls.at(-1).options.body), { approvedBuilds: ['koffi'] })
+
+    // Once installed, the card asks for the restart instead of offering the same version again.
+    page.setUpdate({ updating: false, available: false, error: null, restartRequired: true, installedVersion: '0.2.0', latestVersion: '0.2.0' })
+    page.reset()
+    view = page.render()
+    await page.flush()
+    view = page.render()
+    assert.match(texts(), /已更新到 0\.2\.0，重启 DeepSeek Harness 后生效。/)
+    assert.equal(find(view, (node) => node.type === 'button' && text(node) === '更新').length, 0)
+
+    const toggle = find(view, (node) => node.props?.['aria-label'] === '自动检查更新')[0]
+    toggle.props.onClick()
+    await settle()
+    assert.deepEqual(JSON.parse(page.calls.at(-1).options.body), { enabled: false })
+    assert.equal(page.calls.at(-1).path, '/.dsh-orb/update/auto')
+  })
+
+  it('leaves the update card out where the host has no version to report', async () => {
+    const page = loadSection()
+    page.setUpdate(null)
+    let view = page.render()
+    await page.flush()
+    view = page.render()
+    const texts = find(view, (node) => typeof node.type === 'string').map((node) => (node.children ?? []).filter((child) => typeof child === 'string').join('')).join(' ')
+    assert.equal(texts.includes('插件更新'), false)
+    assert.equal(texts.includes('检查更新'), false)
   })
 })
 

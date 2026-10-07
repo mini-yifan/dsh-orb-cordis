@@ -14,7 +14,7 @@ declare module '@deepseek-ai/dsh-llm' {
     'computer-use': { kind: 'computer-use' } & ContextFormed
   }
 }
-import type { SessionId, UserMessage } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
 
 /** Plugin id recorded on the parked completion notice. */
 export const COMPLETION_PLUGIN = 'tool-code-agent'
@@ -24,10 +24,23 @@ export const COMPLETION_BODY_MAX_CHARS = 4000
 
 const NO_ASSISTANT = 'The Code agent session ended without a final assistant message.'
 
-/** Host agent registry methods the watch uses after `session.prompt` accepts. */
+/**
+ * Appended when another Computer Use session holds a turn at delivery time. Without it the woken
+ * caller would resume GUI work — possibly on a chat the user abandoned — and fight the session the
+ * user is watching for the mouse and keyboard.
+ */
+const SCREEN_BUSY_SUFFIX =
+  'Another Computer Use chat is operating the screen right now. '
+  + 'Report this result as text only; do not perform any GUI actions unless the user asks again in this chat.'
+
+/**
+ * Host agent registry methods the watch uses after `session.prompt` accepts. `list` and
+ * `isOwnedBy` exist on the live `AgentRegistry`; test fakes may omit them.
+ */
 export interface CodeAgentLookup {
   get(id: SessionId): Agent | undefined
   withoutInitiator<T>(operation: () => T): T
+  list?(): readonly Agent[]
 }
 
 /** One accepted `code_agent` prompt and the two live Agents that own its interval. */
@@ -78,15 +91,21 @@ async function runWatch(watch: CodeAgentCompletionWatch, signal: AbortSignal): P
       return
     }
     if (await raceAbort(signal, watch.code.whenIdle()) === 'aborted') return
+    const userStopped = lastTurnEndedUserAborted(watch.code)
     const outcome = lastAssistantText(watch.code) ?? NO_ASSISTANT
     if (await raceAbort(signal, watch.caller.whenIdle()) === 'aborted') return
     if (watch.agents.get(watch.caller.id) !== watch.caller) return
     watch.caller.followup(createUserMessage({
-      content: [{ type: 'text', text: completionNoticeText(watch.sessionId, watch.task, outcome) }],
+      content: [{
+        type: 'text',
+        text: completionNoticeText(watch.sessionId, watch.task, outcome, anotherComputerUseRunning(watch), userStopped),
+      }],
       source: {
         kind: 'computer-use',
         form: 'notice',
-        summary: boundContextSummary(`Code agent ${watch.sessionId} finished`),
+        summary: boundContextSummary(userStopped
+          ? `Code agent ${watch.sessionId} stopped by the user`
+          : `Code agent ${watch.sessionId} finished`),
       },
     }))
   } catch (error) {
@@ -107,7 +126,8 @@ function intervalHasStarted(code: Agent, requestId: SessionRequestId): boolean {
   return code.status === 'running' || !holdsPrompt(code, requestId)
 }
 
-function holdsPrompt(code: Agent, requestId: SessionRequestId): boolean {
+/** Whether the accepted prompt is still parked in the inbox (queued, not started or finished). */
+export function holdsPrompt(code: Agent, requestId: SessionRequestId): boolean {
   return messageHasRpc(code.inbox.nextTurn, requestId) || messageHasRpc(code.inbox.nextStep, requestId)
 }
 
@@ -160,7 +180,8 @@ async function raceAbort(signal: AbortSignal, work: Promise<void>): Promise<'abo
   }
 }
 
-function lastAssistantText(code: Agent): string | undefined {
+/** Newest non-empty assistant text of the session, or undefined when none exists. */
+export function lastAssistantText(code: Agent): string | undefined {
   const messages = code.session.deriveMessages()
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
@@ -175,8 +196,71 @@ function lastAssistantText(code: Agent): string | undefined {
   return undefined
 }
 
-function completionNoticeText(sessionId: SessionId, task: string, outcome: string): string {
-  const body = `Background Code agent session ${sessionId} finished this task:\n${task}\n\n${outcome}`
-  if (body.length <= COMPLETION_BODY_MAX_CHARS) return body
-  return `${body.slice(0, COMPLETION_BODY_MAX_CHARS - 1)}…`
+/**
+ * Whether the session's last closed turn was aborted by a user cancellation.
+ * The main window's stop button cancels with cause 'user' and the durable
+ * turn/end record carries that cause; repair-synthesized closers flatten it,
+ * which reads as not-user.
+ */
+export function lastTurnEndedUserAborted(agent: Agent): boolean {
+  try {
+    const events = (agent.session as {
+      snapshotEvents?: () => readonly unknown[]
+    }).snapshotEvents?.() ?? []
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = asRecord(events[index])
+      if (event?.type !== 'turn/end') continue
+      const reason = asRecord(event.data)?.reason
+      if (asRecord(reason)?.kind !== 'aborted') return false
+      return asRecord(asRecord(reason)?.reason)?.kind === 'user'
+    }
+    return false
+  } catch {
+    // Test fakes and odd sessions may not expose the event log.
+    return false
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
+}
+
+/**
+ * Whether a Computer Use session other than the caller currently holds a turn.
+ * The caller's own background Code sessions are standard-preset, so they never
+ * count; a registry without `list` (test fakes) reads as an empty screen.
+ */
+function anotherComputerUseRunning(watch: CodeAgentCompletionWatch): boolean {
+  const agents = watch.agents.list?.() ?? []
+  return agents.some(other => (
+    other.id !== watch.caller.id
+    && other.status === 'running'
+    && presetOf(other) === 'computer-use'
+  ))
+}
+
+/** Session preset of a live agent, tolerant of test fakes that carry no header. */
+function presetOf(agent: Agent): string | undefined {
+  const session = agent.session as Session | undefined
+  return session?.header?.agentPreset
+}
+
+function completionNoticeText(
+  sessionId: SessionId,
+  task: string,
+  outcome: string,
+  screenBusy: boolean,
+  userStopped: boolean,
+): string {
+  const body = userStopped
+    ? `The user stopped background Code agent session ${sessionId} from the main window:\n${task}\n\nLast output before it stopped:\n${outcome}`
+    : `Background Code agent session ${sessionId} finished this task:\n${task}\n\n${outcome}`
+  const capped = body.length <= COMPLETION_BODY_MAX_CHARS
+    ? body
+    : `${body.slice(0, COMPLETION_BODY_MAX_CHARS - 1)}…`
+  // Appended after the cap so the instructions survive a truncated outcome.
+  const guard = userStopped
+    ? '\n\nDo not restart this task and do not call code_agent for it again unless the user asks.'
+    : ''
+  return `${capped}${guard}${screenBusy ? `\n\n${SCREEN_BUSY_SUFFIX}` : ''}`
 }
