@@ -425,7 +425,7 @@ export class FloatingPlacement {
       this.docked = undefined
       const next = expandedOverlayBounds(origin, display.workArea)
       this.adoptDirection(next)
-      this.window.setBounds(windowRect(next))
+      this.setWindowBounds(windowRect(next))
       return { expanded: true, ...this.direction, docked: undefined, strip: this.stripWidth }
     }
     if (this.docked) {
@@ -435,7 +435,7 @@ export class FloatingPlacement {
     const origin = clampedBallOrigin(this.currentBallOrigin(display.workArea), display.workArea)
     const next = expandedOverlayBounds(origin, display.workArea)
     this.adoptDirection(next)
-    this.window.setBounds(windowRect(next))
+    this.setWindowBounds(windowRect(next))
     return { expanded: false, ...this.direction, docked: undefined, strip: this.stripWidth }
   }
 
@@ -471,14 +471,14 @@ export class FloatingPlacement {
       const next = expandedOverlayBounds(origin, display.workArea)
       this.adoptDirection(next)
       this.anim += 1
-      this.window.setBounds(windowRect(next))
+      this.setWindowBounds(windowRect(next))
       return { docked: undefined, ...this.direction, strip: this.stripWidth }
     }
     if (!canDock) {
       const side = this.docked.side
       this.docked = undefined
       this.anim += 1
-      this.window.setBounds(windowRect(overlayBoundsFromBall(origin)))
+      this.setWindowBounds(windowRect(overlayBoundsFromBall(origin)))
       return { docked: undefined, ...this.direction, strip: this.stripWidth }
     }
     if (staysDocked(this.docked.side, origin.x, display.bounds)) {
@@ -487,7 +487,7 @@ export class FloatingPlacement {
     }
     this.docked = undefined
     this.anim += 1
-    this.window.setBounds(windowRect(overlayBoundsFromBall(origin)))
+    this.setWindowBounds(windowRect(overlayBoundsFromBall(origin)))
     return { docked: undefined, ...this.direction, strip: this.stripWidth }
   }
 
@@ -504,28 +504,33 @@ export class FloatingPlacement {
       this.applyTab(this.docked.side, this.docked.y, display.bounds)
       return { docked: this.docked.side, ...this.direction, strip: this.stripWidth }
     }
-    if (this.expanded) {
-      this.setExpanded(true)
-      return { docked: undefined, ...this.direction, strip: this.stripWidth }
-    }
     // A dock slide leaves a tab-sized window whose ball origin follows the tab, not the
     // free window's anchor; `isTabSized` is what tells the two apart now that the free
     // window is one constant size.
     const origin = this.isTabSized(bounds) ? this.screenOrigin() : ballOriginFromWindow(bounds)
+    // Dock BEFORE the panel test below, and judge from the renderer's own release point
+    // when it sent one.
+    //
+    // A drag that started while a turn was running never collapsed the panel, so the
+    // helper still believes it is open - and the old order returned here on that flag
+    // alone, which is exactly the release that was dragged to an edge. The renderer's
+    // reported ball origin carries no such history: it is where the finger let go, on
+    // either side of the edge, so it is the authority whenever it is present.
     if (canDock) {
-      const side = dockSideForBallOrigin(origin, display.bounds, this.displayBounds())
-      if (side) return this.snap(side, origin.y, display.bounds)
-      // Windows can report bounds mis-scaled per display (electron#10862), so a ball
-      // pushed flush to the edge can read a pixel or two short here. The renderer's own
-      // reading of the same drag is the second signal, and either one may dock.
       const remote = inputBallOrigin(remoteOrigin)
       if (remote) {
         const remoteDisplay = this.displayAt(remote)
         const remoteSide = dockSideForBallOrigin(remote, remoteDisplay.bounds, this.displayBounds())
         if (remoteSide) return this.snap(remoteSide, remote.y, remoteDisplay.bounds)
       }
+      const side = dockSideForBallOrigin(origin, display.bounds, this.displayBounds())
+      if (side) return this.snap(side, origin.y, display.bounds)
     }
-    this.window.setBounds(windowRect(overlayBoundsFromBall(clampedBallOrigin(origin, display.workArea))))
+    if (this.expanded) {
+      this.setExpanded(true)
+      return { docked: undefined, ...this.direction, strip: this.stripWidth }
+    }
+    this.setWindowBounds(windowRect(overlayBoundsFromBall(clampedBallOrigin(origin, display.workArea))))
     return { docked: undefined, ...this.direction, strip: this.stripWidth }
   }
 
@@ -544,7 +549,7 @@ export class FloatingPlacement {
     const end = insideBallOrigin(this.docked.side, this.docked.y, display)
     this.docked = undefined
     this.adoptDirection(TAB_CORNER)
-    this.window.setBounds(windowRect(overlayBoundsFromBall(start)))
+    this.setWindowBounds(windowRect(overlayBoundsFromBall(start)))
     await this.animate(windowRect(overlayBoundsFromBall(end)), DOCK_SLIDE_IN_MS, easeOutCubic)
     return { docked: undefined, ...this.direction, strip: this.stripWidth }
   }
@@ -569,11 +574,29 @@ export class FloatingPlacement {
     return bounds.width < PANEL_WINDOW_SIZE.width || bounds.height < PANEL_WINDOW_SIZE.height
   }
 
+  /**
+   * Re-bound the window, but only when the rectangle actually differs.
+   *
+   * Under the fixed-origin model expand and collapse ask for the very rectangle the
+   * window already has. `setBounds` still issues a `SetWindowPos`, and Windows repaints
+   * the window for it, so the one thing that was supposed to make expand free - the
+   * origin not moving - was being spent anyway. Comparing first means those calls cost
+   * nothing at all.
+   */
+  private setWindowBounds(next: Rect): void {
+    const current = this.window.getBounds()
+    if (
+      current.x === next.x && current.y === next.y
+      && current.width === next.width && current.height === next.height
+    ) return
+    this.window.setBounds(next)
+  }
+
   private applyTab(side: DockSide, ballY: number, bounds: Rect): void {
     const y = clampBallY(ballY, bounds)
     this.docked = { side, y }
     this.anim += 1
-    this.window.setBounds(dockedTabBounds(side, y, bounds))
+    this.setWindowBounds(dockedTabBounds(side, y, bounds))
   }
 
   private async snap(side: DockSide, ballY: number, bounds: Rect): Promise<DockState> {
@@ -591,7 +614,7 @@ export class FloatingPlacement {
     if (!this.docked || this.docked.side !== side) {
       return { docked: this.docked?.side, ...this.direction, strip: this.stripWidth }
     }
-    this.window.setBounds(dockedTabBounds(side, y, bounds))
+    this.setWindowBounds(dockedTabBounds(side, y, bounds))
     return { docked: side, ...this.direction, strip: this.stripWidth }
   }
 
