@@ -327,6 +327,47 @@ describe('windows desktop backend', () => {
     expect(host.calls).toEqual(['move:10,20', 'down', 'up'])
   })
 
+  it('releases the button and the modifiers when a click, drag, or chord is cancelled', async () => {
+    const host = ops()
+    const screen = { index: 0, bounds, scale: 1 }
+    const backend = createWindowsDesktopBackend(host)
+    // Cancel only once the press has actually been posted, so the abort lands inside the
+    // window between press and release.
+    const abortOncePressed = async (marker: string, controller: AbortController): Promise<void> => {
+      for (let attempt = 0; attempt < 500 && !host.calls.includes(marker); attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 2))
+      }
+      expect(host.calls).toContain(marker)
+      controller.abort()
+    }
+
+    const clickAbort = new AbortController()
+    const clicking = backend.click({ screen, position: [0, 0], button: 'left', count: 1 }, clickAbort.signal)
+    await abortOncePressed('down', clickAbort)
+    await expect(clicking).rejects.toThrow()
+    expect(host.calls).toEqual(['move:10,20', 'down', 'up'])
+
+    host.calls.length = 0
+    const chordAbort = new AbortController()
+    const chording = backend.hotkey({ keys: ['ctrl', 'c'] }, chordAbort.signal)
+    await abortOncePressed('key:17:down:0', chordAbort)
+    await expect(chording).rejects.toThrow()
+    expect(host.calls).toEqual(['key:17:down:0', 'key:17:up:0'])
+
+    host.calls.length = 0
+    const dragAbort = new AbortController()
+    const dragging = backend.drag({
+      startScreen: screen,
+      startPosition: [0, 0],
+      endScreen: screen,
+      endPosition: [1000, 1000],
+    }, dragAbort.signal)
+    await abortOncePressed('down', dragAbort)
+    await expect(dragging).rejects.toThrow()
+    expect(host.calls.at(-1)).toBe('up')
+    expect(host.calls.filter(call => call === 'down')).toHaveLength(1)
+  })
+
   it('refuses input into an elevated window and opens Explorer for reveal', async () => {
     let blocked = true
     const host = ops({
