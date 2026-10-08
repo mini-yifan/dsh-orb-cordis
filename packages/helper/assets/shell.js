@@ -6,6 +6,7 @@ import {
   usageLabels, tokenUsageTotal, formatTokenCount,
 } from './transcript-model.js'
 import { upgradeCodeBlocks } from './highlight.js'
+import { canAutoCollapse, panelControlAction } from './panel-state.js'
 import {
   icon, THINK, CHEVRON_DOWN, CHEVRON_UP, SEARCH, GLOBE, BROWSE, EDIT, CODE, API, SPARKLE, COPY, CHECK, stateSpinner,
 } from './icons.js'
@@ -28,6 +29,11 @@ const zh = {
   stop: '停止',
   fresh: '新建',
   history: '历史',
+  pin: '保持展开',
+  unpin: '取消保持展开',
+  minimize: '最小化，任务继续运行',
+  needsAnswer: '需要回答，点击展开',
+  open: '展开桌面 agent',
   historyEmpty: '还没有 Computer Use 对话。',
   untitled: '未命名对话',
   placeholder: '向桌面 agent 发送消息…',
@@ -80,6 +86,11 @@ const en = {
   stop: 'Stop',
   fresh: 'New',
   history: 'History',
+  pin: 'Keep open',
+  unpin: 'Cancel keep open',
+  minimize: 'Minimize — keep task running',
+  needsAnswer: 'Answer needed — click to open',
+  open: 'Open desktop agent',
   historyEmpty: 'No Computer Use chats yet.',
   untitled: 'Untitled',
   placeholder: 'Ask the desktop agent…',
@@ -261,6 +272,7 @@ function main() {
   const status = document.querySelector('#status')
   const prompt = document.querySelector('#prompt')
   const composer = document.querySelector('#composer')
+  const panelControl = document.querySelector('#panel-control')
   applyStaticText()
 
   let expanded = false
@@ -275,6 +287,9 @@ function main() {
   let skipClick = false
   let skipDockCommit = false
   let suppressExpand = false
+  let manuallyMinimized = false
+  let composing = false
+  let expansionRevision = 0
   let docked
   let dockHoverArmed = true
   let dockPointerInside = false
@@ -345,6 +360,7 @@ function main() {
   /** Re-render every text surface after the dictionary switched. */
   function refreshAllText() {
     applyStaticText()
+    syncPanelControl()
     renderPermission()
     renderHistory()
     renderAgentStrip()
@@ -404,6 +420,36 @@ function main() {
     return pending !== undefined
   }
 
+
+  function panelState() {
+    return { expanded, pinned, running, asking: asking(), dragging, pointerInside: dockPointerInside, composing }
+  }
+
+  function syncPanelControl() {
+    const action = panelControlAction(panelState())
+    panelControl.dataset.action = action
+    if (action === 'pin') panelControl.setAttribute('aria-pressed', String(pinned))
+    else panelControl.removeAttribute('aria-pressed')
+    const label = action === 'minimize' ? messages.minimize : pinned ? messages.unpin : messages.pin
+    panelControl.setAttribute('aria-label', label)
+    panelControl.title = label
+    const ballLabel = asking() ? messages.needsAnswer : running ? messages.running : messages.open
+    ball.setAttribute('aria-label', ballLabel)
+    ball.title = ballLabel
+  }
+
+  function clearCollapseTimer() {
+    if (collapseTimer !== undefined) clearTimeout(collapseTimer)
+    collapseTimer = undefined
+  }
+
+  function minimizePanel() {
+    manuallyMinimized = true
+    suppressExpand = true
+    setPermissionOpen(false)
+    void setExpanded(false, true)
+  }
+
   function syncGif() {
     if (pageClosed()) return
     const gif = document.querySelector('#ball-gif')
@@ -426,8 +472,10 @@ function main() {
     if (pageClosed()) return
     document.body.classList.toggle('running', running)
     stop.hidden = !expanded || !running
+    syncPanelControl()
     syncGif()
     if (next) {
+      clearCollapseTimer()
       const group = ensureProcess()
       if (!group.live) {
         group.live = true
@@ -454,6 +502,7 @@ function main() {
       setProcessOpen(processGroup, false)
       refreshProcessLabel(processGroup)
     }
+    scheduleCollapse()
   }
 
   function applyDirection(state) {
@@ -523,16 +572,18 @@ function main() {
 
   async function setExpanded(next, force = false) {
     if (pageClosed()) return
-    if (collapseTimer !== undefined) {
-      clearTimeout(collapseTimer)
-      collapseTimer = undefined
-    }
+    clearCollapseTimer()
     if (collapseFrame !== undefined) {
       clearTimeout(collapseFrame)
       collapseFrame = undefined
     }
+    if (!next && !force && !canAutoCollapse(panelState())) return
+    const revision = ++expansionRevision
     if (next) {
+      manuallyMinimized = false
+      if (expanded) return
       const state = await api.setExpanded(true)
+      if (pageClosed() || revision !== expansionRevision) return
       applyDocked(undefined)
       applyDirection(state)
       panel.hidden = false
@@ -543,7 +594,6 @@ function main() {
       syncGif()
       return
     }
-    if (!force && (pinned || running || asking())) return
     expanded = false
     document.body.classList.remove('expanded')
     renderAgentStrip()
@@ -568,11 +618,12 @@ function main() {
   }
 
   function scheduleCollapse() {
-    if (pinned || running || asking() || dragging) return
-    if (collapseTimer !== undefined) clearTimeout(collapseTimer)
+    clearCollapseTimer()
+    if (!canAutoCollapse(panelState())) return
     collapseTimer = setTimeout(() => {
       collapseTimer = undefined
-      void setExpanded(false)
+      // Recheck at fire time: a task or pointer re-entry may have happened.
+      if (canAutoCollapse(panelState())) void setExpanded(false)
     }, COLLAPSE_MS)
   }
 
@@ -1852,6 +1903,8 @@ function main() {
     questionRoot.hidden = !showCard
     transcript.hidden = historyOpen
     if (showCard) renderQuestion()
+    syncPanelControl()
+    if (asking()) clearCollapseTimer()
     syncGif()
   }
 
@@ -1933,13 +1986,15 @@ function main() {
     pending = { id: payload.id, questions: payload.questions, drafts: emptyDrafts(payload.questions), index: 0, busy: false }
     setHistoryOpen(false)
     syncQuestion()
-    void setExpanded(true)
+    // A question signals the ball, but respects an explicit minimize.
+    if (!manuallyMinimized) void setExpanded(true)
   }
 
   function clearQuestion(id) {
     if (pending === undefined || pending.id !== id) return
     pending = undefined
     syncQuestion()
+    scheduleCollapse()
   }
 
   function isPrimaryButton(event) {
@@ -1952,6 +2007,7 @@ function main() {
 
   document.body.addEventListener('pointerenter', () => {
     dockPointerInside = true
+    clearCollapseTimer()
     if (dragging || collapsing) return
     if (docked !== undefined) {
       if (dockHoverArmed) void unsnapDocked()
@@ -1991,8 +2047,6 @@ function main() {
         return
       }
       collapsing = true
-      pinned = false
-      document.body.classList.remove('pinned')
       void setExpanded(false, true).then(() => {
         collapsing = false
         if (dragging && lastOrigin !== undefined) void moveBall(lastOrigin.x, lastOrigin.y)
@@ -2033,9 +2087,8 @@ function main() {
       skipClick = false
       return
     }
-    pinned = !pinned
-    document.body.classList.toggle('pinned', pinned)
-    if (pinned) await setExpanded(true)
+    suppressExpand = false
+    await setExpanded(true)
   })
   ball.addEventListener('pointercancel', (event) => { void finishPointer(event) })
   ball.addEventListener('lostpointercapture', (event) => { void finishPointer(event) })
@@ -2176,6 +2229,15 @@ function main() {
     api.send(payload)
   }
   prompt.addEventListener('input', syncComposerHeight)
+  prompt.addEventListener('compositionstart', () => {
+    composing = true
+    clearCollapseTimer()
+  })
+  prompt.addEventListener('compositionend', () => {
+    composing = false
+    syncComposerHeight()
+    scheduleCollapse()
+  })
   prompt.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || isComposing(event)) return
     event.preventDefault()
@@ -2223,6 +2285,17 @@ function main() {
     setPermissionOpen(false)
   })
   historyButton.addEventListener('click', () => { setHistoryOpen(!historyOpen) })
+  panelControl.addEventListener('click', () => {
+    if (panelControlAction(panelState()) === 'minimize') {
+      minimizePanel()
+      return
+    }
+    pinned = !pinned
+    document.body.classList.toggle('pinned', pinned)
+    syncPanelControl()
+    if (pinned) clearCollapseTimer()
+    else scheduleCollapse()
+  })
   newConversation.addEventListener('click', () => {
     setHistoryOpen(false)
     setPermissionOpen(false)
@@ -2331,6 +2404,7 @@ function main() {
     pending.error = typeof payload.text === 'string' ? payload.text : messages.incomplete
     renderQuestion()
   })
+  syncPanelControl()
   syncGif()
 }
 
