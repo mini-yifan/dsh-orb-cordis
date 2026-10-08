@@ -18,6 +18,13 @@ import {
 } from './preferences.ts'
 import { selectionRuntimeAvailable } from '@dsh-orb/native-selection'
 import { defaultAvatarPath } from './helper-path.ts'
+import {
+  MAX_AUDIO_BYTES,
+  readTranscribeRequest,
+  speechToTextOf,
+  SpeechRequestError,
+  transcribeWithSpeech,
+} from './speech.ts'
 import { isTccRight, type TccMonitor, type TccStatus } from './tcc.ts'
 import type { UpdateState } from './update.ts'
 
@@ -39,6 +46,8 @@ interface RouteContext {
   readonly sessionController: {
     modelCatalog(): unknown
   }
+  /** Cordis service lookup. `speechToText` is optional; see ./speech.ts. */
+  get?(name: string): unknown
 }
 
 /** Side effects that have to reach the live ball. */
@@ -89,7 +98,12 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = url.pathname
   const helperAvatar = path === `${PREFIX}/avatar` && req.method === 'GET' && helperTokenOk(deps, req)
-  if (!helperAvatar) {
+  // The ball holds no official credentials; its recording arrives over this
+  // same authenticated loopback prefix and is proxied to ctx.speechToText.
+  // Unlike the settings routes this is helper-only: the main window has the
+  // official speech Remote and must not reach the ball's proxy.
+  const helperTranscribe = path === `${PREFIX}/transcribe` && req.method === 'POST' && helperTokenOk(deps, req)
+  if (!helperAvatar && !helperTranscribe) {
     const rejection = rejectionStatus(deps.ctx, req)
     if (rejection !== undefined) {
       res.writeHead(rejection)
@@ -155,6 +169,15 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
   }
   if ((method === 'GET' || method === 'HEAD') && path === `${PREFIX}/avatar`) {
     await sendAvatar(deps.store, method, res)
+    return
+  }
+  if (method === 'POST' && path === `${PREFIX}/transcribe`) {
+    // Helper token only: a settings-page session must not use the ball's proxy.
+    if (!helperTranscribe) {
+      sendJson(res, 401, { error: 'unauthorized' })
+      return
+    }
+    await transcribe(deps, req, res)
     return
   }
   if ((method === 'GET' || method === 'HEAD') && path.startsWith(`${PREFIX}/avatar/preset/`)) {
@@ -332,6 +355,56 @@ async function catalog(deps: RouteDeps): Promise<ModelCatalog> {
   }
 }
 
+/**
+ * Proxy one ball recording to `ctx.speechToText`.
+ * The voice-input bundle is optional, so a missing service, a missing provider,
+ * and an unprepared provider all answer with a stable code instead of failing
+ * the request as an unexpected host error.
+ */
+async function transcribe(deps: RouteDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let request
+  try {
+    request = readTranscribeRequest(await readJson(req, MAX_AUDIO_BYTES + 1))
+  } catch (error) {
+    // The body limit trips before the base64 length check can, so a recording
+    // too large for the request body is still reported as an oversize audio.
+    const tooLarge = error instanceof Error && error.message === 'too-large'
+    const failure = error instanceof SpeechRequestError
+      ? error
+      : new SpeechRequestError(
+        'invalid-audio',
+        tooLarge ? 413 : 400,
+        tooLarge ? 'Audio exceeds the configured byte limit' : error instanceof Error ? error.message : String(error),
+      )
+    sendJson(res, failure.status, { error: failure.code, message: failure.message })
+    return
+  }
+  const speech = speechToTextOf(deps.ctx.get)
+  if (speech === undefined) {
+    sendJson(res, 503, { error: 'voice-unavailable', message: 'Speech recognition is not available' })
+    return
+  }
+  if (speech.listProviders().length === 0) {
+    sendJson(res, 503, { error: 'voice-unavailable', message: 'No speech provider is registered' })
+    return
+  }
+  const abort = new AbortController()
+  req.once('aborted', () => { abort.abort(new Error('client aborted')) })
+  try {
+    const result = await transcribeWithSpeech(speech, request, abort.signal)
+    sendJson(res, 200, {
+      text: result.text,
+      providerId: result.providerId,
+      audioSeconds: result.audioSeconds,
+    })
+  } catch (error) {
+    const failure = error instanceof SpeechRequestError ? error : new SpeechRequestError('voice-failed', 502, String(error))
+    // A transcription failure is an expected outcome, not a host crash.
+    console.error(`dsh-orb: speech ${failure.code}: ${failure.message}`)
+    sendJson(res, failure.status, { error: failure.code, message: failure.message })
+  }
+}
+
 /** The profile's avatar: a built-in preset, the uploaded bytes, or the shipped GIF. */
 async function sendAvatar(store: ProfileStore, method: string, res: ServerResponse): Promise<void> {
   const selection = store.avatarSelection()
@@ -422,8 +495,8 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
-  const bytes = await readBody(req, 64 * 1024)
+async function readJson(req: IncomingMessage, limit: number = 64 * 1024): Promise<unknown> {
+  const bytes = await readBody(req, limit)
   if (bytes.length === 0) return undefined
   return JSON.parse(bytes.toString('utf8')) as unknown
 }

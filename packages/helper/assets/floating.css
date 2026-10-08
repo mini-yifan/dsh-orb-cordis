@@ -4,11 +4,36 @@
   --ball: 72px;
   --composer-height: var(--ball);
   --prompt-line: 20px;
-  --prompt-pad: 12px;
+  /* Symmetric vertical padding that centres one line in the ball-height pill.
+   * This must stay `(ball - line) / 2`: the empty-state placeholder sizes its
+   * line box as `ball - 2 * pad`, so any other value makes the placeholder and
+   * the real editable line box disagree and the caret/I-beam hotspot drifts
+   * away from the painted text. Horizontal padding stays 8px (see #prompt). */
+  --prompt-pad: calc((var(--ball) - var(--prompt-line)) / 2);
   --composer-max: calc(var(--ball) + var(--prompt-line) * 3);
   --chrome: 12px;
+  /* The panel is not pinned to the window `inset`: the ball owns a fixed window position
+   * (see `#ball`) and the panel slides to the side of it the direction names.
+   * The window is FIXED_WINDOW_SIZE (1008x792) with the ball at BALL_ANCHOR (468, 360) in
+   * the centre, so `--panel-left` is either CHROME_INSET + AGENT_STRIP_WIDTH (220, panel
+   * left of the ball) or BALL_ANCHOR.x (468, panel right of it); `--panel-top` is 12 or
+   * BALL_ANCHOR.y (360). Every direction reaches its own panel rectangle without moving
+   * the window origin — a moved origin is the stale frame Windows copies.
+   * The 208px + chrome each side of the ball that the panel does NOT use is the bookmark
+   * strip: the strip reserve is part of the constant window, so a bookmark appearing or
+   * clearing never re-bounds it either. */
+  --panel-left: 220px;
+  --panel-top: 12px;
+  --panel-w: 320px;
+  --panel-h: 420px;
   --panel-radius: 36px;
   --selection-chip: 28px;
+  /* The microphone shares the pill's single line with the 72px ball float and
+   * the placeholder. Measured on the shipped CSS: the empty prompt leaves 174px
+   * beside the float and the localized placeholder needs ~150px, so the mic slot
+   * must stay under ~24px or the placeholder wraps into the pill's clipped second
+   * line. 22px with no gap keeps ~2px of headroom in both locales and directions. */
+  --mic-size: 22px;
   /* Shell chrome keeps the fork's exact palette — the bar must match the
    * original ball window pixel for pixel. Chat content styles itself through
    * the --dsw-* token sheets (theme.css) instead of these variables. */
@@ -72,7 +97,10 @@ body {
 
 #panel {
   position: absolute;
-  inset: var(--chrome);
+  left: var(--panel-left);
+  top: var(--panel-top);
+  width: var(--panel-w);
+  height: var(--panel-h);
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
@@ -87,6 +115,31 @@ body {
   transition: opacity 300ms ease-in-out, transform 300ms ease-in-out;
 }
 
+/* Panel placement: one property per rule.
+ *
+ * These four selectors have the same specificity, so a rule that pinned BOTH axes would
+ * win both, and the last one in the file would then drag the panel onto its own edge in
+ * the two MIXED corners (left+down, right+up) while the two same-side corners looked
+ * correct. One axis per rule makes that class of bug unrepresentable, and no rule here
+ * touches a physical left/top/right/bottom. */
+body.expand-left {
+  --panel-left: 220px;
+}
+
+body.expand-right {
+  --panel-left: 468px;
+}
+
+body.expand-up {
+  --panel-top: 12px;
+}
+
+body.expand-down {
+  --panel-top: 360px;
+}
+
+/* The scale animation still grows from the ball's corner, kept in its own rule so the
+ * placement rules above stay one property each. */
 body.expand-left {
   --origin-x: 100%;
 }
@@ -111,16 +164,10 @@ body.expanded #panel {
   box-shadow: var(--panel-shadow);
 }
 
-/* With the strip reserved, the panel shifts in by the strip width plus its own
- * chrome on the far side; the strip fills the remaining far edge and its chips
- * align against the panel. */
-body.has-strip.strip-left #panel {
-  left: calc(var(--strip-w) + var(--chrome));
-}
-
-body.has-strip.strip-right #panel {
-  right: calc(var(--strip-w) + var(--chrome));
-}
+/* The strip needs no panel rule: the panel is placed by `direction` alone and the strip
+ * reserve is already in the window, so the strip just fills the side the panel leaves
+ * free. A window that grew for the strip would move its origin (the flicker) and shift
+ * the panel out from under a pointer that is already on it. */
 
 #agent-strip {
   position: absolute;
@@ -141,18 +188,25 @@ body.has-strip.strip-right #panel {
   display: none;
 }
 
-/* The far edge of the container reaches under the panel by --strip-tuck, so the
- * right-aligned chips disappear behind the panel edge instead of floating
- * beside it. */
+/* `.strip-left` means the strip hugs the LEFT window edge, i.e. the panel opened to the
+ * right of the ball and this is the side it left free. The container spans the window
+ * edge to --strip-tuck past the panel's far edge, so the chips tuck behind the panel
+ * instead of floating beside it and align against it: `flex-end` on the left, so they
+ * grow rightward under the panel; `flex-start` on the right, so they grow leftward.
+ *
+ * The width is `--strip-w` + chrome + tuck, the same 232px upstream used. The window is
+ * symmetric about the ball and the panel's far edge sits exactly `--strip-w` + chrome in
+ * from its own window edge, so measuring from the window edge needs no panel term and
+ * stays correct in both directions. */
 body.has-strip.strip-left #agent-strip {
   left: 0;
-  right: calc(320px + var(--chrome) - var(--strip-tuck));
+  width: calc(var(--strip-w) + var(--chrome) + var(--strip-tuck));
   align-items: flex-end;
 }
 
 body.has-strip.strip-right #agent-strip {
   right: 0;
-  left: calc(320px + var(--chrome) - var(--strip-tuck));
+  width: calc(var(--strip-w) + var(--chrome) + var(--strip-tuck));
   align-items: flex-start;
 }
 
@@ -482,10 +536,23 @@ body.expand-up #transcript {
   color: var(--pin);
 }
 
+/* The status line shares the panel's top band with the absolutely positioned
+ * chrome buttons (#history at left 12px, #new-conversation at right 12px,
+ * #permission centred; all 28px tall from top 12px). In normal flow it ran
+ * underneath them, so a long mic message was covered by the History button.
+ * Clearing the whole chrome row keeps the text readable in every direction. */
 #status {
   margin: 0;
+  padding-top: 26px;
   font-size: 12px;
+  line-height: 1.4;
   color: var(--pin);
+  overflow-wrap: anywhere;
+}
+
+body.expand-down #status {
+  padding-top: 0;
+  padding-bottom: 26px;
 }
 
 #composer {
@@ -496,6 +563,22 @@ body.expand-up #transcript {
   right: 16px;
   height: var(--composer-height);
   padding: 0 12px;
+  /* The microphone sits at the pill's free end, opposite the ball. The row
+   * direction is flipped per expansion so `#prompt` always keeps the ball side
+   * and the wrap spacer below stays on the correct edge. `gap: 0` matters: the
+   * placeholder's single line is only ~2px wider than what the ball float
+   * leaves, so any extra gap makes it wrap inside the pill. */
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+body.expand-left #composer {
+  flex-direction: row-reverse;
+}
+
+body.expand-right #composer {
+  flex-direction: row;
 }
 
 body.expand-up #composer {
@@ -542,16 +625,9 @@ body.expand-right #selection-chip {
   right: 16px;
 }
 
-/* Strip-side anchors: the chip spans the panel, not the widened window. */
-body.has-strip.strip-left #selection-chip {
-  left: calc(var(--strip-w) + 16px);
-  width: calc(100% - var(--strip-w) - var(--ball) - 28px);
-}
-
-body.has-strip.strip-right #selection-chip {
-  right: calc(var(--strip-w) + 16px);
-  width: calc(100% - var(--strip-w) - var(--ball) - 28px);
-}
+/* #selection-chip is a child of #panel, and `100%` is the panel: 320px wide in every
+ * state, with the strip reserve outside it. No strip-side variant is needed. (Upstream
+ * shifted it by `--strip-w` while the panel was still the whole window.) */
 
 body.expand-up #selection-chip {
   bottom: var(--composer-height);
@@ -778,7 +854,8 @@ body.expand-down #selection-chip {
 
 #prompt {
   box-sizing: border-box;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
@@ -841,11 +918,132 @@ body.composer-capped #prompt::before {
   line-height: calc(var(--ball) - 2 * var(--prompt-pad));
 }
 
+/* Microphone control at the pill's free end. It occupies a fixed slot in the
+ * flex row so the ball-wrap spacer geometry of #prompt is untouched. */
+#mic {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 100%;
+}
+
+#mic[data-state="hidden"] {
+  display: none;
+}
+
+#mic-button,
+#mic-cancel {
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: var(--mic-size);
+  height: var(--mic-size);
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  color: var(--pin);
+  background: transparent;
+  cursor: pointer;
+}
+
+#mic-button:hover,
+#mic-cancel:hover {
+  background: var(--white);
+  color: var(--black);
+}
+
+#mic-button svg,
+#mic-cancel svg {
+  grid-area: 1 / 1;
+  width: 16px;
+  height: 16px;
+}
+
+#mic-cancel {
+  width: 20px;
+  height: 20px;
+}
+
+#mic-cancel[hidden] {
+  display: none;
+}
+
+#mic-button[hidden] {
+  display: none;
+}
+
+#mic-ring {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  border: 2px solid transparent;
+}
+
+#mic[data-state="recording"] #mic-button {
+  color: var(--white);
+  background: var(--error);
+}
+
+#mic[data-state="recording"] #mic-ring {
+  border-color: var(--error);
+  transform: scale(calc(1 + 0.35 * var(--mic-level, 0)));
+  opacity: calc(0.35 + 0.65 * var(--mic-level, 0));
+  transition: transform 80ms linear, opacity 80ms linear;
+}
+
+#mic[data-state="requesting"] #mic-button,
+#mic[data-state="transcribing"] #mic-button {
+  color: var(--pin);
+}
+
+#mic[data-state="error"] #mic-button {
+  color: var(--error);
+}
+
+#mic-retry {
+  grid-area: 1 / 1;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+#mic-spinner {
+  grid-area: 1 / 1;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 999px;
+  animation: mic-spin 700ms linear infinite;
+}
+
+@keyframes mic-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #mic-spinner {
+    animation-duration: 2000ms;
+  }
+
+  #mic[data-state="recording"] #mic-ring {
+    transition: none;
+  }
+}
+
 #ball {
   position: absolute;
   z-index: 1;
-  top: var(--chrome);
-  left: var(--chrome);
+  /* BALL_ANCHOR: dead centre of FIXED_WINDOW_SIZE (1008x792), i.e. (1008 - 72) / 2 and
+   * (792 - 72) / 2. The ball is FIXED in the window and the panel moves around it, so
+   * expand/collapse never moves the window origin and no direction rule touches this
+   * element. Mirrored by BALL_ANCHOR in src/geometry.ts; tests/ball-corner-css.test.ts
+   * keeps the two in step. */
+  left: 468px;
+  top: 360px;
   width: var(--ball);
   height: var(--ball);
   border: 0;
@@ -854,26 +1052,6 @@ body.composer-capped #prompt::before {
   background: var(--black);
   box-shadow: var(--ball-shadow);
   cursor: grab;
-}
-
-body.expand-left #ball {
-  left: auto;
-  right: var(--chrome);
-}
-
-body.expand-right #ball {
-  right: auto;
-  left: var(--chrome);
-}
-
-body.expand-up #ball {
-  top: auto;
-  bottom: var(--chrome);
-}
-
-body.expand-down #ball {
-  bottom: auto;
-  top: var(--chrome);
 }
 
 body.expanded #ball {
@@ -886,6 +1064,17 @@ body.pinned #ball {
 
 #ball:active {
   cursor: grabbing;
+}
+
+/* A docked window is the 34px tab strip and the ball is hidden inside it (see the
+ * `body.docked` visibility rule below), so nothing is painted here; the box is still
+ * moved to TAB_CORNER — right+down, `--chrome` in from the strip's corner — because that
+ * is the corner a slid ball would occupy. Both axes live in this one rule on purpose: no
+ * other rule sets left/top on `#ball` at this specificity any more, so neither can be
+ * clobbered by the other. */
+body.docked #ball {
+  left: var(--chrome);
+  top: var(--chrome);
 }
 
 #dock-tab {
@@ -966,29 +1155,29 @@ body.docked #stop {
   background: var(--black);
 }
 
+/* #stop is a sibling of #panel, but it is the far cap of the input pill and the pill
+ * lives inside the panel, so it is measured from the panel offsets now that the panel is
+ * no longer at a fixed `inset`. The pill is `--panel-w` x `--composer-height` (320x72),
+ * flush with the panel edge the composer hugs: `bottom: 0` for expand-up, `top: 0` for
+ * expand-down. `58px` is `44 + (72 - 44) / 2`, i.e. the button plus its 14px inset from
+ * that cap. One axis per rule, same rule as the panel placement above. */
 body.expand-left #stop {
-  left: calc(var(--chrome) + 14px);
+  left: calc(var(--panel-left) + 14px);
 }
 
 body.expand-right #stop {
-  right: calc(var(--chrome) + 14px);
+  left: calc(var(--panel-left) + var(--panel-w) - 58px);
 }
 
-/* Strip-side anchors: the stop cap rides the panel, not the widened window. */
-body.has-strip.strip-left #stop {
-  left: calc(var(--strip-w) + var(--chrome) + 14px);
-}
-
-body.has-strip.strip-right #stop {
-  right: calc(var(--strip-w) + var(--chrome) + 14px);
-}
+/* #stop is a window child but measured from `--panel-left`/`--panel-top`, which already
+ * name the panel's own side, so the strip reserve needs no variant here either. */
 
 body.expand-up #stop {
-  bottom: calc(var(--chrome) + 14px);
+  top: calc(var(--panel-top) + var(--panel-h) - 58px);
 }
 
 body.expand-down #stop {
-  top: calc(var(--chrome) + 14px);
+  top: calc(var(--panel-top) + 14px);
 }
 
 body:not(.expanded) #stop,

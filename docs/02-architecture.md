@@ -213,7 +213,7 @@ interface OverlaySpec {
 }
 ```
 
-悬浮球吸边:拖动松手时球一接触屏幕左右边缘即停靠。停靠判定同时采信两路球原点——主进程窗口 bounds 派生的位置与渲染端拖动坐标(`orb:clamp` 的 `origin` 字段),任一触边即吸,以规避 Windows 每显示器 DPI 下窗口 bounds 与输入坐标不一致的问题(electron#10862);每次松手 helper 会向 stderr 输出一行 `[orb-geom]` 诊断日志,记录窗口 bounds、两路原点与各显示器 scaleFactor。
+悬浮球吸边:拖动松手时球一接触屏幕左右边缘即停靠,判定带 `DOCK_OVERLAP`(3 DIP)容差。Windows 把窗口 bounds 量化到整数设备像素,`物理宽 / scaleFactor` 不是整数时(1920/1.5、2560/1.25、3840/1.75),贴到屏幕边的球会报告差 1–2 DIP——严格 `>=` 比较于是只在 100%/200% 缩放的机器上成立,这正是「我能吸、别人不能吸」的来源。判定同时采信两路球原点——主进程窗口 bounds 派生的位置与渲染端拖动坐标(`orb:clamp` 的 `origin` 字段),任一触边即吸,以规避 Windows 每显示器 DPI 下窗口 bounds 与输入坐标不一致的问题(electron#10862)。渲染端的拖动坐标由「主进程回报的窗口原点(`orb:origin`) + `clientX/Y`」算出,不用 `event.screenX`——后者按 Chromium 缓存的窗口原点计算,窗口正在被移动时会给出过期值,这是拖动跳跃的根源;`pointermove` 按帧合并成一次 `orb:move`,一次手势期间 enter/leave 不改变面板展开态。设 `DSH_ORB_DOCK_DEBUG=1` 后每次松手向 stderr 输出一行 `[orb-dock]` 诊断日志,记录窗口 bounds、渲染端原点、各显示器 scaleFactor 与停靠结果,供无法复现的 DPI/多屏布局定位。
 
 划词监控不进这个接口。它在 Host 里跑，把「选中的文字 + 屏幕坐标」发给 helper。
 
