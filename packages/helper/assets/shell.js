@@ -503,6 +503,7 @@ function main() {
   function applyDockedFrom(result) {
     if (result == null) return
     applyDocked(result.docked)
+    if (result.horizontal && result.vertical) applyDirection(result)
   }
 
   async function moveBall(x, y) {

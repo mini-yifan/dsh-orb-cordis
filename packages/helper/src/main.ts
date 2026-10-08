@@ -94,7 +94,14 @@ void app.whenReady().then(async () => {
     console.error(`dsh-orb helper: overlays did not open: ${error instanceof Error ? error.message : String(error)}`)
   }
   placement = new FloatingPlacement(win, (point) => {
-    const display = screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) })
+    // Containment first: getDisplayNearestPoint is center-distance, and with a
+    // small display beside a large one it reports points INSIDE the large one
+    // as belonging to the small neighbour — clamping then flings the ball
+    // across the seam.
+    const contained = screen.getAllDisplays().find((display) =>
+      point.x >= display.bounds.x && point.x < display.bounds.x + display.bounds.width
+      && point.y >= display.bounds.y && point.y < display.bounds.y + display.bounds.height)
+    const display = contained ?? screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) })
     return { bounds: display.bounds, workArea: display.workArea }
   }, () => screen.getAllDisplays().map((display) => display.bounds))
   win.webContents.on('did-finish-load', () => {
