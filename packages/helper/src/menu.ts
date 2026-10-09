@@ -34,11 +34,11 @@ export function contextMenuTemplate(state: ContextMenuState, zh: boolean, action
       click: () => { actions.openMain() },
     },
     {
-      label: zh ? '悬浮球 Agent 模型' : 'Floating-ball Agent model',
+      label: zh ? '悬浮球 Agent 设置' : 'Floating-ball Agent settings',
       submenu: modelMenuItems(state.catalog, state.overlay, actions.setOverlay, labels),
     },
     {
-      label: zh ? '后台 Agent 模型' : 'Background Agent model',
+      label: zh ? '后台 Agent 设置' : 'Background Agent settings',
       submenu: modelMenuItems(state.catalog, state.background, actions.setBackground, labels),
     },
     {
@@ -53,7 +53,40 @@ export function contextMenuTemplate(state: ContextMenuState, zh: boolean, action
     }] : [],
     { type: 'separator' },
     {
-      label: zh ? '停用悬浮球' : 'Disable floating ball',
+      label: zh ? '关闭悬浮球' : 'Close floating ball',
+      click: () => { actions.disable() },
+    },
+  ]
+}
+
+export interface TrayMenuState {
+  readonly openMain: boolean
+}
+
+export interface TrayMenuActions {
+  toggleVisible(): void
+  openMain(): void
+  disable(): void
+}
+
+/**
+ * System-tray menu: the one handle that survives a hidden ball or a closed
+ * main window — summon, reopen, and stop without the settings page.
+ */
+export function trayMenuTemplate(state: TrayMenuState, zh: boolean, actions: TrayMenuActions): MenuItem[] {
+  return [
+    {
+      label: zh ? '显示/隐藏悬浮球' : 'Show / Hide Floating Ball',
+      click: () => { actions.toggleVisible() },
+    },
+    {
+      label: zh ? '打开主窗口' : 'Open Main Window',
+      enabled: state.openMain,
+      click: () => { actions.openMain() },
+    },
+    { type: 'separator' },
+    {
+      label: zh ? '关闭悬浮球' : 'Close floating ball',
       click: () => { actions.disable() },
     },
   ]

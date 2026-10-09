@@ -93,8 +93,27 @@ declare module 'electron' {
     click?: (item: { checked: boolean }) => void
   }
 
+  export interface Menu {
+    popup(options?: { window?: BrowserWindow }): void
+  }
+
   export const Menu: {
-    buildFromTemplate(template: readonly MenuItemOptions[]): { popup(options?: { window?: BrowserWindow }): void }
+    buildFromTemplate(template: readonly MenuItemOptions[]): Menu
+  }
+
+  export interface NativeImage {
+    resize(options: { width: number; height: number }): NativeImage
+    isEmpty(): boolean
+  }
+
+  export const nativeImage: {
+    createFromPath(path: string): NativeImage
+  }
+
+  export const Tray: new (image: NativeImage) => {
+    setToolTip(toolTip: string): void
+    setContextMenu(menu: Menu): void
+    destroy(): void
   }
 
   export const dialog: {

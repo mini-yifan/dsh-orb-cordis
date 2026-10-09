@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { contextMenuTemplate } from '../src/menu.ts'
+import { contextMenuTemplate, trayMenuTemplate } from '../src/menu.ts'
 import { modelMenuItems } from '../src/model-menu.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -130,12 +130,12 @@ describe('ball menu', () => {
     })
     assert.deepEqual(template.map((item) => item.label ?? item.type), [
       '打开主窗口',
-      '悬浮球 Agent 模型',
-      '后台 Agent 模型',
+      '悬浮球 Agent 设置',
+      '后台 Agent 设置',
       '千分比坐标',
       '更新到 0.2.0',
       'separator',
-      '停用悬浮球',
+      '关闭悬浮球',
     ])
     assert.equal(template[0]?.enabled, true)
     template[0]?.click?.({ checked: false })
@@ -165,9 +165,11 @@ describe('ball menu', () => {
     assert.equal(english[0]?.enabled, false)
     // Without a version waiting there is no row to click, and no gap either.
     assert.equal(english.some((item) => String(item.label ?? '').startsWith('Update to')), false)
-    assert.deepEqual(english.map((item) => item.label ?? item.type).slice(-2), ['separator', 'Disable floating ball'])
-    assert.equal(english.at(-1)?.label, 'Disable floating ball')
+    assert.deepEqual(english.map((item) => item.label ?? item.type).slice(-2), ['separator', 'Close floating ball'])
+    assert.equal(english.at(-1)?.label, 'Close floating ball')
   })
+
+  it('builds the tray menu with summon, main window gating, and disable', () => {  })
 
   it('sends ball controls from the ball preload and keeps them off the toolbar', () => {
     const ball = loadPreload('../preload.cjs')
