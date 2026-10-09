@@ -13,6 +13,7 @@ const MILLIFRACTION_FILE = 'millifraction-coordinates.json'
 const OBSERVATION_FRAME_FILE = 'observation-frame.json'
 const SELECTION_FILE = 'selection-toolbar.json'
 const BALL_FILE = 'ball-enabled.json'
+const HOTKEY_FILE = 'orb-hotkey.json'
 const AVATAR_FILE = 'orb-avatar'
 const AVATAR_META_FILE = 'orb-avatar.json'
 const UPDATE_FILE = 'orb-update.json'
@@ -20,6 +21,22 @@ const UPDATE_FILE = 'orb-update.json'
 export const PERMISSION_PRESETS = ['read-only', 'workspace-write', 'danger-full-access'] as const
 
 export type PermissionPreset = (typeof PERMISSION_PRESETS)[number]
+
+/** Fixed accelerator presets for the summon hotkey — no free-form input, so no accelerator parser. */
+export const HOTKEY_ACCELERATORS = ['Alt+B', 'Alt+O', 'Control+Alt+B', 'F9'] as const
+
+export type HotkeyAccelerator = (typeof HOTKEY_ACCELERATORS)[number]
+
+export interface HotkeyConfig {
+  readonly enabled: boolean
+  readonly accelerator: HotkeyAccelerator
+}
+
+const DEFAULT_HOTKEY: HotkeyConfig = { enabled: false, accelerator: 'Alt+B' }
+
+export function isHotkeyAccelerator(value: unknown): value is HotkeyAccelerator {
+  return typeof value === 'string' && (HOTKEY_ACCELERATORS as readonly string[]).includes(value)
+}
 
 export interface AgentModelSelection {
   readonly provider: string
@@ -91,6 +108,7 @@ export class ProfileStore {
   private selectionValue: boolean
   private selectionLanguage: 'zh' | 'en'
   private ballValue: boolean
+  private hotkeyState: HotkeyConfig
   private updateValue: UpdateRecord
 
   constructor(readonly dir: string) {
@@ -104,6 +122,7 @@ export class ProfileStore {
     this.selectionValue = selection.enabled
     this.selectionLanguage = selection.language
     this.ballValue = readBall(dir)
+    this.hotkeyState = readHotkey(dir)
     this.updateValue = readUpdate(dir)
   }
 
@@ -192,6 +211,15 @@ export class ProfileStore {
   setBallEnabled(enabled: boolean): void {
     this.ballValue = enabled
     writeJson(join(this.dir, BALL_FILE), { enabled })
+  }
+
+  hotkey(): HotkeyConfig {
+    return this.hotkeyState
+  }
+
+  setHotkey(enabled: boolean, accelerator: HotkeyAccelerator): void {
+    this.hotkeyState = { enabled, accelerator }
+    writeJson(join(this.dir, HOTKEY_FILE), { enabled, accelerator })
   }
 
   updateRecord(): UpdateRecord {
@@ -333,6 +361,14 @@ function readSelection(dir: string): { enabled: boolean; language: 'zh' | 'en' }
 function readBall(dir: string): boolean {
   const enabled = record(readJson(join(dir, BALL_FILE)))?.enabled
   return typeof enabled === 'boolean' ? enabled : true
+}
+
+function readHotkey(dir: string): HotkeyConfig {
+  const value = record(readJson(join(dir, HOTKEY_FILE)))
+  // A corrupt or unknown accelerator falls back to the shipped default, which is off:
+  // a broken file must not silently enable a global hotkey.
+  if (value === undefined || !isHotkeyAccelerator(value.accelerator)) return DEFAULT_HOTKEY
+  return { enabled: value.enabled === true, accelerator: value.accelerator }
 }
 
 function readObservationFrame(dir: string): boolean {

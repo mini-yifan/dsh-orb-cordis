@@ -132,6 +132,12 @@ declare module 'electron' {
     readText(): string
   }
 
+  export const globalShortcut: {
+    register(accelerator: string, callback: () => void): boolean
+    unregister(accelerator: string): void
+    unregisterAll(): void
+  }
+
   export const nativeTheme: {
     themeSource: 'light' | 'dark' | 'system'
     shouldUseDarkColors: boolean

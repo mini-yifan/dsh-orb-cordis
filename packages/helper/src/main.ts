@@ -2,7 +2,7 @@
  * Floating ball window. The official dsh process owns the session; this process only draws and forwards one socket.
  */
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
 import { request as httpRequest } from 'node:http'
 import { createConnection, type Socket } from 'node:net'
 import { fileURLToPath } from 'node:url'
@@ -77,8 +77,32 @@ let buffer = ''
 /** Last bookmark payload, re-sent when the page reloads without a socket reconnect. */
 let lastAgentItems: unknown[] = []
 
+// The summon hotkey mirrors the host's `orb-hotkey.json`; the host pushes it at
+// handshake and on every settings change. The registered accelerator is tracked
+// so a switch unregisters the old binding instead of leaking it.
+let hotkey: { enabled: boolean; accelerator: string } = { enabled: false, accelerator: '' }
+let hotkeyRegistered = ''
+
+function toggleBallVisible(): void {
+  if (!win || win.isDestroyed()) return
+  if (win.isVisible()) win.hide()
+  else win.showInactive()
+}
+
+function applyHotkey(): void {
+  if (hotkeyRegistered !== '') {
+    globalShortcut.unregister(hotkeyRegistered)
+    hotkeyRegistered = ''
+  }
+  if (!hotkey.enabled || hotkey.accelerator === '') return
+  const registered = globalShortcut.register(hotkey.accelerator, toggleBallVisible)
+  if (registered) hotkeyRegistered = hotkey.accelerator
+  else console.error(`dsh-orb helper: hotkey ${hotkey.accelerator} is taken by another application`)
+}
+
 app.on('before-quit', () => {
   quitting = true
+  globalShortcut.unregisterAll()
   live?.destroy()
 })
 app.on('window-all-closed', () => {
@@ -416,6 +440,15 @@ function deliver(message: unknown): void {
     if (next.theme !== undefined) appearance.theme = next.theme
     if (next.locale !== undefined) appearance.locale = next.locale
     applyAppearance()
+    return
+  }
+  if (record.type === 'hotkey') {
+    const message = record as unknown as { enabled?: unknown; accelerator?: unknown }
+    hotkey = {
+      enabled: message.enabled === true,
+      accelerator: typeof message.accelerator === 'string' ? message.accelerator : '',
+    }
+    applyHotkey()
     return
   }
   if (record.type === 'avatar') {

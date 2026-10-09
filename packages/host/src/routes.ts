@@ -11,9 +11,11 @@ import { AVATAR_PRESETS, avatarPresetPath, isAvatarPresetId } from './avatar-pre
 import { normalizeCatalog, type ModelCatalog } from './catalog.ts'
 import {
   isAgentModelSelection,
+  isHotkeyAccelerator,
   MAX_AVATAR_BYTES,
   sniffAvatarMime,
   type AgentModelSelection,
+  type HotkeyAccelerator,
   type ProfileStore,
 } from './preferences.ts'
 import { selectionRuntimeAvailable } from '@dsh-orb/native-selection'
@@ -51,6 +53,7 @@ export interface OrbControl {
   setMillifractionEnabled(enabled: boolean): Promise<void>
   setObservationFrameEnabled(enabled: boolean): Promise<void>
   setBallEnabled(enabled: boolean): Promise<void>
+  setHotkey(enabled: boolean, accelerator: HotkeyAccelerator): Promise<void>
   helperStatus?(): string
   /** 'downloading'/'extracting' while the helper runtime is prepared; '' otherwise. */
   helperPhase?(): string
@@ -210,6 +213,18 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
     sendJson(res, 200, await snapshot(deps))
     return
   }
+  if (method === 'POST' && path === `${PREFIX}/hotkey`) {
+    const body = asRecord(await readJson(req))
+    const enabled = body?.enabled
+    const accelerator = body?.accelerator
+    if (typeof enabled !== 'boolean' || !isHotkeyAccelerator(accelerator)) {
+      sendJson(res, 400, { error: 'invalid-hotkey' })
+      return
+    }
+    await deps.control.setHotkey(enabled, accelerator)
+    sendJson(res, 200, await snapshot(deps))
+    return
+  }
   if (method === 'POST' && path === `${PREFIX}/observation-frame`) {
     const enabled = booleanField(await readJson(req))
     if (enabled === undefined) {
@@ -290,6 +305,7 @@ async function snapshot(deps: RouteDeps): Promise<{
   background: AgentModelSelection
   selectionEnabled: boolean
   millifractionEnabled: boolean
+  hotkey: { enabled: boolean; accelerator: string }
   observationFrameEnabled: boolean
   tcc: TccStatus
   helperError: string
@@ -313,6 +329,7 @@ async function snapshot(deps: RouteDeps): Promise<{
     background: models.background,
     selectionEnabled: deps.store.selectionEnabled(),
     millifractionEnabled: deps.store.millifractionEnabled(),
+    hotkey: deps.store.hotkey(),
     observationFrameEnabled: deps.store.observationFrameEnabled(),
     tcc: deps.tcc.status(),
     helperError: deps.control.helperStatus?.() ?? '',
