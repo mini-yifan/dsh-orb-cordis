@@ -612,6 +612,9 @@ function updateStatusText(message: { state?: unknown; version?: unknown; reason?
   if (message.state === 'done') {
     return zh ? `已更新到 ${version}，重启 DeepSeek Harness 后生效` : `Updated to ${version} — restart DeepSeek Harness to apply it`
   }
+  if (message.state === 'deferred') {
+    return zh ? `${version} 将在退出 DeepSeek Harness 后自动安装，请退出后再重新打开` : `${version} installs once DeepSeek Harness quits — quit it, then reopen it`
+  }
   if (message.state === 'failed') {
     return zh ? `更新失败：${updateFailureText(message.reason, true)}` : `Update failed: ${updateFailureText(message.reason, false)}`
   }

@@ -4,9 +4,7 @@
  */
 
 import { parentPort } from 'node:worker_threads'
-import { createRequire } from 'node:module'
-
-const require = createRequire(import.meta.url)
+import { requireKoffi } from './koffi.js'
 
 const WH_KEYBOARD_LL = 13
 const WH_MOUSE_LL = 14
@@ -21,7 +19,7 @@ const WM_MBUTTONUP = 0x0208
 const WM_MOUSEWHEEL = 0x020A
 const MONITOR_DEFAULTTONEAREST = 2
 
-const lib = require('koffi')
+const lib = requireKoffi()
 lib.struct('DSH_ORB_SEL_POINT', { x: 'int32', y: 'int32' })
 lib.struct('DSH_ORB_SEL_MSLL', {
   pt: 'DSH_ORB_SEL_POINT',
@@ -48,7 +46,7 @@ const UnhookWindowsHookEx = user32.func('int __stdcall UnhookWindowsHookEx(void 
 const GetMessageW = user32.func('int __stdcall GetMessageW(_Out_ DSH_ORB_SEL_MSG *msg, void *hwnd, uint32 min, uint32 max)')
 const TranslateMessage = user32.func('int __stdcall TranslateMessage(DSH_ORB_SEL_MSG *msg)')
 const DispatchMessageW = user32.func('intptr __stdcall DispatchMessageW(DSH_ORB_SEL_MSG *msg)')
-const GetCurrentThreadId = require('koffi').load('kernel32.dll').func('uint32 __stdcall GetCurrentThreadId()')
+const GetCurrentThreadId = lib.load('kernel32.dll').func('uint32 __stdcall GetCurrentThreadId()')
 
 parentPort.postMessage({ type: 'ready', threadId: GetCurrentThreadId() })
 

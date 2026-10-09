@@ -4,7 +4,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createRequire } from 'node:module'
+import { requireKoffi } from './native-images.ts'
 
 export type TccRight = 'screen' | 'accessibility'
 export type TccState = 'missing' | 'granted' | 'needsRelaunch'
@@ -89,8 +89,7 @@ export function isTccRight(value: unknown): value is TccRight {
 }
 
 function loadMacProbe(): Probe {
-  const require = createRequire(import.meta.url)
-  const koffi = require('koffi') as { load(path: string): { func(signature: string): () => boolean } }
+  const koffi = requireKoffi<{ load(path: string): { func(signature: string): () => boolean } }>(import.meta.url)
   const library = koffi.load('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
   const screen = library.func('bool CGPreflightScreenCaptureAccess()')
   const accessibility = library.func('bool AXIsProcessTrusted()')

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { deferredDir, type DeferredInstall } from '../src/deferred-install.ts'
 import { ProfileStore } from '../src/preferences.ts'
 import { AUTO_CHECK_INTERVAL_MS, compareVersions, exemptReleaseAge, installRegistry, installSpec, ownPackage, registryTarballUrl, releaseTarballUrl, UpdateChecker, versionFromRegistry, versionFromRelease, withReleaseAgeExclusion } from '../src/update.ts'
 
@@ -42,17 +43,21 @@ function checker(options: {
   latest?: string | undefined
   result?: Record<string, unknown>
   notify?: (version: string) => void
+  mapped?: string[]
 }) {
   const fake = manager(options.result)
   const announced: string[] = []
+  const deferred: DeferredInstall[] = []
   const update = new UpdateChecker({
     store: options.store,
     manager: () => fake.service,
     notify: (version) => { announced.push(version); options.notify?.(version) },
     fetchLatest: async () => options.latest,
     own: 'own' in options ? options.own : { name: 'dsh-orb', version: '0.1.0' },
+    mappedImages: () => options.mapped ?? [],
+    deferInstall: (job) => { deferred.push(job) },
   })
-  return { update, announced, specs: fake.specs, registries: fake.registries }
+  return { update, announced, specs: fake.specs, registries: fake.registries, deferred }
 }
 
 /** A local http mock answering `routes[path]` with `[status, body]`; other paths hang up. */
@@ -527,6 +532,60 @@ describe('update checker', () => {
       '[ERR_PNPM_MISSING_TARBALL_INTEGRITY] Cannot install package "dsh-orb@https://example.invalid/dsh-orb.tgz"',
       'the generic operation-error wrapper yields to the pnpm line',
     )
+  })
+
+  it('waits for the app to quit instead of replacing a package whose addon is loaded', async () => {
+    const profile = store()
+    const { update, specs, deferred } = checker({ store: profile, latest: '0.2.0', mapped: ['node_modules/koffi/build/koffi.node'] })
+    await update.check()
+    await update.install()
+    assert.deepEqual(specs, [], 'pnpm never sees a package it cannot replace')
+    assert.deepEqual(deferred, [{
+      profileDir: profile.dir,
+      spec: 'dsh-orb@0.2.0',
+      registry: 'https://registry.npmmirror.com',
+      parentPid: process.pid,
+    }])
+    const state = update.state()
+    assert.equal(state.error, null)
+    assert.equal(state.deferred, true)
+    assert.equal(state.restartRequired, true)
+    assert.equal(state.available, false, 'the button does not queue the same version twice')
+    assert.equal(state.installedVersion, '0.1.0', 'nothing is on disk yet')
+    await update.install()
+    assert.equal(deferred.length, 1)
+  })
+
+  it('hands a locked-file failure to the after-exit install', async () => {
+    const profile = store()
+    const { update, specs, deferred } = checker({
+      store: profile,
+      latest: '0.2.0',
+      result: {
+        application: 'failed',
+        error: {
+          code: 'operation-error',
+          diagnostic: '[ERR_PNPM_EPERM] [importPackage C:\\p\\node_modules\\dsh-orb] EPERM, Permission denied: \\\\?\\C:\\p\\node_modules\\dsh-orb_tmp_1_1\\node_modules',
+        },
+      },
+    })
+    await update.check()
+    await update.install()
+    assert.deepEqual(specs, ['dsh-orb@0.2.0'])
+    assert.equal(deferred.length, 1, 'the half-replaced package is repaired once the app quits')
+    assert.equal(update.state().error, null)
+    assert.equal(update.state().deferred, true)
+  })
+
+  it('reports a deferred install that failed after the app quit', () => {
+    const profile = store()
+    mkdirSync(deferredDir(profile.dir), { recursive: true })
+    const result = join(deferredDir(profile.dir), 'result.json')
+    writeFileSync(result, JSON.stringify({ spec: 'dsh-orb@0.2.0', ok: false, detail: 'ERR_PNPM_FETCH_404 not found' }))
+    const { update } = checker({ store: profile, latest: '0.2.0' })
+    assert.equal(update.state().error, 'ERR_PNPM_FETCH_404 not found')
+    assert.equal(existsSync(result), false, 'the outcome is reported once')
+    assert.equal(checker({ store: profile, latest: '0.2.0' }).update.state().error, null)
   })
 
   it('keeps working without the official plugin manager', async () => {

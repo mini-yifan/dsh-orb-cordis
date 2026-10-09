@@ -11,6 +11,8 @@
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { scheduleInstallAfterExit, takeDeferredOutcome, type DeferredInstall } from './deferred-install.ts'
+import { mappedImages, ownPackageRoot } from './native-images.ts'
 import type { ProfileStore } from './preferences.ts'
 
 /** The GitHub repository that publishes plugin releases, `plugin-v<version>` tags. */
@@ -39,6 +41,7 @@ export const EMPTY_UPDATE_STATE: UpdateState = {
   autoCheck: false,
   checkedAt: null,
   restartRequired: false,
+  deferred: false,
   error: null,
   pendingBuilds: [],
 }
@@ -56,6 +59,8 @@ export interface UpdateState {
   autoCheck: boolean
   checkedAt: number | null
   restartRequired: boolean
+  /** The update waits for the app to quit: a loaded native file blocks replacing the package now. */
+  deferred: boolean
   error: string | null
   pendingBuilds: string[]
 }
@@ -95,6 +100,10 @@ export interface UpdateDeps {
   fetchLatest?(name: string): Promise<string | undefined>
   /** Test seam: the installed manifest. */
   own?: OwnPackage | undefined
+  /** Test seam: native images in the package some process holds mapped (see `native-images.ts`). */
+  mappedImages?(): string[]
+  /** Test seam: hand the install to a script that runs once this process exits. */
+  deferInstall?(job: DeferredInstall): void
 }
 
 /**
@@ -156,6 +165,8 @@ export class UpdateChecker {
   private error: string | null = null
   private pendingBuilds: string[] = []
   private restartRequired = false
+  /** Version handed to the after-exit install; offering it again would only queue it twice. */
+  private deferred: string | null = null
   private timer: ReturnType<typeof setTimeout> | undefined
   private interval: ReturnType<typeof setInterval> | undefined
   /** The registry base that answered the last check; GitHub is the fallback when none did. */
@@ -167,6 +178,8 @@ export class UpdateChecker {
     this.own = 'own' in deps ? deps.own : ownPackage()
     this.installed = this.own?.version ?? ''
     this.latest = this.store.updateRecord().latestVersion || null
+    const outcome = takeDeferredOutcome(this.store.dir)
+    if (outcome !== undefined && !outcome.ok) this.error = outcome.detail === '' ? 'deferred-install-failed' : outcome.detail
   }
 
   state(): UpdateState {
@@ -183,6 +196,7 @@ export class UpdateChecker {
       autoCheck: this.store.updateRecord().autoCheck,
       checkedAt: this.store.updateRecord().checkedAt || null,
       restartRequired: this.restartRequired,
+      deferred: this.deferred !== null,
       error: this.error,
       pendingBuilds: [...this.pendingBuilds],
     }
@@ -253,6 +267,11 @@ export class UpdateChecker {
    * instead of a bare tarball URL. The manager owns the profile lock, the
    * download and the manifest restore; an already-installed bundle is replaced
    * and the result says the restart carries the new code.
+   *
+   * On Windows a package whose native addon is loaded cannot be replaced: pnpm
+   * fails with EPERM after it has already deleted part of the live package.
+   * When the probe finds such an addon, or pnpm fails that way anyway, the
+   * install waits for the app to quit instead (see `deferred-install.ts`).
    */
   async install(approvedBuilds?: string[]): Promise<void> {
     const version = this.availableVersion()
@@ -263,11 +282,21 @@ export class UpdateChecker {
     this.pendingBuilds = []
     try {
       exemptReleaseAge(this.store.dir, this.own.name)
-      const result = await manager.installBundle(installSpec(version, this.own.name), {
+      const spec = installSpec(version, this.own.name)
+      const registry = installRegistry(this.source)
+      if (this.lockedImages().length > 0) {
+        this.deferUntilExit(version, spec, registry)
+        return
+      }
+      const result = await manager.installBundle(spec, {
         requestId: `dsh-orb-update-${Date.now()}`,
-        registry: installRegistry(this.source),
+        registry,
         ...approvedBuilds === undefined ? {} : { approvedBuilds },
       })
+      if (result.application === 'failed' && isLockedFileFailure(result.error)) {
+        this.deferUntilExit(version, spec, registry)
+        return
+      }
       if (result.application === 'failed') {
         this.error = reportedInstallError(result.error)
         this.pendingBuilds = result.pendingBuilds === undefined ? [] : [...result.pendingBuilds]
@@ -290,7 +319,32 @@ export class UpdateChecker {
   }
 
   private available(): boolean {
-    return this.own !== undefined && this.latest !== null && compareVersions(this.latest, this.installed) > 0
+    return this.own !== undefined && this.latest !== null && this.latest !== this.deferred
+      && compareVersions(this.latest, this.installed) > 0
+  }
+
+  private lockedImages(): string[] {
+    if (this.deps.mappedImages !== undefined) return this.deps.mappedImages()
+    if (process.platform !== 'win32' || this.own === undefined) return []
+    // A workspace checkout runs from `packages/`, which is no installed package.
+    if (ownPackage(import.meta.url)?.name !== this.own.name) return []
+    try {
+      return mappedImages(ownPackageRoot(import.meta.url))
+    } catch {
+      return []
+    }
+  }
+
+  private deferUntilExit(version: string, spec: string, registry: string): void {
+    const job: DeferredInstall = { profileDir: this.store.dir, spec, registry, parentPid: process.pid }
+    try {
+      (this.deps.deferInstall ?? scheduleInstallAfterExit)(job)
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : String(error)
+      return
+    }
+    this.deferred = version
+    this.restartRequired = true
   }
 
   private async fetch(): Promise<string | null | undefined> {
@@ -407,6 +461,12 @@ export function reportedInstallError(error: InstallResult['error']): string {
   const detail = lines.find((line) => line.includes('ERR_PNPM_')) ?? lines[0]
   if (detail !== undefined && detail !== '') return detail.slice(0, 200)
   return code === undefined || code === '' ? 'operation-error' : code
+}
+
+/** A pnpm failure from replacing a package whose files Windows keeps locked. */
+export function isLockedFileFailure(error: InstallResult['error']): boolean {
+  const text = `${error?.code ?? ''}\n${error?.diagnostic ?? ''}`
+  return /ERR_PNPM_EPERM|ERR_PNPM_EBUSY|\bEPERM\b|\bEBUSY\b/.test(text)
 }
 
 /**

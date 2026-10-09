@@ -1489,7 +1489,7 @@ export class OrbRuntime {
         })
         return
       }
-      this.broadcast({ type: 'update', state: 'done', version, restart: state.restartRequired })
+      this.broadcast({ type: 'update', state: state.deferred ? 'deferred' : 'done', version, restart: state.restartRequired })
     })
   }
 

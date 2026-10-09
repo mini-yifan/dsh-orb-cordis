@@ -1,14 +1,13 @@
 /** Selection monitor. Darwin uses the prebuilt dylib; Windows uses koffi hooks. */
 
 import { createReadStream } from 'node:fs'
-import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseSelectionHelperLine } from './protocol.js'
 import { startWindowsSelectionMonitor } from './windows-dispatch.js'
 import { installWindowsSelectionHooks, productionSelectionProbe } from './windows-native.js'
+import { requireKoffi } from './koffi.js'
 
-const require = createRequire(import.meta.url)
 const here = dirname(fileURLToPath(import.meta.url))
 
 export { MIN_DRAG_PX, draggedFarEnough, parseSelectionHelperLine } from './protocol.js'
@@ -55,7 +54,7 @@ let darwin
 function loadDarwin() {
   if (darwin !== undefined) return darwin || undefined
   try {
-    const koffi = require('koffi')
+    const koffi = requireKoffi()
     const dylib = darwinLibrary()
     const lib = koffi.load(dylib)
     darwin = {

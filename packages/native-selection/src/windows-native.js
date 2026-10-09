@@ -1,10 +1,8 @@
 /** Low-level Win32 mouse and keyboard hooks plus UI Automation selection reads. */
 
 import { execFile } from 'node:child_process'
-import { createRequire } from 'node:module'
 import { Worker } from 'node:worker_threads'
-
-const require = createRequire(import.meta.url)
+import { requireKoffi } from './koffi.js'
 
 const SELECTION_SCRIPT = `
 $ErrorActionPreference = 'Stop'
@@ -27,7 +25,7 @@ if ($rects.Length -ge 4) { $x = $rects[0]; $y = $rects[1]; $width = $rects[2]; $
 `
 
 function koffi() {
-  return require('koffi')
+  return requireKoffi()
 }
 
 let prepared = false
