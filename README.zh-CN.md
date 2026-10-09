@@ -119,6 +119,12 @@ dsh plugin add ./dsh-orb-<version>.tgz
 
 首次使用悬浮球时会下载 helper 的 Electron 运行时，之后缓存复用。
 
+## 排障
+
+- **插件市场或 `dsh plugin add dsh-orb` 安装失败**：npm 包尚未发布，市场安装命令会拉包失败。请先按「从本地构建安装」打出 tarball 再添加。
+- **设置页提示「悬浮球运行时没有下载成功」**：运行时默认从 GitHub 下载，失败自动回落 npmmirror 镜像。两个源都连不上时，请先恢复网络（或代理）对 github.com / npmmirror.com 的访问，再到设置里把悬浮球关闭后重新打开重试。
+- **杀毒软件拦截**：helper 是官方原版 Electron 发布物，SHA-256 钉死校验；被拦截时请核对哈希后加入信任。
+
 ## 开发
 
 ```sh

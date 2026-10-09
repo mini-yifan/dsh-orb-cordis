@@ -210,7 +210,7 @@ const CONNECT_TIMEOUT_SECONDS = '5'
  * and a silently dropped connection there would otherwise stall the first ball launch.
  * Every download is checked against the compiled-in SHA-256, so the order costs no trust.
  */
-function releaseUrls(path: string): string[] {
+export function releaseUrls(path: string): string[] {
   return [
     `https://cdn.npmmirror.com/binaries/electron/v${ELECTRON_VERSION}/${path}`,
     `${RELEASE_BASE}/${path}`,
@@ -259,7 +259,7 @@ async function downloadVerifiedZip(fileName: string, expected: string, dest: str
       console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
-  throw lastError instanceof Error ? lastError : new Error(`dsh-orb: failed to download Electron ${ELECTRON_VERSION}`)
+  throw new Error(`dsh-orb: failed to download Electron ${ELECTRON_VERSION} — every source was unreachable or served a bad file (last error: ${lastError instanceof Error ? lastError.message : String(lastError)})`)
 }
 
 function run(command: string, args: string[]): Promise<{ stdout: string }> {
