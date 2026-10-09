@@ -551,7 +551,18 @@ function main() {
     skipClick = true
     const skipDock = skipDockCommit
     skipDockCommit = false
-    if (!skipDock) applyDockedFrom(await api.dragEnd(!(running || asking())))
+    if (!skipDock) {
+      // Releasing the pointer fires body pointerenter while the dragEnd roundtrip is
+      // still in flight; an expand in that window clears the dock the main process is
+      // committing and the tab never appears (#62). Hold expansion until the answer
+      // says whether this release docked.
+      suppressExpand = true
+      applyDockedFrom(await api.dragEnd(!(running || asking())))
+      if (docked === undefined) {
+        suppressExpand = false
+        if (dockPointerInside) syncExpand()
+      }
+    }
     return true
   }
 

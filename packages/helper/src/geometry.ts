@@ -471,6 +471,20 @@ export class FloatingPlacement {
       this.window.setBounds(collapsedWindowBounds(clampedBallOrigin(origin, display.workArea)))
       return this.expandState()
     }
+    // A release with the panel still open (drag while the agent runs, or a release
+    // that lands mid-collapse) must be able to dock too (#62): judge from the ball
+    // origin the expanded window grew around, on the display that origin sits on,
+    // then run the same slide-off a collapsed release would. The drag's requested
+    // origin outranks what the window shows when they disagree.
+    const origin = this.placedOrigin ?? ballOriginFromWindow(bounds, this.direction)
+    if (canDock) {
+      const originDisplay = this.displayAt(origin)
+      const side = dockSideForBallOrigin(origin, originDisplay.bounds, this.displayBounds())
+      if (side) {
+        this.window.setBounds(collapsedWindowBounds(origin))
+        return this.snap(side, origin.y, originDisplay.bounds)
+      }
+    }
     // An open panel (running or asking) re-anchors toward the side with room now.
     // The new direction goes back with the result; the page cannot infer it.
     return this.setExpanded(true)
