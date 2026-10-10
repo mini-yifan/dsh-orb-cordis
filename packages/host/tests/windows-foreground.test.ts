@@ -72,4 +72,34 @@ describe('windows foreground memory', () => {
     })
     memory.stop()
   })
+
+  it('never remembers the ball while the chrome list is still unknown', async () => {
+    const host = fakeForeground(7)
+    let chrome: readonly number[] = []
+    const memory = createForegroundMemory({ chromeWindowIds: () => chrome, native: host, intervalMs: 2 })
+    memory.start()
+    await sleep(15)
+    chrome = [7, 11]
+    await sleep(15)
+    memory.stop()
+    // Move the foreground off the ball so a stale memory would actually hand it back.
+    host.current = 99
+    memory.restore()
+    assert.deepEqual(host.focused, [])
+  })
+
+  it('forgets a window once the helper reports it as the ball', async () => {
+    const host = fakeForeground(7)
+    // The helper reported chrome, but its own ball handle is not in the list yet.
+    let chrome: readonly number[] = [11]
+    const memory = createForegroundMemory({ chromeWindowIds: () => chrome, native: host, intervalMs: 2 })
+    memory.start()
+    await sleep(15)
+    chrome = [7, 11]
+    await sleep(15)
+    memory.stop()
+    host.current = 99
+    memory.restore()
+    assert.deepEqual(host.focused, [])
+  })
 })

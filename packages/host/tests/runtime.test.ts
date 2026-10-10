@@ -58,6 +58,10 @@ interface Harness {
   ) => Promise<{ answers: { id: string; selected: string[] }[] }>
   holdPrompt: () => void
   releasePrompt: () => void
+  /** Hold the next cancel open so a test can act while stopTurn awaits it. */
+  holdCancel: () => void
+  releaseCancel: () => void
+  failCancel: (error: Error) => void
   provided: Map<string, unknown>
 }
 
@@ -81,6 +85,9 @@ function boot(extra: {
   const listItems: Row[] = []
   let promptGate = Promise.resolve()
   let releasePrompt = () => {}
+  let cancelGate: Promise<void> | undefined
+  let releaseCancel = () => {}
+  let cancelError: Error | undefined
   let question: Harness['question'] = async (_request, next) => next()
   let streamListener: ((payload: unknown) => void) | undefined
   const provided = new Map<string, unknown>()
@@ -141,6 +148,8 @@ function boot(extra: {
       },
       async cancel(request: { sessionId?: string }) {
         calls.cancel.push(request)
+        if (cancelGate !== undefined) await cancelGate
+        if (cancelError !== undefined) throw cancelError
       },
       modelCatalog: () => ({
         groups: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-flash', name: 'Flash' }] }],
@@ -213,11 +222,16 @@ function boot(extra: {
       promptGate = new Promise((resolve) => { releasePrompt = resolve })
     },
     releasePrompt() { releasePrompt() },
+    holdCancel() {
+      cancelGate = new Promise((resolve) => { releaseCancel = resolve })
+    },
+    releaseCancel() { releaseCancel() },
+    failCancel(error: Error) { cancelError = error },
     provided,
   }
 }
 
-async function connect(runtime: OrbRuntime) {
+async function connect(runtime: OrbRuntime, options: { ack?: boolean } = {}) {
   const bound = await runtime.bind()
   const socket: Socket = createConnection({ host: '127.0.0.1', port: bound.port })
   const messages: Record<string, unknown>[] = []
@@ -232,7 +246,7 @@ async function connect(runtime: OrbRuntime) {
       const message = JSON.parse(part) as Record<string, unknown>
       messages.push(message)
       // Stand in for the helper's overlay ack, so a guard interval does not wait out its timeout.
-      if (typeof message.type === 'string' && message.type.startsWith('overlay-') && typeof message.id === 'string') {
+      if (options.ack !== false && typeof message.type === 'string' && message.type.startsWith('overlay-') && typeof message.id === 'string') {
         socket.write(`${JSON.stringify({ type: 'overlay-ack', id: message.id })}\n`)
       }
     }
@@ -261,6 +275,38 @@ function keyOf(message: Record<string, unknown>): string {
 
 function textOf(message: Record<string, unknown>): string {
   return typeof message.text === 'string' ? message.text : ''
+}
+
+/**
+ * Request a stop with `cancel` held open, run `insert` while stopTurn awaits it, then
+ * release. Returns the messages that arrived after the stop request.
+ */
+async function stopWithPendingCancel(
+  harness: Harness,
+  client: Awaited<ReturnType<typeof connect>>,
+  insert: () => void,
+  newTurnBroadcast: () => boolean,
+): Promise<Record<string, unknown>[]> {
+  harness.holdCancel()
+  const mark = client.messages.length
+  client.send({ type: 'stop' })
+  await waitFor(() => harness.calls.cancel.length === 1)
+  insert()
+  await waitFor(newTurnBroadcast)
+  harness.releaseCancel()
+  // Let the resumed stopTurn settle before the caller inspects the stream.
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  return client.messages.slice(mark)
+}
+
+/** The running flags of every turn broadcast, in arrival order. */
+function turnFlags(messages: Record<string, unknown>[]): boolean[] {
+  return messages.filter((message) => message.type === 'turn').map((message) => message.running === true)
+}
+
+/** How many turn broadcasts said "running" — new turns added on top of the first one. */
+function liveTurnCount(messages: Record<string, unknown>[]): number {
+  return messages.filter((message) => message.type === 'turn' && message.running === true).length
 }
 
 describe('ball control socket', { concurrency: 1 }, () => {
@@ -1038,6 +1084,250 @@ describe('ball control socket', { concurrency: 1 }, () => {
       )))
     } finally {
       client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('keeps the interruption flag off the previous settled answer', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      const sessionId = (client.messages.find((message) => message.type === 'session') as { sessionId: string }).sessionId
+      harness.holdPrompt()
+      client.send({ type: 'prompt', text: '两段' })
+      await waitFor(() => harness.calls.prompt.length > 0)
+      // The usage rides the closing reply, which is also what arms its response flag.
+      harness.inject(sessionId, {
+        type: 'assistant/message', seq: 1,
+        data: {
+          turn: 1, step: 0,
+          message: { content: [{ type: 'text', text: '完整回答' }] },
+          usage: { inputTokens: 10, outputTokens: 2 },
+        },
+      })
+      harness.inject(sessionId, {
+        type: 'assistant/message', seq: 2,
+        data: { turn: 1, step: 1, interrupted: true, message: { content: [{ type: 'text', text: '半截' }] } },
+      })
+      await waitFor(() => client.messages.some((message) => (
+        message.type === 'block' && keyOf(message) === 'b:1:1:0' && textOf(message) === '半截'
+      )))
+      const lastOf = (key: string) => client.messages.filter((message) => (
+        message.type === 'block' && keyOf(message) === key
+      )).at(-1) as Record<string, unknown>
+      // Demoting the earlier answer must not republish it as interrupted.
+      assert.equal(lastOf('b:1:0:0').interrupted, undefined)
+      assert.equal(lastOf('b:1:0:0').response, undefined)
+      assert.equal(lastOf('b:1:1:0').interrupted, true)
+    } finally {
+      harness.releasePrompt()
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('keeps the turn running when cancel fails, and lets the turn end close it', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      const sessionId = (client.messages.find((message) => message.type === 'session') as { sessionId: string }).sessionId
+      harness.holdPrompt()
+      client.send({ type: 'prompt', text: '别停坏' })
+      await waitFor(() => harness.calls.prompt.length > 0)
+      harness.failCancel(new Error('cancel refused'))
+      const mark = client.messages.length
+      client.send({ type: 'stop' })
+      await waitFor(() => client.messages.slice(mark).some((message) => message.type === 'status'))
+      const after = client.messages.slice(mark)
+      // A failed cancel must not paint the ball as stopped.
+      assert.equal(after.some((message) => message.type === 'turn' && message.running === false), false)
+      const status = after.find((message) => message.type === 'status') as { text?: string }
+      assert.match(status.text ?? '', /cancel refused/)
+      // The turn's own end stays the authoritative close.
+      harness.inject(sessionId, { type: 'turn/end', seq: 1, data: {} })
+      await waitFor(() => client.messages.some((message) => message.type === 'turn' && message.running === false))
+    } finally {
+      harness.releasePrompt()
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('does not close a prompt submitted while cancel was pending', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      harness.holdPrompt()
+      client.send({ type: 'prompt', text: '第一' })
+      await waitFor(() => harness.calls.prompt.length > 0)
+      const after = await stopWithPendingCancel(
+        harness,
+        client,
+        () => { client.send({ type: 'prompt', text: '第二' }) },
+        () => harness.calls.prompt.length >= 2,
+      )
+      const flags = turnFlags(after)
+      assert.equal(flags.some((running) => !running), false)
+      assert.equal(flags.at(-1), true)
+    } finally {
+      harness.releasePrompt()
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('does not close a wake-up turn that started while cancel was pending', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      const sessionId = (client.messages.find((message) => message.type === 'session') as { sessionId: string }).sessionId
+      harness.holdPrompt()
+      client.send({ type: 'prompt', text: '第一' })
+      await waitFor(() => harness.calls.prompt.length > 0)
+      const after = await stopWithPendingCancel(
+        harness,
+        client,
+        () => {
+          // The cancelled turn ends for real, and a completion notice wakes a new one.
+          harness.inject(sessionId, { type: 'turn/end', seq: 1, data: {} })
+          harness.inject(sessionId, { type: 'turn/start', seq: 2, data: { turn: 2 } })
+        },
+        () => liveTurnCount(client.messages) >= 2,
+      )
+      const flags = turnFlags(after)
+      // Only the turn/end may close; the wake-up turn stays live.
+      assert.equal(flags.filter((running) => !running).length, 1)
+      assert.equal(flags.at(-1), true)
+    } finally {
+      harness.releasePrompt()
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('does not close a running session opened while cancel was pending', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      harness.holdPrompt()
+      client.send({ type: 'prompt', text: '第一' })
+      await waitFor(() => harness.calls.prompt.length > 0)
+      harness.listItems.push({
+        sessionId: 'session-orb-run',
+        cwd: orb,
+        origin: 'user',
+        running: true,
+        projections: { values: { agentPreset: 'computer-use', title: '在跑' } },
+      })
+      const after = await stopWithPendingCancel(
+        harness,
+        client,
+        () => { client.send({ type: 'open', sessionId: 'session-orb-run' }) },
+        () => liveTurnCount(client.messages) >= 2,
+      )
+      const flags = turnFlags(after)
+      // The only close is the session switch's reset; the running row stays live.
+      assert.equal(flags.filter((running) => !running).length, 1)
+      assert.equal(flags.at(-1), true)
+    } finally {
+      harness.releasePrompt()
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('ignores a chunk from the attempt a retry replaced', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      const sessionId = (client.messages.find((message) => message.type === 'session') as { sessionId: string }).sessionId
+      harness.holdPrompt()
+      client.send({ type: 'prompt', text: '重试串' })
+      await waitFor(() => harness.calls.prompt.length > 0)
+      harness.stream(sessionId, { type: 'start', attemptId: 'old', revision: 0, turn: 1, step: 0 })
+      harness.stream(sessionId, { type: 'chunk', attemptId: 'old', revision: 1, index: 0, chunk: { index: 0, type: 'text-delta', text: '旧答' } })
+      await waitFor(() => client.messages.some((message) => (
+        message.type === 'block' && keyOf(message) === 'b:1:0:0' && textOf(message) === '旧答'
+      )))
+      harness.stream(sessionId, { type: 'start', attemptId: 'new', revision: 2, turn: 1, step: 0 })
+      await waitFor(() => client.messages.some((message) => (
+        message.type === 'block-drop' && keyOf(message) === 'b:1:0:0'
+      )))
+      // A late chunk from the replaced attempt must not resurface in the rewound step.
+      harness.stream(sessionId, { type: 'chunk', attemptId: 'old', revision: 3, index: 0, chunk: { index: 0, type: 'text-delta', text: '迟到' } })
+      harness.stream(sessionId, { type: 'chunk', attemptId: 'new', revision: 4, index: 0, chunk: { index: 0, type: 'text-delta', text: '新答' } })
+      await waitFor(() => client.messages.some((message) => (
+        message.type === 'block' && keyOf(message) === 'b:1:0:0' && textOf(message).includes('新答')
+      )))
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      const texts = client.messages
+        .filter((message) => message.type === 'block' && keyOf(message) === 'b:1:0:0')
+        .map((message) => textOf(message))
+      assert.equal(texts.some((text) => text.includes('迟到')), false)
+      assert.equal(texts.at(-1), '新答')
+    } finally {
+      harness.releasePrompt()
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('tells the ball when the cap drops the oldest block', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      const sessionId = (client.messages.find((message) => message.type === 'session') as { sessionId: string }).sessionId
+      for (let index = 0; index < 201; index += 1) {
+        harness.inject(sessionId, {
+          type: 'tool/call',
+          seq: index + 1,
+          data: { turn: 1, step: 0, callId: `bulk-${index}`, name: 'bash', arguments: '{"command":"ls","description":"x"}' },
+        })
+      }
+      await waitFor(() => client.messages.some((message) => message.type === 'block-drop'))
+      const drops = client.messages.filter((message) => message.type === 'block-drop')
+      // Exactly the oldest block, and the newcomer survived.
+      assert.deepEqual(drops.map(keyOf), ['tool:bulk-0'])
+      assert.equal(client.messages.some((message) => (
+        message.type === 'block' && keyOf(message) === 'tool:bulk-200'
+      )), true)
+    } finally {
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
+
+  it('fails a capture when the overlay ack never arrives', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime, { ack: false })
+    try {
+      const guard = harness.provided.get('computerUseOverlayGuard') as {
+        withCapture(run: (session: { excludeWindowIds: readonly number[] }) => Promise<void>): Promise<void>
+      }
+      const events: string[] = []
+      await assert.rejects(guard.withCapture(async () => { events.push('run') }), /ack timed out/)
+      // The capture never ran, and the interval still closed on the wire.
+      assert.deepEqual(events, [])
+      assert.deepEqual(
+        client.messages.filter((message) => message.type === 'overlay-capture').map((message) => message.active),
+        [true, false],
+      )
+    } finally {
+      client.socket.destroy()
       harness.runtime.halt()
     }
   })

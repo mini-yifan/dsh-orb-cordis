@@ -24,7 +24,7 @@ import {
   type ProfileStore,
 } from './preferences.ts'
 import { tokensMatch } from './routes.ts'
-import { createOverlayGuard } from './overlay-guard.ts'
+import { OVERLAY_GUARD_ACK_TIMEOUT_MS, createOverlayGuard } from './overlay-guard.ts'
 import {
   openSystemUrl,
   productionAccessibility,
@@ -255,6 +255,8 @@ export class OrbRuntime {
   private questionBody: readonly ShownQuestion[] | undefined
   private turnRunning = false
   private turnInterrupted = false
+  /** Bumped every time a turn starts; stopTurn uses it to spot a turn that replaced its own. */
+  private turnEpoch = 0
   private child: ChildProcess | undefined
   private binary = ''
   private failures = 0
@@ -382,7 +384,12 @@ export class OrbRuntime {
       const stepKey = `${turn}:${step}`
       const previous = this.lastAttemptByStep.get(stepKey)
       this.lastAttemptByStep.set(stepKey, attemptId)
-      if (previous !== undefined && previous !== attemptId) this.rewindLiveStep(turn, step)
+      if (previous !== undefined && previous !== attemptId) {
+        // The replaced attempt's id must stop resolving: a late chunk carrying it would
+        // otherwise write into the step this start just rewound.
+        this.attemptPositions.delete(previous)
+        this.rewindLiveStep(turn, step)
+      }
       return
     }
     if (frame.type === 'end') {
@@ -664,9 +671,7 @@ export class OrbRuntime {
     if (!trimmed) return
     this.turnInterrupted = false
     this.block(`user:${randomUUID()}`, 'user', trimmed, false, 'set')
-    this.turnRunning = true
-    this.selection.setSessionRunning(true)
-    this.broadcast({ type: 'turn', running: true })
+    this.beginTurn()
     if (this.sessionError && !this.sessionId) {
       this.turnRunning = false
       this.selection.setSessionRunning(false)
@@ -854,10 +859,8 @@ export class OrbRuntime {
       // A wake turn (e.g. the code_agent completion followup) starts without a
       // ball prompt; the ball still shows it as running, stop button included.
       if (this.turnRunning) return
-      this.turnRunning = true
       this.turnInterrupted = false
-      this.selection.setSessionRunning(true)
-      this.broadcast({ type: 'turn', running: true })
+      this.beginTurn()
       this.armIdle()
       return
     }
@@ -969,14 +972,16 @@ export class OrbRuntime {
     const turn = numberOf(record.turn)
     const step = numberOf(record.step)
     const usage = readUsage(record.usage)
-    if (record.interrupted === true) this.turnInterrupted = true
-    // Only the newest settled message is the final answer; demote the previous one.
+    // Only the newest settled message is the final answer; demote the previous one first.
+    // The interrupted flag is raised after the demote: a demoted block belongs to an
+    // earlier, completed answer and must not be republished as interrupted.
     const previous = this.responseKeys
     this.responseKeys = []
     for (const key of previous) {
       const item = this.blocks.get(key)
       if (item?.response === true) this.block(key, item.kind, item.text, false, 'set')
     }
+    if (record.interrupted === true) this.turnInterrupted = true
     const message = asRecord(record.message)
     const content = message?.content
     const parts: unknown[] = typeof content === 'string'
@@ -1054,6 +1059,17 @@ export class OrbRuntime {
       if (block?.kind === 'tool' && block.text === name && block.running) return key
     }
     return undefined
+  }
+
+  /**
+   * Start (or adopt) a turn. The epoch is what lets stopTurn tell whether its await
+   * still owns the turn it was asked to cancel.
+   */
+  private beginTurn(): void {
+    this.turnEpoch += 1
+    this.turnRunning = true
+    this.selection.setSessionRunning(true)
+    this.broadcast({ type: 'turn', running: true })
   }
 
   private finishTurn(): void {
@@ -1138,12 +1154,17 @@ export class OrbRuntime {
         if (tracked) tracked.push(key)
         else this.stepBlocks.set(this.liveStep, [key])
       }
+      // The cap drops through dropBlock so the ball hears about it; that path also
+      // removes the key from blockOrder. Keys are pushed before their map write, so a
+      // key without a block is a transient state: shift it out or dropBlock spins.
       while (this.blockOrder.length > 200) {
-        const dropped = this.blockOrder.shift()
-        if (dropped) {
-          this.blocks.delete(dropped)
-          this.dirty.delete(dropped)
+        const oldest = this.blockOrder[0]
+        if (oldest === undefined) break
+        if (!this.blocks.has(oldest)) {
+          this.blockOrder.shift()
+          continue
         }
+        this.dropBlock(oldest)
       }
     }
     this.blocks.set(key, message)
@@ -1602,11 +1623,20 @@ export class OrbRuntime {
   private async stopTurn(): Promise<void> {
     const sessionId = this.sessionId
     if (!sessionId || !this.turnRunning) return
+    const epoch = this.turnEpoch
     try {
       await this.ctx.sessionController.cancel({ sessionId })
     } catch (error) {
-      console.error(`dsh-orb: cancel failed: ${error instanceof Error ? error.message : String(error)}`)
+      // A failing cancel must not paint the ball as stopped: the turn keeps running and
+      // its own turn/end stays the authoritative close.
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`dsh-orb: cancel failed: ${message}`)
+      this.status(message)
+      return
     }
+    // A new turn (ball prompt, wake-up, session switch) may have started while the cancel
+    // was in flight; only the turn this call was about may be closed here.
+    if (this.turnEpoch !== epoch || this.sessionId !== sessionId) return
     this.drain()
     this.finishTurn()
   }
@@ -1639,9 +1669,7 @@ export class OrbRuntime {
     this.drain()
     this.replaying = false
     if (row.running) {
-      this.turnRunning = true
-      this.selection.setSessionRunning(true)
-      this.broadcast({ type: 'turn', running: true })
+      this.beginTurn()
       this.watch()
     }
   }
@@ -1709,24 +1737,26 @@ export class OrbRuntime {
     if (this.sockets.size === 0) return Promise.resolve()
     return new Promise((resolve, reject) => {
       let settled = false
-      const finish = (abort: boolean) => {
+      const finish = (error: Error | undefined) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
         signal?.removeEventListener('abort', onAbort)
         this.overlayWaiters.delete(message.id)
-        if (abort) reject(signal?.reason instanceof Error ? signal.reason : new Error('dsh-orb: overlay ack aborted'))
-        else resolve()
+        if (error === undefined) resolve()
+        else reject(error)
       }
-      const timer = setTimeout(() => { finish(false) }, 1_000)
+      // No ack means the helper never confirmed the cloak; the capture must fail rather
+      // than proceed against an unprotected screen.
+      const timer = setTimeout(() => { finish(new Error('dsh-orb: overlay ack timed out')) }, OVERLAY_GUARD_ACK_TIMEOUT_MS)
       timer.unref()
-      const onAbort = () => { finish(true) }
+      const onAbort = () => { finish(signal?.reason instanceof Error ? signal.reason : new Error('dsh-orb: overlay ack aborted')) }
       if (signal?.aborted) {
-        finish(true)
+        onAbort()
         return
       }
       signal?.addEventListener('abort', onAbort, { once: true })
-      this.overlayWaiters.set(message.id, () => { finish(false) })
+      this.overlayWaiters.set(message.id, () => { finish(undefined) })
       this.broadcast(message)
     })
   }

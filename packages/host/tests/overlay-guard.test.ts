@@ -41,6 +41,65 @@ describe('overlay guard capture exclusion', () => {
     await guard.withCapture(async (session) => { seen.push(session.excludeWindowIds) })
     assert.deepEqual(seen, [[11]])
   })
+
+  it('lets only the outermost of two overlapping captures close the interval', async () => {
+    const events: string[] = []
+    const guard = createOverlayGuard({
+      hasHelper: () => true,
+      send: async (message) => { events.push(String(message.active)) },
+      setHidInput: () => undefined,
+      sleep: async () => undefined,
+    })
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const first = guard.withCapture(async () => { events.push('first done') })
+    const second = guard.withCapture(async () => { await gate; events.push('second done') })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The first capture already returned, but the second still reads the screen: no end yet.
+    assert.deepEqual(events, ['true', 'first done'])
+    release()
+    await Promise.all([first, second])
+    assert.deepEqual(events, ['true', 'first done', 'second done', 'false'])
+  })
+
+  it('closes the interval when the begin is aborted after it was sent', async () => {
+    const sent: { type: string; active?: unknown }[] = []
+    const controller = new AbortController()
+    const guard = createOverlayGuard({
+      hasHelper: () => true,
+      send: (message, signal) => {
+        sent.push(message)
+        if (message.active !== true) return Promise.resolve()
+        // The helper already counted the begin; its ack never lands before the abort.
+        return new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => { reject(new Error('aborted')) }, { once: true })
+          controller.abort()
+        })
+      },
+      setHidInput: () => undefined,
+      sleep: async () => undefined,
+    })
+    await assert.rejects(
+      guard.withCapture(async () => { throw new Error('must not run') }, controller.signal),
+      /aborted/,
+    )
+    assert.deepEqual(sent.map((message) => String(message.active)), ['true', 'false'])
+  })
+
+  it('fails the capture when the begin is never acked, and still closes the interval', async () => {
+    const events: string[] = []
+    const guard = createOverlayGuard({
+      hasHelper: () => true,
+      send: async (message) => {
+        events.push(message.active === true ? 'begin' : 'end')
+        if (message.active === true) throw new Error('dsh-orb: overlay ack timed out')
+      },
+      setHidInput: () => undefined,
+      sleep: async () => undefined,
+    })
+    await assert.rejects(guard.withCapture(async () => { events.push('run') }), /ack timed out/)
+    assert.deepEqual(events, ['begin', 'end'])
+  })
 })
 
 describe('observation ribbon preference', () => {

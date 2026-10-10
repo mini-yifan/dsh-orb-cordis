@@ -46,6 +46,8 @@ function delay(ms: number): Promise<void> {
 export function createOverlayGuard(transport: OverlayGuardTransport) {
   let inputDepth = 0
   let captureDepth = 0
+  /** True between the begin the helper counted and its matching end. */
+  let captureOpen = false
   const sleep = transport.sleep ?? delay
 
   return {
@@ -57,11 +59,14 @@ export function createOverlayGuard(transport: OverlayGuardTransport) {
       // Inside an input cloak the helper already protects every chrome window for the
       // whole burst, so a nested capture interval would only add round-trips and settle.
       const cloaked = captureDepth === 1 && inputDepth === 0 && transport.hasHelper()
-      let sentBegin = false
       try {
         if (cloaked) {
           const begin = transport.send({ type: 'overlay-capture', id: randomUUID(), active: true }, signal)
-          sentBegin = true
+          // The helper counts the capture as soon as the begin is written, and an abort or
+          // an ack timeout rejects the await. Mark it before that await so the finally
+          // still closes the interval; otherwise the ball would stay protected and vanish
+          // from every later capture.
+          captureOpen = true
           await begin
           await sleep(OVERLAY_GUARD_CAPTURE_SETTLE_MS)
         }
@@ -71,7 +76,11 @@ export function createOverlayGuard(transport: OverlayGuardTransport) {
         return await run({ excludeWindowIds: transport.chromeWindowIds?.() ?? [] })
       } finally {
         captureDepth -= 1
-        if (sentBegin) {
+        // The interval is owned by the depth, not by the call that opened it: overlapping
+        // captures close only when the outermost one returns. The end never carries the
+        // caller's signal, which may already be aborted, or it would be cancelled itself.
+        if (captureDepth === 0 && captureOpen) {
+          captureOpen = false
           try {
             await transport.send({ type: 'overlay-capture', id: randomUUID(), active: false })
           } catch {

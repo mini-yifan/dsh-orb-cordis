@@ -78,7 +78,17 @@ export function createForegroundMemory(options: ForegroundMemoryOptions): Foregr
     } catch {
       return
     }
-    if (foreground <= 0 || options.chromeWindowIds().includes(foreground)) return
+    if (foreground <= 0) return
+    const chrome = options.chromeWindowIds()
+    // Until the helper reports its chrome handles there is no way to tell the ball from
+    // the user's window, and the ball is the foreground right after it was clicked. Wait
+    // for the first report; the sampler keeps ticking on its own.
+    if (chrome.length === 0) return
+    if (chrome.includes(foreground)) {
+      // The remembered window turned out to be the ball itself; it must never be handed back.
+      if (remembered === foreground) remembered = 0
+      return
+    }
     remembered = foreground
   }
 
