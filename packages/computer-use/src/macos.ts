@@ -571,6 +571,7 @@ function screenFromFrontmost(parsed: ParsedFrontmost): ScreenInfo | undefined {
     scale: parsed.scale,
     windowId: parsed.windowId,
     ...parsed.transientWindowIds === undefined ? {} : { transientWindowIds: parsed.transientWindowIds },
+    appName: parsed.appName,
   }
 }
 

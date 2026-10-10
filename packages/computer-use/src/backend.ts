@@ -32,6 +32,11 @@ export interface ScreenInfo {
    * Capture is always a screen rectangle of {@link bounds}.
    */
   readonly transientWindowIds?: readonly number[]
+  /**
+   * App that owns {@link windowId}, as the platform reports it.
+   * Names the window when a hotkey cannot move keyboard focus to it.
+   */
+  readonly appName?: string
 }
 
 /** Encoded raster returned by one window capture. */
@@ -115,9 +120,19 @@ export interface ScrollInput {
   readonly scrollLevel: number
 }
 
-/** Posted key combination. */
+/**
+ * Posted key combination.
+ * The window fields carry the session's own last observation: Windows hands focus to that
+ * window before posting and refuses an elevated one; macOS ignores them.
+ */
 export interface HotkeyInput {
   readonly keys: readonly string[]
+  /** Owner window of that observation. Omit when the session has not observed anything yet. */
+  readonly windowId?: number
+  /** Extra window ids the observation included (menus and other family windows). */
+  readonly transientWindowIds?: readonly number[]
+  /** App owning `windowId`, for the focus error message. */
+  readonly appName?: string
 }
 
 /** Left-button press-and-hold on one screen. */

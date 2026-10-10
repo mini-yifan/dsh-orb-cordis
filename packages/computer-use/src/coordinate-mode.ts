@@ -27,6 +27,19 @@ export type CoordinateMode = 'millifraction' | 'pixel'
 export interface ObservationRaster {
   readonly width: number
   readonly height: number
+  /** Owner window the observation captured; a hotkey hands keyboard focus back to it. */
+  readonly windowId?: number
+  /** Extra window ids the observation included (menus and other family windows). */
+  readonly transientWindowIds?: readonly number[]
+  /** App owning {@link windowId}, for the hotkey focus error message. */
+  readonly appName?: string
+}
+
+/** Window an observation belongs to, as a hotkey takes it. */
+export interface ObservedWindow {
+  readonly windowId: number
+  readonly transientWindowIds?: readonly number[]
+  readonly appName?: string
 }
 
 /** Canonical tool-result fields that fork render copy and the next envelope. */
@@ -193,17 +206,51 @@ export function coordinateModeOf(session: Session | undefined): CoordinateMode {
 }
 
 /**
- * Remember the attached raster from an observation so the next pixel click can divide by it.
+ * Remember the attached raster and window from an observation, so the next pixel click can
+ * divide by the raster and the next hotkey can hand focus back to the window.
  * @param session - session that received the observation; omitted on stubs without identity.
- * @param screens - captured screens; empty clears the raster (fail closed).
+ * @param screens - captured screens; empty clears the entry (fail closed).
  */
 export function rememberObservation(
   session: Session | undefined,
-  screens: readonly { readonly image: { readonly width: number; readonly height: number } }[],
+  screens: readonly {
+    readonly image: { readonly width: number; readonly height: number }
+    readonly windowId?: number
+    readonly transientWindowIds?: readonly number[]
+    readonly appName?: string
+  }[],
 ): void {
   if (session === undefined) return
-  const first = screens[0]?.image
-  observationCache.set(session, first === undefined ? false : { width: first.width, height: first.height })
+  const first = screens[0]
+  if (first === undefined) {
+    observationCache.set(session, false)
+    return
+  }
+  const image = first.image
+  observationCache.set(session, {
+    width: image.width,
+    height: image.height,
+    ...first.windowId === undefined ? {} : { windowId: first.windowId },
+    ...first.transientWindowIds === undefined ? {} : { transientWindowIds: first.transientWindowIds },
+    ...first.appName === undefined ? {} : { appName: first.appName },
+  })
+}
+
+/**
+ * Window of the session's own last observation, for a hotkey to restore focus to.
+ * Reads the live cache only: the log carries no window id, and an empty entry stays empty.
+ * @param session - session whose last observation window is needed.
+ * @returns the window, or undefined when nothing was observed in this process.
+ */
+export function lastObservedWindow(session: Session | undefined): ObservedWindow | undefined {
+  if (session === undefined) return undefined
+  const cached = observationCache.get(session)
+  if (cached === false || cached === undefined || cached.windowId === undefined) return undefined
+  return {
+    windowId: cached.windowId,
+    ...cached.transientWindowIds === undefined ? {} : { transientWindowIds: cached.transientWindowIds },
+    ...cached.appName === undefined ? {} : { appName: cached.appName },
+  }
 }
 
 /**

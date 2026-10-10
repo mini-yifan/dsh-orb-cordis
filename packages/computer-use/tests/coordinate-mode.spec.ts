@@ -19,6 +19,7 @@ import {
   coordinatesRemain,
   firstFrameNotice,
   lastAttachedRaster,
+  lastObservedWindow,
   loggedCoordinateMode,
   rememberObservation,
   stampCoordinateMode,
@@ -140,6 +141,25 @@ describe('computer-use coordinate-mode stamp', () => {
 })
 
 describe('computer-use observation raster cache', () => {
+  it('remembers the observation window for the next hotkey', () => {
+    const session = Session.create(SessionId('cu-coord-window'))
+    expect(lastObservedWindow(session)).toBeUndefined()
+    // A raster without a window id cannot move focus.
+    rememberObservation(session, [{ image: { width: 720, height: 450 } }])
+    expect(lastObservedWindow(session)).toBeUndefined()
+    rememberObservation(session, [{
+      image: { width: 720, height: 450 },
+      windowId: 5,
+      transientWindowIds: [6],
+      appName: 'notepad',
+    }])
+    expect(lastObservedWindow(session)).toEqual({ windowId: 5, transientWindowIds: [6], appName: 'notepad' })
+    // An empty observation clears the window together with the raster, sentinel included.
+    rememberObservation(session, [])
+    expect(lastObservedWindow(session)).toBeUndefined()
+    expect(lastAttachedRaster(session)).toBeUndefined()
+  })
+
   it('remembers the attached raster and reconstructs it from a plugin notice', () => {
     const session = Session.create(SessionId('cu-coord-raster'))
     rememberObservation(session, [{ image: { width: 720, height: 450 } }])

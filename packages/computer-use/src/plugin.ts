@@ -27,6 +27,7 @@ import {
   firstFrameNotice,
   installCoordinateMode,
   lastAttachedRaster,
+  lastObservedWindow,
   rememberObservation,
   toolsForCoordinateMode,
   type CoordinateOutcome,
@@ -107,6 +108,10 @@ const SCREEN_SCHEMA = {
     logicalWidth: { type: 'number', required: true },
     logicalHeight: { type: 'number', required: true },
     scale: { type: 'number', required: true },
+    // The observed window rides along so the next hotkey can hand keyboard focus back to it.
+    windowId: { type: 'integer' },
+    transientWindowIds: { type: 'array', items: { type: 'integer' } },
+    appName: { type: 'string' },
     image: SCREEN_IMAGE_SCHEMA,
   },
 } as const
@@ -558,7 +563,13 @@ export function applyComputerUse(
       if (args.keys.length === 0) throw new Error('keys must contain at least one key')
       assertAllowedHotkey(args.keys)
       return guiTurn(backend, exec, async () => {
-        await backend.hotkey({ keys: args.keys }, exec.signal)
+        // The keys go to the window this session last observed, not to whatever capture ran
+        // most recently (which may belong to another session).
+        const observed = lastObservedWindow(sessionOf(exec))
+        await backend.hotkey({
+          keys: args.keys,
+          ...observed === undefined ? {} : observed,
+        }, exec.signal)
         const observation = await recapture(ctx, backend, exec, config.postActionWaitMs)
         return {
           keys: args.keys,

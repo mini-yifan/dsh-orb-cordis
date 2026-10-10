@@ -32,6 +32,12 @@ export interface ObservedScreen {
   logicalWidth: number
   logicalHeight: number
   scale: number
+  /** Owner window of this surface; Windows hands focus back to it for a hotkey. HWND/CGWindowID. */
+  windowId?: number
+  /** Extra window ids the surface included (menus and other family windows). */
+  transientWindowIds?: number[]
+  /** App owning {@link windowId}, for the hotkey focus error message. */
+  appName?: string
   image: ObservedImage
 }
 
@@ -238,6 +244,10 @@ export async function observeDesktop(
       logicalWidth: screen.bounds.width,
       logicalHeight: screen.bounds.height,
       scale: screen.scale,
+      // The window the surface belongs to rides along so a later hotkey can focus it.
+      ...screen.windowId === undefined ? {} : { windowId: screen.windowId },
+      ...screen.transientWindowIds === undefined ? {} : { transientWindowIds: [...screen.transientWindowIds] },
+      ...screen.appName === undefined ? {} : { appName: screen.appName },
       image: {
         attachmentId: saved.attachmentId,
         mediaType: saved.mediaType,

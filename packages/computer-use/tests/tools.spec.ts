@@ -311,6 +311,35 @@ describe('computer-use tools', () => {
       .toMatchObject({ card: 'generic', title: 'Wait' })
   })
 
+  it('presses a hotkey against the window of the session\'s last observation', async () => {
+    const session = Session.create(SessionId('cu-hotkey-window'))
+    const { ctx, backend } = await setup({
+      screens: [{
+        index: 0,
+        bounds: { x: 0, y: 0, width: 800, height: 600 },
+        scale: 1,
+        windowId: 42,
+        transientWindowIds: [43],
+        appName: 'notepad',
+      }],
+    })
+    // No observation yet: no window rides along, so the backend posts keys as they are.
+    await execute(ctx, 'hotkey', { keys: ['escape'] }, 'vision-model', session)
+    expect(backend.actions.filter(action => action.type === 'hotkey')[0]).toMatchObject({
+      input: { keys: ['escape'] },
+    })
+    expect((backend.actions.find(action => action.type === 'hotkey')?.input as { windowId?: number }).windowId)
+      .toBeUndefined()
+
+    // After a click recaptures, the hotkey carries that observation's window.
+    await execute(ctx, 'click', { screen_index: 0, position: [10, 10], button: 'left', count: 1 }, 'vision-model', session)
+    await execute(ctx, 'hotkey', { keys: ['ctrl', 'w'] }, 'vision-model', session)
+    const pressed = backend.actions.filter(action => action.type === 'hotkey')
+    expect(pressed.at(-1)).toMatchObject({
+      input: { keys: ['ctrl', 'w'], windowId: 42, transientWindowIds: [43], appName: 'notepad' },
+    })
+  })
+
   it('settles postActionWaitMs before recapture inspect', async () => {
     const { ctx, backend } = await setup({ postActionWaitMs: 600 })
     const result = await execute(ctx, 'click', { screen_index: 0, position: [100, 200] })

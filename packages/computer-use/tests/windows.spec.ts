@@ -27,6 +27,7 @@ vi.mock('../src/windows-native.ts', () => ({
   },
 }))
 import { runWithCaptureExcludeWindowIds } from '../src/capture-exclude.ts'
+import { wrapDesktopBackend } from '../src/overlay-guard.ts'
 import type { WindowsDesktopSnapshot, WindowsWindowFact } from '../src/windows-foreground.ts'
 import {
   createWindowsDesktopBackend,
@@ -130,6 +131,7 @@ describe('windows desktop backend', () => {
       scale: 1,
       windowId: 5,
       transientWindowIds: [6],
+      appName: 'explorer',
     }])
     await expect(backend.capture(screens[0]!)).resolves.toEqual({ data: png, mediaType: 'image/png' })
     await expect(backend.inspectForeground()).resolves.toEqual({
@@ -151,6 +153,7 @@ describe('windows desktop backend', () => {
         bounds,
         scale: 1,
         windowId: 5,
+        appName: 'notepad',
       }])
       await expect(backend.inspectForeground()).resolves.toEqual({
         appName: 'notepad',
@@ -183,6 +186,72 @@ describe('windows desktop backend', () => {
     expect(host.calls).not.toContain('key:65:down:0')
     expect(host.calls).not.toContain('key:13:down:0')
     expect(host.calls.at(-1)).toBe('clip:previous')
+  })
+
+  it('holds click modifiers only for that click', async () => {
+    const host = ops()
+    const screen = { index: 0, bounds, scale: 1 }
+    const backend = createWindowsDesktopBackend(host)
+    await backend.click({ screen, position: [0, 0], button: 'left', count: 1, modifiers: ['shift', 'control'] })
+    expect(host.calls).toEqual([
+      'key:16:down:0',
+      'key:17:down:0',
+      'move:10,20',
+      'down',
+      'up',
+      'key:17:up:0',
+      'key:16:up:0',
+    ])
+    host.calls.length = 0
+    // The Win key carries the extended scan code, and is still released after the click.
+    await backend.click({ screen, position: [0, 0], button: 'left', count: 1, modifiers: ['cmd'] })
+    expect(host.calls).toEqual(['key:91:down:1', 'move:10,20', 'down', 'up', 'key:91:up:1'])
+  })
+
+  it('releases the button and every key when an input is cancelled mid-press', async () => {
+    const screen = { index: 0, bounds, scale: 1 }
+
+    // Cancelled during the button hold: the press still gets its release.
+    const clickController = new AbortController()
+    const clicking = ops({
+      mouseButton: (_button, down) => {
+        clicking.calls.push(down ? 'down' : 'up')
+        if (down) clickController.abort()
+      },
+    })
+    await expect(createWindowsDesktopBackend(clicking).click(
+      { screen, position: [0, 0], button: 'left', count: 1 },
+      clickController.signal,
+    )).rejects.toThrow()
+    expect(clicking.calls).toEqual(['move:10,20', 'down', 'up'])
+
+    // Cancelled right after the press: the drag must not leave the left button down.
+    const dragController = new AbortController()
+    const dragging = ops({
+      mouseButton: (_button, down) => {
+        dragging.calls.push(down ? 'down' : 'up')
+        if (down) dragController.abort()
+      },
+    })
+    await expect(createWindowsDesktopBackend(dragging).drag({
+      startScreen: screen, startPosition: [0, 0], endScreen: screen, endPosition: [1000, 1000],
+    }, dragController.signal)).rejects.toThrow()
+    expect(dragging.calls.filter((call) => call === 'down')).toEqual(['down'])
+    expect(dragging.calls.at(-1)).toBe('up')
+
+    // Cancelled on the modifier gap: the held modifier comes back up.
+    const chordController = new AbortController()
+    const chords = ops({
+      key: (virtualKey, down, extended) => {
+        chords.calls.push(`key:${String(virtualKey)}:${down ? 'down' : 'up'}:${extended ? '1' : '0'}`)
+        if (down) chordController.abort()
+      },
+    })
+    await expect(createWindowsDesktopBackend(chords).hotkey(
+      { keys: ['ctrl', 'c'] },
+      chordController.signal,
+    )).rejects.toThrow()
+    expect(chords.calls).toEqual(['key:17:down:0', 'key:17:up:0'])
   })
 
   it('posts extended navigation keys, modifier chords, and one wheel notch per level', async () => {
@@ -225,7 +294,7 @@ describe('windows desktop backend', () => {
     const backend = createWindowsDesktopBackend(host)
     await runWithCaptureExcludeWindowIds([9], async () => {
       await backend.listScreens()
-      await backend.hotkey({ keys: ['ctrl', 'w'] })
+      await backend.hotkey({ keys: ['ctrl', 'w'], windowId: 5, appName: 'notepad' })
     })
     const focusAt = host.calls.indexOf('focus:5')
     expect(focusAt).toBeGreaterThan(-1)
@@ -256,7 +325,7 @@ describe('windows desktop backend', () => {
       windowTitle: 'notes.txt',
     })
     await backend.listScreens()
-    await backend.hotkey({ keys: ['ctrl', 'w'] })
+    await backend.hotkey({ keys: ['ctrl', 'w'], windowId: 5, transientWindowIds: [11], appName: 'notepad' })
     expect(host.calls.some(call => call.startsWith('focus:'))).toBe(false)
     host.calls.length = 0
     const focused = ops({
@@ -268,7 +337,7 @@ describe('windows desktop backend', () => {
     })
     const owning = createWindowsDesktopBackend(focused)
     await owning.listScreens()
-    await owning.hotkey({ keys: ['escape'] })
+    await owning.hotkey({ keys: ['escape'], windowId: 5, appName: 'notepad' })
     expect(focused.calls.some(call => call.startsWith('focus:'))).toBe(false)
     expect(focused.calls).toEqual(['key:27:down:0', 'key:27:up:0'])
   })
@@ -286,30 +355,63 @@ describe('windows desktop backend', () => {
     const backend = createWindowsDesktopBackend(host)
     await runWithCaptureExcludeWindowIds([9], async () => {
       await backend.listScreens()
-      await expect(backend.hotkey({ keys: ['ctrl', 'w'] })).rejects.toThrow(
+      await expect(backend.hotkey({ keys: ['ctrl', 'w'], windowId: 5, appName: 'notepad' })).rejects.toThrow(
         'computer-use: keyboard focus could not be moved to notepad; click inside the window, then retry hotkey',
       )
     })
     expect(host.calls).toEqual(['focus:5'])
   })
 
-  it('does not restore a window after a later listing finds nothing operable', async () => {
-    let windows = shot([fact()], 9)
+  it('keeps a hotkey on the window its own observation selected', async () => {
+    // Session A observed hwnd 5; a later listing (another session's screenshot) picks 9.
+    let windows = shot([fact()], 5)
     const host = ops({
       listWindows: () => windows,
-      foregroundWindowId: () => 9,
+      foregroundWindowId: () => 0,
       focusWindow: (hwnd) => {
         host.calls.push(`focus:${String(hwnd)}`)
         return true
       },
     })
     const backend = createWindowsDesktopBackend(host)
+    const observed = await backend.listScreens()
+    expect(observed[0]?.windowId).toBe(5)
+    windows = shot([fact({ hwnd: 9, appName: 'electron', title: 'other' })], 9)
     await backend.listScreens()
-    windows = shot([])
-    await backend.listScreens()
-    await backend.hotkey({ keys: ['ctrl', 'w'] })
-    expect(host.calls.some(call => call.startsWith('focus:'))).toBe(false)
-    expect(host.calls[0]).toBe('key:17:down:0')
+    await backend.hotkey({
+      keys: ['ctrl', 'w'],
+      windowId: observed[0]?.windowId,
+      appName: observed[0]?.appName,
+    })
+    // The passed window decides; the later listing never redirects the keys.
+    expect(host.calls.filter(call => call.startsWith('focus:'))).toEqual(['focus:5'])
+  })
+
+  it('focuses the observed window through the capture wrapper, never the ball', async () => {
+    const ball = fact({ hwnd: 9, appName: 'electron', title: 'ball' })
+    const host = ops({
+      listWindows: () => shot([ball, fact()], 9),
+      foregroundWindowId: () => 9,
+      focusWindow: (hwnd) => {
+        host.calls.push(`focus:${String(hwnd)}`)
+        return true
+      },
+    })
+    const backend = wrapDesktopBackend(createWindowsDesktopBackend(host), {
+      withCapture: run => run({ excludeWindowIds: [9] }),
+      withInput: run => run(),
+      setObservationFrame: () => Promise.resolve(),
+    })
+    const observed = await backend.listScreens()
+    expect(observed[0]?.windowId).toBe(5)
+    await backend.hotkey({
+      keys: ['ctrl', 'w'],
+      windowId: observed[0]?.windowId,
+      transientWindowIds: observed[0]?.transientWindowIds,
+      appName: observed[0]?.appName,
+    })
+    expect(host.calls).toContain('focus:5')
+    expect(host.calls).not.toContain('focus:9')
   })
 
   it('drags in steps and holds a long press', async () => {
@@ -345,7 +447,7 @@ describe('windows desktop backend', () => {
     const backend = createWindowsDesktopBackend(host)
     // The check applies to the window an observation selected, not to the foreground.
     await backend.listScreens()
-    await expect(backend.hotkey({ keys: ['ctrl', 'c'] })).rejects.toThrow(/elevated/u)
+    await expect(backend.hotkey({ keys: ['ctrl', 'c'], windowId: 5 })).rejects.toThrow(/elevated/u)
     blocked = false
     await expect(backend.openApp({ name: 'notepad' })).resolves.toEqual({ kind: 'activated', name: 'notepad' })
     await expect(backend.openApp({ name: 'calc' })).resolves.toEqual({ kind: 'launched', name: 'calc' })
@@ -422,7 +524,7 @@ describe('windows desktop backend', () => {
     })
     const backend = createWindowsDesktopBackend(host)
     await backend.listScreens()
-    await expect(backend.hotkey({ keys: ['ctrl', 'c'] })).rejects.toThrow(/elevated/u)
+    await expect(backend.hotkey({ keys: ['ctrl', 'c'], windowId: 5 })).rejects.toThrow(/elevated/u)
     // Focus never moved and no key was posted.
     expect(host.calls.some((call) => call.startsWith('focus:'))).toBe(false)
     expect(host.calls.some((call) => call.startsWith('key:'))).toBe(false)

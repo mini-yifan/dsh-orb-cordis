@@ -36,8 +36,8 @@ export interface OverlayExcludedRegionCaptureInput {
 export interface ComputerUseOverlayGuard {
   /**
    * Exclude host overlay chrome from screen capture while `run` executes, then restore it.
-   * Nested `withCapture` inside `withInput` still sends capture IPC so exclude ids refresh
-   * after the observation frame appears.
+   * A nested `withCapture` inside `withInput` sends no capture IPC — the enclosing input
+   * interval already cloaks every chrome window — but `run` still receives the exclude ids.
    * @param run - capture implementation; receives overlay window ids from the begin ack.
    * @param signal - cooperative cancellation for the cloak handshake.
    * @returns the value `run` resolves to.

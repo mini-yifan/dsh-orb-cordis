@@ -122,6 +122,7 @@ describe('macOS backend with an injected runner', () => {
       bounds: { x: 0, y: 0, width: 100, height: 50 },
       scale: 2,
       windowId: 42,
+      appName: 'Pages',
     }])
   })
 
@@ -146,6 +147,7 @@ describe('macOS backend with an injected runner', () => {
       bounds: { x: 12, y: 34, width: 10, height: 20 },
       scale: 1,
       windowId: 7,
+      appName: 'Pages',
     }])
     await expect(createMacosDesktopBackend(runner({
       inspect: inspectJson({
@@ -161,6 +163,7 @@ describe('macOS backend with an injected runner', () => {
       scale: 2,
       windowId: 42,
       transientWindowIds: [99, 100],
+      appName: 'Pages',
     }])
     await expect(createMacosDesktopBackend(runner({
       inspect: inspectJson({ transients: 'x' }),
@@ -169,6 +172,7 @@ describe('macOS backend with an injected runner', () => {
       bounds: { x: 0, y: 0, width: 100, height: 50 },
       scale: 2,
       windowId: 42,
+      appName: 'Pages',
     }])
     await expect(createMacosDesktopBackend(runner({
       inspect: inspectJson({ transients: [0, -1, 1.5] }),
@@ -177,6 +181,7 @@ describe('macOS backend with an injected runner', () => {
       bounds: { x: 0, y: 0, width: 100, height: 50 },
       scale: 2,
       windowId: 42,
+      appName: 'Pages',
     }])
   })
 
@@ -249,6 +254,7 @@ describe('macOS backend with an injected runner', () => {
       bounds: { x: -218, y: -1080, width: 1920, height: 1080 },
       scale: 1,
       windowId: 42,
+      appName: 'Pages',
     })
     files.length = 0
     args.length = 0
@@ -300,6 +306,7 @@ describe('macOS backend with an injected runner', () => {
       bounds: { x: -40, y: -60, width: 100, height: 50 },
       scale: 2,
       windowId: 42,
+      appName: 'Pages',
     }])
   })
 

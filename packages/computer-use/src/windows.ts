@@ -299,22 +299,23 @@ function assertTargetInput(ops: WindowsDesktopOps, hwnd: number | undefined): vo
 }
 
 /**
- * Move keyboard focus to the last `listScreens` window when it is not already foreground.
- * No-op when this backend has not listed a window, or when the foreground hwnd is that window or one of its transients.
+ * Move keyboard focus to the window the session last observed when it is not already foreground.
+ * A session without a window id posts keys as-is: it must not guess a foreground window.
  * @param host - Win32 operations.
- * @param observed - selection from the latest `listScreens`, if any.
+ * @param target - observation window from the caller, if the session has one.
  * @throws when the window cannot become foreground. No keys are posted after that throw.
  */
 function restoreObservedFocus(
   host: WindowsDesktopOps,
-  observed: WindowsObservationSelection | undefined,
+  target: { readonly windowId?: number; readonly transientWindowIds?: readonly number[]; readonly appName?: string },
 ): void {
-  if (observed === undefined) return
+  if (target.windowId === undefined) return
   const foreground = host.foregroundWindowId()
-  if (foreground === observed.windowId || observed.transientWindowIds.includes(foreground)) return
-  if (host.focusWindow(observed.windowId)) return
+  if (foreground === target.windowId || target.transientWindowIds?.includes(foreground) === true) return
+  if (host.focusWindow(target.windowId)) return
+  const label = target.appName === undefined || target.appName === '' ? `window ${String(target.windowId)}` : target.appName
   throw new Error(
-    `computer-use: keyboard focus could not be moved to ${observed.appName}; click inside the window, then retry hotkey`,
+    `computer-use: keyboard focus could not be moved to ${label}; click inside the window, then retry hotkey`,
   )
 }
 
@@ -330,8 +331,13 @@ async function clickAt(
   assertPointInput(ops, point)
   for (let index = 0; index < count; index += 1) {
     ops.mouseButton(button, true)
-    await delay(BUTTON_HOLD_MS, signal)
-    ops.mouseButton(button, false)
+    // A press always gets its release: the hold delay rejects on abort, and a button left
+    // down would turn the next click into a drag.
+    try {
+      await delay(BUTTON_HOLD_MS, signal)
+    } finally {
+      ops.mouseButton(button, false)
+    }
     if (index + 1 < count) await delay(DOUBLE_CLICK_GAP_MS, signal)
   }
 }
@@ -343,11 +349,45 @@ async function chord(
 ): Promise<void> {
   const modifiers = keys.filter(key => MODIFIER_VKS.has(key.vk))
   const rest = keys.filter(key => !MODIFIER_VKS.has(key.vk))
-  for (const key of modifiers) ops.key(key.vk, true, key.extended)
-  if (modifiers.length > 0) await delay(MODIFIER_GAP_MS, signal)
-  for (const key of rest) ops.key(key.vk, true, key.extended)
-  for (const key of [...rest].reverse()) ops.key(key.vk, false, key.extended)
-  for (const key of [...modifiers].reverse()) ops.key(key.vk, false, key.extended)
+  const pressed: PostedKey[] = []
+  try {
+    for (const key of modifiers) {
+      ops.key(key.vk, true, key.extended)
+      pressed.push(key)
+    }
+    if (modifiers.length > 0) await delay(MODIFIER_GAP_MS, signal)
+    for (const key of rest) {
+      ops.key(key.vk, true, key.extended)
+      pressed.push(key)
+    }
+  } finally {
+    // Reverse order, whatever happened: an abort between the presses must not leave a
+    // modifier or key held down.
+    for (const key of [...pressed].reverse()) ops.key(key.vk, false, key.extended)
+  }
+}
+
+/**
+ * Hold `keys` down, run `run` with them held, then release every key that went down in
+ * reverse order. Anything that throws or aborts inside `run` still releases them.
+ */
+async function withHeldKeys<T>(
+  ops: WindowsDesktopOps,
+  keys: readonly PostedKey[],
+  signal: AbortSignal,
+  run: () => Promise<T>,
+): Promise<T> {
+  const pressed: PostedKey[] = []
+  try {
+    for (const key of keys) {
+      ops.key(key.vk, true, key.extended)
+      pressed.push(key)
+    }
+    if (pressed.length > 0) await delay(MODIFIER_GAP_MS, signal)
+    return await run()
+  } finally {
+    for (const key of [...pressed].reverse()) ops.key(key.vk, false, key.extended)
+  }
 }
 
 function observationOf(ops: WindowsDesktopOps): WindowsObservationSelection | undefined {
@@ -361,6 +401,7 @@ function screenFromObservation(selected: WindowsObservationSelection): ScreenInf
     scale: selected.scale,
     windowId: selected.windowId,
     ...selected.transientWindowIds.length === 0 ? {} : { transientWindowIds: selected.transientWindowIds },
+    appName: selected.appName,
   }
 }
 
@@ -378,7 +419,6 @@ async function production(): Promise<WindowsDesktopOps> {
  */
 export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBackend {
   const use = async (): Promise<WindowsDesktopOps> => ops ?? await production()
-  let observed: WindowsObservationSelection | undefined
 
   return {
     withGuiTurn: run => run(),
@@ -386,7 +426,6 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
     async listScreens(signal) {
       signal?.throwIfAborted()
       const selected = observationOf(await use())
-      observed = selected
       if (selected === undefined) return []
       return [screenFromObservation(selected)]
     },
@@ -434,7 +473,16 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
 
     async click(input: ClickInput, signal) {
       const host = await use()
-      await clickAt(host, input.button, input.count, pointOf(input.position, input.screen), liveSignal(signal))
+      const point = pointOf(input.position, input.screen)
+      const abort = liveSignal(signal)
+      const modifiers = (input.modifiers ?? []).map(postedKey)
+      if (modifiers.length === 0) {
+        await clickAt(host, input.button, input.count, point, abort)
+        return
+      }
+      // Shift-clicks, Ctrl-clicks, and Cmd-chords hold their modifiers for this click only;
+      // a refused point or an abort still releases them.
+      await withHeldKeys(host, modifiers, abort, () => clickAt(host, input.button, input.count, point, abort))
     },
 
     async typeText(input: TypeInput, signal) {
@@ -472,10 +520,11 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
     async hotkey(input: HotkeyInput, signal) {
       signal?.throwIfAborted()
       const host = await use()
-      // The window about to receive the keys is the one to check, and it must be checked
-      // before focus moves: UIPI drops posted keys into an elevated window.
-      assertTargetInput(host, observed?.windowId)
-      restoreObservedFocus(host, observed)
+      // The window comes from this session's own observation, so another session's capture
+      // cannot redirect the keys. It is checked before focus moves: UIPI drops posted keys
+      // into an elevated window.
+      assertTargetInput(host, input.windowId)
+      restoreObservedFocus(host, input)
       await chord(host, input.keys.map(postedKey), liveSignal(signal))
     },
 
@@ -503,16 +552,20 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
       await delay(POINTER_MOVE_SETTLE_MS, abort)
       assertPointInput(host, start)
       host.mouseButton('left', true)
-      await delay(BUTTON_HOLD_MS, abort)
-      for (let step = 1; step <= DRAG_STEPS; step += 1) {
-        const t = step / DRAG_STEPS
-        host.movePointer(
-          Math.round(start.x + (end.x - start.x) * t),
-          Math.round(start.y + (end.y - start.y) * t),
-        )
-        await delay(DRAG_STEP_MS, abort)
+      // Hold and move inside one protected block: an abort must still release the button.
+      try {
+        await delay(BUTTON_HOLD_MS, abort)
+        for (let step = 1; step <= DRAG_STEPS; step += 1) {
+          const t = step / DRAG_STEPS
+          host.movePointer(
+            Math.round(start.x + (end.x - start.x) * t),
+            Math.round(start.y + (end.y - start.y) * t),
+          )
+          await delay(DRAG_STEP_MS, abort)
+        }
+      } finally {
+        host.mouseButton('left', false)
       }
-      host.mouseButton('left', false)
     },
 
     async openInBrowser(input: OpenInBrowserInput, signal) {
