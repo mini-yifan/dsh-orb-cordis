@@ -247,6 +247,45 @@ export function resultText(content, error) {
   return parts.join('\n')
 }
 
+/* ----- Error hints (评论区反馈：原始报错「DeepSeek Messages request failed (404)」等让用户无从下手) ----- */
+
+const ERROR_HINTS = [
+  {
+    pattern: /Messages request failed \(404\)|model (?:.*)?(?:not found|does not exist)/i,
+    zh: '404 多为模型名或 API 地址不对：右键悬浮球打开 Agent 设置确认模型 ID；用中转站时核对其支持的模型列表。',
+    en: 'A 404 usually means the model ID or API base URL is wrong: check the agent settings (right-click the ball); with a proxy provider, confirm the models it offers.',
+  },
+  {
+    pattern: /API\s*key(?:\s*is)?\s*(?:invalid|无效|不正确|不合法)|(?:invalid|无效的)\s*API\s*key|密匙无效|密钥无效|unauthorized|\b401\b/i,
+    zh: '密钥无效或未生效：检查 API Key 是否复制完整、账户是否有余额、中转站是否支持当前模型。',
+    en: 'The API key is invalid or not active: check that the key is complete, the account has balance, and the provider supports this model.',
+  },
+  {
+    pattern: /insufficient(?:\s+\w+)?\s*(?:balance|quota)|quota exceeded|余额不足|额度不足|欠费/i,
+    zh: '余额不足：到对应平台充值，或换用其他模型。',
+    en: 'Insufficient balance or quota: top up on the provider platform or switch models.',
+  },
+  {
+    pattern: /\b429\b|rate[\s_-]?limit|too many requests|限频|限流/i,
+    zh: '触发限流：稍等片刻重试，或降低请求频率。',
+    en: 'Rate limited: wait a moment and retry, or slow down the request pace.',
+  },
+  {
+    pattern: /timed?[\s_-]?out|timeout|econnrefused|econnreset|enotfound|fetch failed|certificate/i,
+    zh: '网络异常：检查网络与代理设置，确认能访问 API 地址。',
+    en: 'Network problem: check your network or proxy and make sure the API endpoint is reachable.',
+  },
+]
+
+/** One actionable hint for known provider/config failures; unknown text gets none. */
+export function errorHint(text, zh) {
+  if (typeof text !== 'string' || text === '') return ''
+  for (const hint of ERROR_HINTS) {
+    if (hint.pattern.test(text)) return zh === true ? hint.zh : hint.en
+  }
+  return ''
+}
+
 /* ----- Terminal card (terminal-card-model.ts) ----- */
 
 function parseExitStatus(text) {

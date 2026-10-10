@@ -3,7 +3,7 @@ import {
   processLabel, reasoningSummary, processTitle, toolTitle, toolLabels, classifyTool, deriveSummary,
   formatToolBody, terminalCardModel, terminalFailed, readCardModel,
   searchCardModel, webCardModel, diffCardModel, diffTotals, diffLines,
-  usageLabels, tokenUsageTotal, formatTokenCount,
+  usageLabels, tokenUsageTotal, formatTokenCount, errorHint,
 } from './transcript-model.js'
 import { upgradeCodeBlocks } from './highlight.js'
 import {
@@ -1528,6 +1528,16 @@ function main() {
     const actions = node.querySelector('.am-actions')
     if (actions) actions.hidden = block.running === true
     usagePill(node, block)
+    const existingHint = node.querySelector('.am-hint')
+    const hint = block.running === true ? '' : errorHint(block.text, messages === zh)
+    if (hint !== '') {
+      const chip = existingHint ?? document.createElement('span')
+      chip.className = 'am-hint'
+      chip.textContent = hint
+      if (existingHint === null) body.append(chip)
+    } else {
+      existingHint?.remove()
+    }
     const existing = node.querySelector('.am-stopped')
     if (block.interrupted === true) {
       const chip = existing ?? document.createElement('span')
