@@ -228,7 +228,9 @@ Helper 卡住或太慢时，截图里仍然有悬浮球。
 
 ### 40. Windows 光标半透明边缘按直通 alpha 混合
 
-`packages/computer-use/src/cursor.ts` 把 `GetDIBits` 得到的 32 位光标按直通 alpha 混合。这类位图的颜色通常已经预乘。不透明像素（alpha 255）是对的，半透明边缘会被再乘一次，边缘偏暗。热点不变，点击仍对齐，只是截图里的指针边缘不对。
+`packages/computer-use/src/cursor.ts` 把 `GetDIBits` 得到的 32 位光标按直通 alpha 混合。若这些颜色已经预乘，半透明边缘会偏暗。不透明像素（alpha 255）不受影响，热点也不变。
+
+这个前提还没有被证实。`tests/cursor.spec.ts` 把直通公式写成了期望值。修复方案把它标成待验证，本次不要改混合公式。确认 `GetDIBits` 的输出之后再决定改不改。
 
 ## 已关闭的划词工具栏
 

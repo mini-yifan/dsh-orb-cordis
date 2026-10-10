@@ -2,6 +2,8 @@
 
 给研发的实施说明。条目编号与 [BUGS.md](BUGS.md) 一致。每条都写了根因、要改的函数、改完的行为，以及建议补的测试。按下面的分组提交，同一组里的改动共享状态，不要拆开。
 
+本文已按 [FIX-PLAN-REVIEW.md](FIX-PLAN-REVIEW.md) 改过一版。审核里的根因复核成立。下面凡是和审核有关的条目，都改成了核对过源码之后的做法，不再保留会引入新故障的原文。第 40 条不进入本次修复，先做真机验证。
+
 实施前先跑一遍现有套件，改完再跑对应包的测试：
 
 ```sh
@@ -16,15 +18,17 @@ Windows 输入、macOS HID、延迟安装这几组还需要在对应系统上做
 | 顺序 | 分组 | 条目 | 原因 |
 | --- | --- | --- | --- |
 | 1 | 悬浮球对话渲染 | 1、11、12、13、14、15 | 纯前端，可独立验证 |
-| 2 | 宿主回合与遮罩 | 2、29、30、31、32、35、36 | 都在 `orb.ts` / `overlay-guard.ts` |
-| 3 | Windows 输入 | 5、6、7、17、23、28、40 | 共用一个后端实例 |
-| 4 | macOS 输入与截图 | 8、10、18、19、20、21、22 | 都在 `macos.ts` 的 JXA / 捕获路径 |
-| 5 | 剪贴板与打开 | 24、25、26 | 会改工具的副作用 |
-| 6 | 后台 code agent | 9、27 | 完成通知的时序 |
-| 7 | 更新与运行时 | 3、4、33、34、39 | 退出后安装和设置页 |
-| 8 | 设置页与路由 | 16、37 | 请求竞态 |
-| 9 | 几何 | 38 | 吸边 |
-| 10 | 划词（功能仍关闭） | 文末三条 | 修完不要自行打开入口 |
+| 2 | 宿主回合与遮罩 | 2、29、30、31、32、35、36 | 第 2 条和第 35 条必须同一提交，否则 abort 会把遮罩泄漏成永久隐身 |
+| 3 | Windows 输入（接口） | 28、23、6 | 先改键标志和查询接口，后面的点击与热键才接得上 |
+| 4 | Windows 输入（热键与按住） | 7、5、17 | 第 7 条依赖第 6 条的完整性查询，也依赖第 2 条的遮罩深度 |
+| 5 | macOS 输入与截图 | 8、10、18、19、20、21、22 | 都在 `macos.ts` 的 JXA / 捕获路径。第 8 条要连二进制一起提交 |
+| 6 | 剪贴板与打开 | 24、25、26 | 会改工具的副作用 |
+| 7 | 后台 code agent | 9、27 | 完成通知的时序 |
+| 8 | 更新与运行时 | 3、4、33、34、39 | 第 34 条按文中的 rename 方案做，不要用目录 mtime |
+| 9 | 设置页与路由 | 16、37 | 第 16 条要连两个轮询入口一起改 |
+| 10 | 几何 | 38 | 吸边 |
+| 11 | 划词（功能仍关闭） | 文末三条 | 修完不要自行打开入口 |
+| — | 待验证，本次不改 | 40 | `GetDIBits` 是否预乘还没有证据，盲改公式会打红现有测试 |
 
 ## 1. 悬浮球对话渲染
 
@@ -55,12 +59,14 @@ Windows 输入、macOS HID、延迟安装这几组还需要在对应系统上做
 
 改 `packages/helper/assets/markdown.js`：
 
-- 软换行拼接成一个空格。已经以空白结尾的行不要再加空格。硬换行逻辑保持不动。
+- 软换行默认拼一个空格。已经以空白结尾的行不要再加空格。硬换行逻辑保持不动。
+- 拼接处左右两侧都是 CJK（汉字、假名、谚文）时不要插空格。`注意\n如下` 仍是 `注意如下`。只有至少一侧不是 CJK 时才插空格，例如 `Hello\nworld`、`结果\nOK`。这是产品取舍：CommonMark 一律插空格，中文句子中间多一个空格会被当成新 bug。
 - 段落循环在吃下一行之前，若当前行是表格行且下一行是分隔行（现有的 `isTableRow` / `isSeparatorRow`），把这一行留给后面的表格分支，不要推进 `paragraph`。
 
 验收：
 
 - `Hello\nworld` 渲染成 `Hello world`，中间有空格。
+- `注意\n如下` 渲染成 `注意如下`，中间没有空格。
 - `注意\n\n| x | y |\n| --- | --- |\n| 1 | 2 |` 仍是表格。
 - `结果如下\n| x | y |\n| --- | --- |\n| 1 | 2 |` 也是表格，前面的句子单独成段。
 
@@ -79,7 +85,7 @@ Windows 输入、macOS HID、延迟安装这几组还需要在对应系统上做
   - 搜索：复制摘要和每条匹配的文本。
 - Markdown 代码块继续走 `pre`。
 
-验收：三类卡片点复制，剪贴板里是对应正文。点复制不会展开或折叠卡片。
+验收：三类卡片点复制，剪贴板里是对应正文。终端卡目前没有整卡折叠，不要把“不会展开或折叠卡片”写成验收。点复制时 `stopPropagation`，不触发标题栏上别的点击行为。补两个用例：终端没有输出时只复制命令；阅读卡复制的正文不含行号。
 
 ### 14. “展开更多”点一次后按钮被摘掉
 
@@ -116,12 +122,15 @@ module.subscribeGrammarLoaded(() => {
 
 改 `packages/host/src/overlay-guard.ts`。begin/end 跟“这一次调用”脱钩，跟深度脱钩：
 
-- 模块级（`createOverlayGuard` 闭包里）增加 `captureOpen`。
-- 深度从 0 到 1、当前没有 input 遮罩、helper 还在时，发 `active: true`，成功后 `captureOpen = true`。
-- `finally` 里先减深度。只有 `captureDepth === 0 && captureOpen` 才发 `active: false`，然后把 `captureOpen` 置回 false。
+- `createOverlayGuard` 闭包里增加 `captureOpen`。
+- 深度从 0 到 1、当前没有 input 遮罩、helper 还在时，调用 `transport.send({ active: true })`。`waitAck` 在 Promise 执行器里同步 `broadcast`，所以 `send()` 一返回，begin 已经写到 socket。紧接着、在 `await begin` 之前把 `captureOpen` 设为 true。不要写在 `await begin` 成功之后。
+- `await begin` 被 abort 或超时拒绝时，helper 已经把 capture 计数加过 1。`finally` 必须还能发出 end。标志若放在 await 之后，拒绝路径不会置位，球会一直停在 content protection 里，之后所有截图都看不到它。
+- `finally` 里先减深度。只有 `captureDepth === 0 && captureOpen` 才发 `active: false`，然后把 `captureOpen` 置回 false。发 end 时不要带已经 abort 的 signal，否则 end 自己也会被取消。
 - 内层调用不发 end。外层若先返回，此时深度仍大于 0，也不发 end。最后一层返回时由它发 end，即使 begin 是另一层发的。
 
-`packages/host/tests/overlay-guard.test.ts` 增加：两个 `withCapture` 重叠，先启动的那个先结束。发出的序列是一次 `true`、然后才是一次 `false`，`false` 出现在两个 `run` 都结束之后。现有“input 内部的 capture 不再发 capture 消息”的用例保持通过。
+这一条和第 35 条必须同一提交。第 35 条把超时改成 reject 之后，上面的拒绝路径会经常走到。
+
+`packages/host/tests/overlay-guard.test.ts` 增加：两个 `withCapture` 重叠，先启动的那个先结束。发出的序列是一次 `true`、然后才是一次 `false`，`false` 出现在两个 `run` 都结束之后。再加一条：begin 已发出后 `await` 被 abort，仍然有一次 `active: false`。现有“input 内部的 capture 不再发 capture 消息”的用例保持通过。
 
 ### 29. 前台记忆把悬浮球自己记下来
 
@@ -148,12 +157,16 @@ module.subscribeGrammarLoaded(() => {
 
 改 `packages/host/src/orb.ts`：
 
-- 增加 `turnEpoch`。`onPrompt` 进入真正提交前 `turnEpoch += 1`，`stopTurn` 记下调用时的 epoch 和 `sessionId`。
+- 增加 `turnEpoch` 和私有方法 `beginTurn()`。它负责 `turnEpoch += 1`、`turnRunning = true`、选区运行标记和 `turn` 广播。下面三处都改走它，不要只加在 `onPrompt` 里：
+  - `onPrompt` 进入真正提交之前。
+  - `consume` 里的 `turn/start`（约 853 行）。code agent 完成通知会从这里把回合唤醒，不经过 `onPrompt`。
+  - `openSession` 里 `row.running` 为真的分支（约 1641 行）。切到一个仍在跑的历史会话也是这样。
+- `stopTurn` 记下调用时的 epoch 和 `sessionId`。
 - `cancel` 成功且 epoch、`sessionId` 都没变，才 `finishTurn()`。
 - `cancel` 抛错时不要 `finishTurn()`。用现有的 `status()` 把失败写到球上，`turnRunning` 保持 true，等真正的 `turn/end` 再收口。
 - `finishTurn` 开头若发现 epoch 已变，直接返回。
 
-测试：`cancel` reject 时不广播 `turn running: false`。`cancel` 挂起期间插入一次 `onPrompt`，原来的 `stopTurn` 返回后新回合仍是 `running: true`。
+测试：`cancel` reject 时不广播 `turn running: false`。`cancel` 挂起期间分别插入一次 `onPrompt`、一次 `turn/start`、一次打开仍在运行的历史会话，原来的 `stopTurn` 返回后新回合仍是 `running: true`。
 
 ### 32. 旧的流式 attempt 还能把字写回来
 
@@ -167,7 +180,7 @@ module.subscribeGrammarLoaded(() => {
 
 根因：`waitAck` 超时调用 `finish(false)`，这条路径 `resolve()`。调用方把“没有 ack”当成遮罩已经生效。
 
-改超时分支：`reject(new Error('dsh-orb: overlay ack timed out'))`。不要复用 abort 的 `finish(false)`。`withCapture` 在 begin 的 `await` 上收到拒绝后，不得调用 `run()`。`finally` 里若 begin 已经发出，仍按第 2 条的深度规则补一次 end，避免 helper 计数泄漏。
+改超时分支：`reject(new Error('dsh-orb: overlay ack timed out'))`。不要复用现在超时用的 `finish(false)`。`withCapture` 在 begin 的 `await` 上收到拒绝后，不得调用 `run()`。begin 已经广播出去时，按第 2 条在 `await` 之前置位的 `captureOpen`，由 `finally` 补一次 end。end 不使用已 abort 或已超时的 signal。
 
 验收：helper 不回 ack 时，这次截图失败并带超时错误，画面里不会带上未遮罩的球。agent 收到的是工具错误，可以重试。
 
@@ -205,26 +218,44 @@ while (this.blockOrder.length > 200) {
 
 ### 6. 提权判断看错窗口，读失败就放行
 
-根因：`targetBlocksInput` 用 `GetForegroundWindow()`。点击的目标是坐标下的窗口，热键的目标是即将激活的窗口，两者都不必是当前前台。token 读失败得到 `undefined`，条件 `rid !== undefined && rid > selfRid` 为假，函数返回 false，调用方就发 `SendInput`。UIPI 会把这些输入丢掉，函数仍正常返回。
+根因：`targetBlocksInput` 用 `GetForegroundWindow()`。点击的目标是坐标下的窗口，热键的目标是即将激活的窗口，两者都不必是当前前台。`integrityRid`（`windows-native.ts` 里约 396 行）把所有异常吞成 `undefined`。条件 `rid !== undefined && rid > selfRid` 为假时函数返回 false，调用方就发 `SendInput`。UIPI 会把这些输入丢掉，函数仍正常返回。
 
-改 `windows-native.ts`：
+`WindowFromPoint` 目前不存在。`Bindings`、`bind()` 里有 `GetCursorPos` / `SetCursorPos`，没有这个函数。改签名时测试 fake 也要一起改，`tests/windows.spec.ts` 里现在是 `targetBlocksInput: () => false`。
 
-- `targetBlocksInput(hwnd)` 接收要接收输入的 HWND。`GetForegroundWindow()` 不再作为默认目标。
-- `click` / `drag` / `scroll` / `typeText`：指针移动完成后用 `WindowFromPoint` 取 HWND，再判断。
+改 `windows-native.ts` 和 `windows.ts` 的 `WindowsDesktopOps`：
+
+- 在 `bind()` 增加 `WindowFromPoint`。Win32 签名是 `HWND WindowFromPoint(POINT)`，参数是一个 `POINT` 结构，不要拆成两个 `int`。坐标与现有 `SetCursorPos` 用同一套屏幕坐标。`WindowsDesktopOps` 增加 `windowFromPoint(x, y): number`，返回 HWND 数值，无效时返回 0。
+- `targetBlocksInput(hwnd: number)` 接收要接收输入的 HWND。HWND 为 0 或窗口已不存在时返回 false，不拦截。除此之外，只要拿不到完整性级别（`integrityRid` 返回 `undefined`），就返回 true，拒绝输入。不要去读 `GetLastError`。koffi 下区分 `ERROR_ACCESS_DENIED` 和其他失败不值得，失败关闭已经覆盖提权进程拒绝打开 token 的情况。
+- `click` / `drag` / `scroll` / `typeText`：指针移动完成后用 `windowFromPoint` 取点击点上的 HWND，再判断。
 - `hotkey`：先对“将要 `focusWindow` 的那个 hwnd”做判断，不通过就抛现有的 `ELEVATED_WINDOW`，不要先 `SetForegroundWindow`。
-- `OpenProcessToken` / `GetTokenInformation` 返回拒绝访问时，视为对方完整性更高，返回 true（拒绝输入）。只有在 HWND 无效时保持现在的“不拦截”。不要把所有异常都当成“未提权”。
+- 所有 fake，包括 `tests/windows.spec.ts`，改成 `targetBlocksInput: () => false` 的新签名 `(_hwnd) => false`，并补上 `windowFromPoint`。
 
-验收：前台是普通窗口、点击点落在管理员窗口上时，工具抛出提权错误，不发点击。前台是管理员窗口、点击点落在普通窗口上时，点击发出去。
+验收：前台是普通窗口、点击点落在管理员窗口上时，工具抛出提权错误，不发点击。前台是管理员窗口、点击点落在普通窗口上时，点击发出去。fake 在改完签名后 `pnpm test` 能编过。
 
 ### 7. 热键焦点被别的会话的 `listScreens` 改掉
 
 根因：`let observed` 写在后端闭包里。任何一次 `listScreens` 都覆盖它，包括不持有 `withScreenLock` 的截图、等待和首帧。`hotkey` 再按这个过期的 hwnd 去 `focusWindow`。
 
-删掉 `observed`。`hotkey` 在自己持有屏幕锁的调用里现场算一次 `observationOf(host)`，把这个局部值传给 `restoreObservedFocus`。`listScreens` 只返回屏幕信息，不再给热键留状态。
+不要改成“在 `hotkey` 里直接调用 `observationOf(host)`”。`observationOf` 通过 `activeCaptureExcludeWindowIds()` 读 `AsyncLocalStorage`（`capture-exclude.ts`）。这个存储只在 `runWithCaptureExcludeWindowIds` 里有值，而 `wrapDesktopBackend` 的 `hotkey` 只包了 `withInput`，没有包 `withCapture`（`overlay-guard.ts` 约 146 行）。`withInput` 在调用 `run()` 之前还有 `await transport.send`。照原文删掉 `observed` 再现场取样，排除列表是 `[]`，`selectWindowsObservation` 不再跳过悬浮球。球若在最前，热键会把焦点设到球自己身上。这比原来的跨会话串窗更容易复现。
 
-这样热键的目标是“发键这一刻、排除掉悬浮球之后的前台窗口”，并且别的会话改不了这个局部变量。
+裸 `createWindowsDesktopBackend(fake)` 的测试证明不了这一点：那种构造下排除列表本来就是空的，`focusWindow` 拿到哪个窗口都不能说明球被排除了。
 
-测试：同一个 backend 先 `listScreens` 得到窗口 A，再让下一次 `listWindows` 返回窗口 B，然后 `hotkey`。`focusWindow` 的参数是 B。
+热键要回到的是**这一次观察**看到的窗口，不是发键瞬间的前台。`restoreObservedFocus` 的注释写的就是上一次 `listScreens` 的窗口。发键时重新取样会改掉这个行为。
+
+改法：
+
+- 删掉后端闭包里的 `observed`。`listScreens` 只返回屏幕，不给热键留进程级状态。
+- `HotkeyInput` 增加可选的 `windowId` 和 `transientWindowIds`。macOS 的 `hotkey` 忽略这两个字段。
+- 插件层按会话记住上一次 `listScreens` 返回的窗口。`rememberObservation` 现在只存栅格尺寸，旁边再存 `windowId` 和 `transientWindowIds`，键用 session。`listScreens` 走 `withCapture`，返回的窗口已经排除过悬浮球，这个结果可以留着给热键用。
+- `hotkey` 的 `execute` 把该会话记住的窗口传进 `backend.hotkey`。Windows 侧只用这个参数调用 `restoreObservedFocus`，不要在热键里再调 `observationOf`。
+- 该会话还没有观察结果时，不要猜一个前台窗口。直接发键，保持现在“没有 observed 就不动焦点”的行为。
+
+`packages/computer-use/src/overlay-guard.ts` 开头注释写着“input 里面的嵌套 capture 仍会发 capture IPC”。宿主实现不是这样：`inputDepth > 0` 时 `cloaked` 为 false，不发 capture 消息，只把 `excludeWindowIds` 交给回调。不要按那句注释去改宿主。
+
+测试要有两层：
+
+- 单元：同一 backend 上，会话 A 的热键传入窗口 A，期间另一次 `listScreens` 选中窗口 B。`focusWindow` 的参数仍是 A。
+- 走 `wrapDesktopBackend` 的一条：capture 会话的排除列表包含球的 HWND，`listScreens` 选出的窗口不是球，随后该会话的 `hotkey` 聚焦的也不是球。不要只用裸 backend。
 
 ### 17. 取消点击、拖拽或组合键时按键不抬起
 
@@ -238,36 +269,29 @@ while (this.blockOrder.length > 200) {
 
 根因：`activateApp` 的条件是 `app === wanted || title.includes(wanted)`，并且按 Z 序取第一个。`code` 能命中标题里含 “source code” 的浏览器。
 
-匹配改成两段，仍按 Z 序：
+匹配改成两段，仍按 Z 序。进程名这一段不要重写：`processBaseName` 已经 `replace(/\.exe$/iu, '')`，今天 `open_app("code")` 就能中 `Code.exe`。
 
-1. 进程基名完全相等（现有逻辑），大小写不敏感。`.exe` 后缀可忽略：`code` 能中 `Code.exe`。
-2. 没有进程名命中时，窗口标题整串相等，或标题以 `wanted` 开头且后面是单词边界。不要用 `includes`。
+1. 先只按进程基名完全相等找，大小写不敏感。命中就用它，不再看标题。
+2. 没有任何进程名命中时，才看标题：整串相等，或标题以 `wanted` 开头且后面是单词边界。不要用 `includes`。
 
-两段都没有才返回 false，走后面的 `launch`。不要在第一段失败前用标题命中一个别的进程。
+两段都没有才返回 false，走后面的 `launch`。
 
-测试：可见窗口依次是标题 “source code review” 的浏览器、进程名 `Code.exe`。`open_app('code')` 激活 `Code.exe`。`open_app('word')` 不激活标题为 “password” 的窗口。
+测试不要用 `open_app('word')` 对标题 “password”。那条失败只因为不以 “word” 开头，词边界根本没执行。改成：
+
+- 窗口依次是标题 “source code review” 的浏览器、进程名 `Code.exe`。`open_app('code')` 激活 `Code.exe`。
+- 只有标题 “Codex” 时，`open_app('code')` 不激活。`e` 后面是字母，不是边界。
+- 只有标题 “Notepad” 时，`open_app('note')` 不激活。
+- 标题 “Code - main.rs” 或进程名 `Code.exe` 时，`open_app('code')` 激活。空格是边界。
 
 ### 28. Win 键没有扩展键标志
 
 根因：`VK_LWIN`（`0x5B`）的扫描码是 `E0 5B`。`windowsKeyIsExtended` 的集合里没有 `win` / `windows` / `meta` / `cmd` / `command` / `super`。`postedKey` 因此给 `extended: false`。开始菜单和 `Win+E` 不会登记。
 
-把这些名字加进 `EXTENDED_KEY_NAMES`。`postedVk(0x5B)` 那条若仍被点击修饰键使用，扩展标志要设为 true，不要让第 5 条再绕开这个集合。
+把这些名字加进 `EXTENDED_KEY_NAMES`。`postedKey` 会因此给 Win 键 `extended: true`。
 
-更新 `tests/windows.spec.ts`：`key:91:down:0` 改为带扩展标志的期望值（与 `postedKey` 现有编码方式一致，把最后的 `0` 改成扩展位）。这是在改正被测试钉死的错误行为。
+不要改 `postedVk`。它是通用助手，`typeText` 的 Ctrl+A、Ctrl+V 用 `postedVk(0x11)`，扩展标志必须仍是 false。第 5 条的点击修饰键如果要按 Win，在那个调用点单独写 `{ vk: 0x5B, extended: true }`，不要让 `postedVk` 对所有键返回扩展标志。
 
-### 40. 光标半透明边缘按直通 alpha 再乘一次
-
-根因：`GetDIBits` 给出的 32 位光标颜色已经预乘。`cursor.ts` 对 `alpha !== 255` 又做了 `under * (1 - a) + over * a`。`over` 里已经含有 alpha。
-
-半透明像素改成：
-
-```ts
-target[destination + channel] = Math.round(under * (1 - opacity) + over)
-```
-
-`over` 不再乘 `opacity`。alpha 为 0 或 255 的分支不动。热点计算不动。
-
-用一张已知的预乘边缘像素做单元测试：底下是白色，光标像素是预乘后的灰色，混合结果不应比正确的预乘公式更暗。
+更新 `tests/windows.spec.ts`。现有期望是 `key:91:down:0` 和 `key:91:up:0`，编码里末位就是 `extended ? '1' : '0'`。改成 `key:91:down:1` 和 `key:91:up:1`。这是在改正被测试钉死的错误行为。Ctrl 组合键的期望保持 `:0`。
 
 ## 4. macOS 输入与截图
 
@@ -277,7 +301,7 @@ target[destination + channel] = Math.round(under * (1 - opacity) + over)
 
 圆环中心的上下文 y 改为 `CGFloat(image.height) - point.y`。`ringRect` 的 y 是这个中心减去半径。x 和半径不变。光标精灵的公式保持不变。
 
-改 `packages/computer-use/src/macos-sck-capture.swift` 后要重新跑 `packages/computer-use/scripts/build-macos-sck-capture.mjs`，把随包的二进制一起更新。只改 Swift 源文件不会改变已提交的捕获程序。
+改 `packages/computer-use/src/macos-sck-capture.swift` 后要重新跑 `packages/computer-use/scripts/build-macos-sck-capture.mjs`。捕获二进制是提交进 git 的，构建产物必须和 Swift 源一起提交。只改源文件时，别人拉下来的二进制仍是旧的，表现是“改了没生效”。
 
 验收：指针贴在窗口上沿时，圆环在上沿；贴下沿时圆环在下沿。精灵和圆环中心重合。
 
@@ -285,12 +309,16 @@ target[destination + channel] = Math.round(under * (1 - opacity) + over)
 
 根因：按下和抬起在同一个 `osascript` 里。`runHidScript` 把 `AbortSignal` 交给子进程，取消会杀掉进程，Node 侧没有补抬起。`longPressAt` 的按住时间最长 10 秒，最容易停在 down 和 up 之间。`clickAt`、`drag`、`chord`、`clickWithModifiers` 同样。
 
-在 `runHidScript` 的调用侧包一层。`signal` 已 abort，或 `run` 因 abort 失败时，再跑一段不带 signal 的释放脚本，超时几秒即可。释放脚本只做这些事，不依赖被杀掉的那份状态：
+释放逻辑放在 `hid()`（`macos.ts` 约 906 行）或 `runHidScript` 内部，一处覆盖 `click`、`typeText`、`scroll`、`hotkey`、`longPress`、`drag`。不要在每个调用点各包一层，必然会漏。
+
+`signal` 已 abort，或这次运行因 abort 失败时，再跑释放脚本。释放脚本直接 `run(OSASCRIPT, [...], {})`，不传 signal，也不要再进 `runHidScript`，否则释放脚本自己也会被杀掉。超时至少 5 秒。冷启动加上 JXA 初始化在慢机器上会到 1–2 秒，“几秒”不够。
+
+释放脚本只做这些事，不依赖被杀掉的那份状态：
 
 - `LEFT_UP`、`RIGHT_UP` 各发一次，位置用当前光标。
 - `cmd`、`shift`、`option`、`control`、`fn` 各发一次 key up。
 
-多余的 up 对已经抬起的设备是空操作。不要把释放脚本挂在原来的 signal 上，否则它也会被杀掉。
+多余的 up 对已经抬起的设备是空操作。
 
 验收：长按进行中取消回合，系统鼠标不再处于拖拽状态，随后的普通点击只点一下。
 
@@ -310,7 +338,7 @@ target[destination + channel] = Math.round(under * (1 - opacity) + over)
 
 抬起时 flags 应是“这一键抬起之后仍然按住的修饰键”。从后往前释放时，剩余掩码是下标 `0 .. r-1` 那些键的标志 OR 在一起。最后一个抬起时掩码才是 0。按下循环可以继续在全部修饰键都声明后使用完整掩码。
 
-`tapKey` 的按下和抬起都带调用方传入的 flags，普通键那部分不用改。
+只改修饰键的抬起循环。`tapKey` 的按下和抬起都继续用调用方传入的完整 flags，因为这时 Cmd 等修饰键还没抬。不要把整个 `chord` 里所有 `postKey` 都改成剩余掩码。
 
 建议用一组键码做脚本字符串断言：`cmd+shift` 抬起 shift 时 flags 仍含 `FLAG_CMD`，再抬起 cmd 时 flags 为 0。
 
@@ -329,13 +357,13 @@ macOS 改为：
 
 根因：`regionCaptureSpec` 对 x、y、width、height 各自 `round`。`roundedPoint` 算的是 `round(bounds.x + fraction * bounds.width)`，用的是原始小数框。两边不是同一块像素。
 
-抽一个 `roundedRegion(bounds)`，返回 `{ x, y, width, height }`，规则与现在的 `regionCaptureSpec` 相同（宽高至少为 1）。
+抽一个 `roundedRegion(bounds)`，返回 `{ x, y, width, height }`，规则与现在的 `regionCaptureSpec` 相同（宽高至少为 1）。唯一的 `ScreenInfo` 出口是 `screenFromFrontmost`（`macos.ts` 约 562 行），在 `clipToDisplay` 之后、返回之前把 bounds 换成 `roundedRegion` 的结果。捕获参数和 `roundedPoint` 都用这份已经取整的 bounds，不要在旁边再取整一次出另一套矩形。
 
-- 捕获参数用这个结果。
-- 交给模型和 `roundedPoint` 的 `screen.bounds` 也换成这个结果，在屏幕信息离开 macOS 后端之前改好。
-- `roundedPoint` 继续对最终全局坐标 `round` 一次。因为 bounds 已经是整数，`round(x + fraction * width)` 落在图像列上。
+附在观察上的栅格就是这块取整矩形截出来的。像素模式的 `mapPixelToGlobal` 用 `attached.width / attached.height` 做除法，这两个数必须等于取整后 bounds 截出的图像尺寸。在 `screenFromFrontmost` 或捕获返回处加一句注释，写明这个对应关系。以后改栅格来源时要维持它。
 
-用文档里的例子做测试：bounds `{ x: 100.4, y: 0, width: 200.4, height: 10 }`，25% 的 x 是 `100 + 0.25 * 200 = 150`，不是 151。
+`roundedPoint` 继续对最终全局坐标 `round` 一次。因为 bounds 已经是整数，`round(x + fraction * width)` 落在图像列上。
+
+用文档里的例子做测试：`clipToDisplay` 之后的 bounds 为 `{ x: 100.4, y: 0, width: 200.4, height: 10 }`，离开 `screenFromFrontmost` 的 bounds 是 `{ x: 100, y: 0, width: 200, height: 10 }`，25% 的 x 是 `100 + 0.25 * 200 = 150`，不是 151。
 
 ## 5. 剪贴板与打开路径
 
@@ -356,10 +384,13 @@ macOS 改为：
 
 根因：两端都是读出文本、清空、写入要粘贴的字符串、粘贴、再清空并把原字符串写回去。图片和文件列表没有文本格式，或者只有附带的文本，清空后就没了。
 
-macOS，改 `pasteText`：
+macOS，改 `pasteText`。保存和恢复都留在同一次 `osascript` 里，`NSData` 不用离开这个进程：
 
-- 清空前用 `pasteboardItems` 记下每个 item 的全部 type 和 `dataForType`。
-- 粘贴结束后清空，再按原 item 把这些 type 写回去。原来没有文本时，不要 `setString` 一个空字符串。
+- 清空前遍历 `pasteboardItems`，记下每个 item 的全部 type。对每个 type 用 `dataForType` 取出 `NSData`，在同一段 JXA 里用变量留着。
+- 粘贴结束后清空，再按原 item、原 type 写回去。原来没有文本时，不要 `setString` 一个空字符串。
+- 不要把保存和恢复拆成两个 `osascript`。真要拆，先把 `ObjC.unwrap` 之后的 `NSData` 落成 base64 或临时文件，否则跨进程传不回去。
+
+手工验收：复制一张图，触发一次 `input_text`，再到预览里粘贴，图还在。
 
 Windows，改 `readClipboardText` / `setClipboardText` 这一对在 `typeText` 里的用法：
 
@@ -377,7 +408,10 @@ Windows，改 `readClipboardText` / `setClipboardText` 这一对在 `typeText` �
 
 `open_in_browser` / `open_in_finder` 如果已经在锁里，不要为了这条再扩大范围。
 
-测试：一个持锁的 `typeText` 尚未恢复剪贴板时，另一会话的 `screenshot` 在锁释放前不能调用 `copyImageToClipboard`。`gui-lock` 的现有“占用时抛 `SCREEN_BUSY_MESSAGE`”可以直接用。
+测试拆成两条，不要试图在一条里让真的 `typeText` 挂住剪贴板：
+
+- `withScreenLock` 已被占用时，第二次调用抛 `SCREEN_BUSY_MESSAGE`。这条用现有的锁单测即可。
+- 给 `screenshot` 的 `execute` 注入一个 backend，记录 `copyImageToClipboard` 调用时 `screenLockState().held` 是否为 true。断言写入剪贴板期间锁是持有的，函数返回后锁已释放。`guiTurn` 的 backend 可以替换，不需要把 `typeText` 的 `run()` 挂住。
 
 ## 6. 后台 code agent
 
@@ -414,8 +448,8 @@ function intervalHasStarted(code: Agent, requestId: SessionRequestId): boolean {
 改 `packages/host/src/deferred-install.ts`：
 
 - `pnpm` 开始前把 `status.json` 写成 `{ phase: 'installing', spec, pid: process.pid }`。`result.json` 仍只在结束时写，写完把 `status.json` 删掉。
-- 新增 `deferredInstallInProgress(profileDir)`：存在 `status.json` 且没有 `result.json` 时为 true。用和脚本里 `alive()` 一样的规则看 `status.json` 的 pid；`EPERM` 表示还活着。pid 已死且 status 超过脚本的最长耗时（3 次 15 分钟加间隔）才把残留 status 当成失败结果收掉。
-- 宿主启动读到“正在安装”时，不要初始化球、不要加载 `koffi`。向日志和设置状态报告更新仍在进行。可以轮询 `result.json`，上限与脚本超时一致；等到结果再按现在的 `takeDeferredOutcome` 路径继续。
+- 新增 `deferredInstallInProgress(profileDir)`：存在 `status.json` 且没有 `result.json` 时为 true。用和脚本里 `alive()` 一样的规则看 `status.json` 的 pid；`EPERM` 表示还活着。pid 已死且 status 超过 47 分钟才把残留 status 当成失败结果收掉。47 分钟来自脚本上限：3 次 `pnpm`，每次 `timeout` 15 分钟，失败后再睡 3 秒，合计约 45 分 9 秒，再留一点余量。
+- 宿主启动读到“正在安装”时，不要初始化球、不要加载 `koffi`。向日志和设置状态报告更新仍在进行。每 1 秒看一次 `result.json`，最多等 47 分钟。等到结果再按现在的 `takeDeferredOutcome` 路径继续。
 
 设置文案改成：安装完成前不要把这次退出理解成“可以马上再打开”。状态页在 `phase === 'installing'` 时显示进行中，而不是“已安排、请重启”。
 
@@ -426,10 +460,17 @@ function intervalHasStarted(code: Agent, requestId: SessionRequestId): boolean {
 根因：`DeferredInstall` 没有这个字段。`deferUntilExit` 在探测到已映射镜像时、以及 `EPERM` 之后，都不把 `install()` 收到的 `approvedBuilds` 放进 `job.json`。脚本的 argv 被写死成 `pnpm add <spec> --save-exact --registry=...`。
 
 - `DeferredInstall` 增加 `approvedBuilds: readonly string[]`。两处 `deferUntilExit` 都把本次参数传进去。没有批准时传空数组。
-- 脚本在 `pnpm add` 之前，若数组非空，把这些包名合并进 profile 的 `pnpm-workspace.yaml` 的 `onlyBuiltDependencies`。合并方式和 `exemptReleaseAge` 一样：读现有文件、按包名去重、写回，不要把别的键弄丢。官方 `installBundle({ approvedBuilds })` 若使用了不同的键，以那份实现为准，把同一份补丁放进脚本。脚本不能再忽略 `job.approvedBuilds`。
+- 脚本在 `pnpm add` 之前，若数组非空，把这些包名合并进 profile 的 `pnpm-workspace.yaml`。pnpm 10/11 的键是文件顶层的 `onlyBuiltDependencies` 数组，不是 `minimumReleaseAgeExclude` 那种缩进在块下面的列表。不要复用 `withReleaseAgeExclusion` 的解析。读写时只动这个顶层键，别的键原样留下。本仓库里没有官方 `installBundle` 对 `approvedBuilds` 的实现；动手前在已安装的 dsh 里再搜一次这个键名。搜到的若不是 `onlyBuiltDependencies`，以安装包里的实现为准，并在 PR 里写明文件位置。脚本不能忽略 `job.approvedBuilds`。
 - `koffi` 在名单里时，退出后的安装会执行它的构建脚本。
 
-测试：`deferUntilExit` 的 job 含 `['koffi']`。脚本生成的 workspace 文件含这个名字。空数组不改 `onlyBuiltDependencies`。
+测试：`deferUntilExit` 的 job 含 `['koffi']`。生成的 workspace 文件在顶层有
+
+```yaml
+onlyBuiltDependencies:
+  - koffi
+```
+
+空数组不新增这个键。文件里已有的 `minimumReleaseAgeExclude` 还在。
 
 ### 33. 镜像 404 把网络失败显示成“没有新版本”
 
@@ -445,13 +486,21 @@ GitHub 自己返回 404（正文 `''`）时仍返回 `null`，这是“确实没
 
 根因：`lockExpired` 读不到 `owner` 就进 `catch` 并返回 true。胜者的顺序是 `mkdir` 成功，然后才 `writeFile(owner)`。失败者在这个窗口里认为锁过期，`rm` 掉目录。`process.kill(pid, 0)` 的 `EPERM` 也被当成进程已死，和 `deferred-install.ts` 的 `alive()` 相反。
 
-改 `lockExpired`：
+不要用“目录 mtime 小于 5 秒算还活着”。胜者在 `mkdir` 和 `writeFile(owner)` 之间被挂起超过 5 秒是可能的，第一次运行还要加载 koffi。失败者会删锁，两个进程一起下载，锁要防的事情又发生了。
 
-- `owner` 不存在：看锁目录的 mtime。小于 5 秒返回 false（还在创建）。超过 5 秒返回 true（持有者死在写 owner 之前）。
-- `process.kill` 抛 `EPERM`：返回 false。`ESRCH` 返回 true。
-- 其余读失败不要当成过期，返回 false，让外层继续等到 10 分钟截止。
+改获取锁的顺序，让“锁目录存在”和“owner 已写好”同时出现：
 
-测试：owner 缺失且目录刚创建时不删除锁。`kill` 抛 `EPERM` 时不删除锁。owner 里的 pid 不存在时可以接管。
+- 在锁路径旁边建临时目录，先把 `owner` 写进临时目录。
+- 再把临时目录 `rename` 成锁目录。同一分区上这次 rename 是原子的。目标已存在则得到 `EEXIST`，走现在的等待分支，并删掉自己的临时目录。
+- 新代码不再出现“锁目录在、owner 还没有”的窗口。
+
+`lockExpired` 仍要处理旧的残留目录：
+
+- `process.kill` 抛 `EPERM`：返回 false，和 `deferred-install.ts` 的 `alive()` 一样，进程还在。`ESRCH` 返回 true。
+- `owner` 缺失：只有目录 mtime 已经超过 30 秒才当成残留可删。这只打扫崩在半路的旧格式，不是新协议的判断。
+- 其余读失败返回 false，外层继续等到 10 分钟截止。
+
+测试：rename 成功后锁目录里已经有 owner。并发的第二次 `rename` 得到 `EEXIST` 且不删除对方的锁。`kill` 抛 `EPERM` 时不删除锁。owner 里的 pid 不存在时可以接管。
 
 ### 39. 已提交的 bundle 设置页没有延迟更新文案
 
@@ -465,16 +514,16 @@ GitHub 自己返回 404（正文 `''`）时仍返回 `null`，这是“确实没
 
 ### 16. 焦点触发的 GET 覆盖正在保存的 POST
 
-根因：`load()` 和 `mutate()` 都在响应回来时无条件 `setState`。`focus` 每次都 `load()`。`window.confirm` 会在 `mutate()` 开始前触发 focus，于是 GET 和 POST 并行，后返回的那次把 `snapshot` 和 `busy` 写成自己的结果。
+根因：`load()` 和 `mutate()` 都在响应回来时无条件 `setState`。`focus` 每次都 `load()`。`window.confirm` 会在 `mutate()` 开始前触发 focus，于是 GET 和 POST 并行，后返回的那次把 `snapshot` 和 `busy` 写成自己的结果。同一份文件里还有两个轮询：`refreshSettings()` 在 `helperPhase` 非空时每 2 秒跑一次，`refreshUpdate()` 在 `updating` 时每 2 秒跑一次（约 329–345 行）。它们也无条件写 `snapshot`，不经过 `load()`。保存头像或模型时若轮询的响应后到，旧快照仍会盖住新值。
 
 改 `packages/client-settings/client.js`，并同步到 `packages/bundle/client.js`（否则第 39 条的两份文件又会分叉）：
 
 - `loadGeneration` 从 0 开始。
-- `load()` 开头取 `const gen = ++loadGeneration`。写 state 前若 `gen !== loadGeneration`，直接返回。
-- `mutate()` 一进入就 `loadGeneration += 1`，记下这个 gen。这样 confirm 触发的那次 GET 作废。POST 回来时 gen 仍匹配才写入响应；期间又发生了新的 load 或 mutate 就丢弃这份响应。
-- 过期的 `load()` 不得把 `busy` 设回 false。
+- 抽一个 `applySnapshot(gen, snapshot)`。`load`、`refreshSettings`、`refreshUpdate` 写 state 都走它。写之前若 `gen !== loadGeneration`，直接返回。
+- 这三个函数开头都取 `const gen = ++loadGeneration`。过期的响应不得改 `snapshot`，也不得把 `busy` 设回 false。
+- `mutate()` 一进入就 `loadGeneration += 1`，记下这个 gen。这样 confirm 触发的 `load()`，以及进行中的轮询，都会作废。POST 回来时 gen 仍匹配才写入响应。
 
-测试：先发起 `load`，再发起 `mutate`，让 `load` 的响应后到。最终 snapshot 是 POST 的结果，`busy` 不是被那次 GET 清掉的 false（mutate 自己的结束状态除外）。
+测试：先发起 `load` 或 `refreshSettings`，再发起 `mutate`，让 GET 的响应后到。最终 snapshot 是 POST 的结果。再加一条和第 39 条一样的文件守卫：`packages/bundle/client.js` 里也要有 `loadGeneration`。
 
 ### 37. 非法 JSON 的 POST 没有 HTTP 响应
 
@@ -523,11 +572,24 @@ GitHub 自己返回 404（正文 `''`）时仍返回 `null`，这是“确实没
 
 `shouldRead` 改为：发生过拖选，或者这次鼠标事件的 click count 大于等于 2。单击且没有拖动仍然不读。Windows 保持“每次左键抬起都读”。
 
+## 待验证，本次不改
+
+### 40. 光标半透明边缘的混合公式
+
+`cursor.ts` 对半透明像素用了直通 alpha：`under * (1 - a) + over * a`。若 `GetDIBits` 给出的颜色已经预乘，边缘会偏暗。这个前提还没有证据。`BI_RGB`、32 位 DIB 的常见口径是 alpha 字节保留为非预乘。
+
+现有 `tests/cursor.spec.ts` 把直通公式编码成了期望：底色 100、光标 `[200, 0, 0, 128]`，结果是 `[150, 50, 50, 255]`。按预乘公式改完，这条会变成约 250，测试变红。用一张“假定已预乘”的像素去断言新公式，只能证明公式算术，不能证明 `GetDIBits` 的输出是预乘的。
+
+本次不要改 `compositeCursor`。验证方法：用一个已知 50% alpha 边缘的系统光标，或自造一个 32bpp `.cur`，截一张图和直通、预乘两种公式对比。确认是预乘之后，再单独改公式并更新 `cursor.spec.ts` 的期望。
+
 ## 改完后的核对
 
 每一组合并前：
 
 - `pnpm typecheck` 和 `pnpm test` 通过。
-- 对应该组新加的断言失败时，先看是不是把旧的错误行为写进了期望。第 28 条的 `key:91:down:0` 就是这种期望，应改测试而不是改回代码。
-- 第 8 条要带上重新构建的 macOS 捕获程序，否则源文件和二进制不一致。
-- 第 16、39 条改了 `client-settings/client.js` 的，同步检查 `packages/bundle/client.js`。pack 出来的 tarball 以组装结果为准，链接安装则以提交的 `bundle/client.js` 为准，两份都要有同样的分支。
+- 对应该组新加的断言失败时，先看是不是把旧的错误行为写进了期望。第 28 条的 `key:91:down:0` 应改成 `key:91:down:1`，不要把扩展标志改回去。
+- 第 8 条的 Swift 和重新构建的捕获二进制一起提交。
+- 第 2 条和第 35 条在同一个提交里。begin 已经广播之后，abort 和超时都要能补上 end。
+- 第 7 条的测试要经过 `wrapDesktopBackend`。只测裸 backend 时，排除列表本来就是空的。
+- 第 16、39 条改了 `client-settings/client.js` 的，同步 `packages/bundle/client.js`。pack 出来的 tarball 以组装结果为准，链接安装则以提交的 `bundle/client.js` 为准。
+- 第 40 条不在这次的提交里。
