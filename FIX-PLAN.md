@@ -1,0 +1,533 @@
+# dsh-orb 缺陷修复方案
+
+给研发的实施说明。条目编号与 [BUGS.md](BUGS.md) 一致。每条都写了根因、要改的函数、改完的行为，以及建议补的测试。按下面的分组提交，同一组里的改动共享状态，不要拆开。
+
+实施前先跑一遍现有套件，改完再跑对应包的测试：
+
+```sh
+pnpm typecheck
+pnpm test
+```
+
+Windows 输入、macOS HID、延迟安装这几组还需要在对应系统上做一次手工验收，单测覆盖不到真实按键和 `pnpm`。
+
+## 建议的提交顺序
+
+| 顺序 | 分组 | 条目 | 原因 |
+| --- | --- | --- | --- |
+| 1 | 悬浮球对话渲染 | 1、11、12、13、14、15 | 纯前端，可独立验证 |
+| 2 | 宿主回合与遮罩 | 2、29、30、31、32、35、36 | 都在 `orb.ts` / `overlay-guard.ts` |
+| 3 | Windows 输入 | 5、6、7、17、23、28、40 | 共用一个后端实例 |
+| 4 | macOS 输入与截图 | 8、10、18、19、20、21、22 | 都在 `macos.ts` 的 JXA / 捕获路径 |
+| 5 | 剪贴板与打开 | 24、25、26 | 会改工具的副作用 |
+| 6 | 后台 code agent | 9、27 | 完成通知的时序 |
+| 7 | 更新与运行时 | 3、4、33、34、39 | 退出后安装和设置页 |
+| 8 | 设置页与路由 | 16、37 | 请求竞态 |
+| 9 | 几何 | 38 | 吸边 |
+| 10 | 划词（功能仍关闭） | 文末三条 | 修完不要自行打开入口 |
+
+## 1. 悬浮球对话渲染
+
+### 1. `web_fetch` 卡片抛错，丢掉同一帧后续更新
+
+根因：`buildWebCard` 把不存在的变量 `url` 传给 `append`。`shell.js` 是 ES module，这是 `ReferenceError`。`stage()` 已经把这一帧 `splice` 出队列，循环里没有 `try/catch`，抛错后后面的 `block` / `turn` 不再绘制，工具正文也已经被清空。
+
+改 `packages/helper/assets/shell.js`：
+
+- `fetch.append(url, meta)` 改成 `fetch.append(meta)`。URL 在上一行已经挂上。
+- `stage()` 的 `for` 循环里，每条消息单独 `try/catch`。失败时 `console.error` 这条消息，继续画后面的消息。不要把整帧丢回队列，那些对象已经不在 `staged` 里了。
+
+验收：一条 `web_fetch` 结果能看到 URL、HTTP 状态，截断时能看到截断标记。同一帧里排在它后面的文本和 `turn` 仍然出现。
+
+测试：给 `buildWebCard` 或渲染入口加一个 fetch 模型用例，断言卡片含 `.web-fetch-meta`，且不抛错。
+
+### 11. 完成态任务芯片显示 `[object SVGSVGElement]`
+
+根因：`icon()` 返回的是 SVG 元素。`agentChip` 对完成 / 停止 / 结束三种状态写了 `status.innerHTML = icon(...)`。元素转字符串就是这段文字。进行中状态用的是 `append`，所以只有那三种坏。
+
+改 `agentChip`：三种结束状态都改成 `status.replaceChildren(icon(...))`。不要再把返回值赋给 `innerHTML`。
+
+验收：完成、停止、结束的芯片状态槽里是 SVG，文本里没有 `[object SVGSVGElement]`。
+
+### 12. 软换行粘在一起，紧挨着的表格进了段落
+
+根因：`renderParagraph` 用 `''` 拼接。CommonMark 软换行是空格，硬换行（行尾至少两个空格，或行尾 `\`）才是 `<br>`。`isBlockStart` 不认识表格，段落循环会把 `| a | b |` 吞进去，到不了后面的 `renderTable`。
+
+改 `packages/helper/assets/markdown.js`：
+
+- 软换行拼接成一个空格。已经以空白结尾的行不要再加空格。硬换行逻辑保持不动。
+- 段落循环在吃下一行之前，若当前行是表格行且下一行是分隔行（现有的 `isTableRow` / `isSeparatorRow`），把这一行留给后面的表格分支，不要推进 `paragraph`。
+
+验收：
+
+- `Hello\nworld` 渲染成 `Hello world`，中间有空格。
+- `注意\n\n| x | y |\n| --- | --- |\n| 1 | 2 |` 仍是表格。
+- `结果如下\n| x | y |\n| --- | --- |\n| 1 | 2 |` 也是表格，前面的句子单独成段。
+
+在 `packages/helper/tests/markdown.test.ts` 补这两则。现有测试只覆盖了空行之后的表。
+
+### 13. 终端、阅读、搜索卡片的复制按钮没有监听
+
+根因：`.term-copy`、`.cb-copy`、`.search-copy` 是 DOM 建出来的，`wireCopyButtons` 只在 `renderMarkdownBody` 里调用。即便调用了，它也只读 `pre` 的文本。终端输出和搜索结果是 `div`，读出来是空字符串。阅读卡的 `pre` 里还有行号。
+
+改 `shell.js`：
+
+- 抽出 `copyText(button, text)`，点击时 `stopPropagation`，把传入的字符串写入剪贴板。
+- 建卡时就绑定，不要依赖 markdown 渲染：
+  - 终端：复制命令，再加上 `.term-line` 的输出。没有输出时只复制命令。
+  - 阅读：只复制 `.read-content` 的文本，按行拼接，不带行号。
+  - 搜索：复制摘要和每条匹配的文本。
+- Markdown 代码块继续走 `pre`。
+
+验收：三类卡片点复制，剪贴板里是对应正文。点复制不会展开或折叠卡片。
+
+### 14. “展开更多”点一次后按钮被摘掉
+
+根因：`cappedRows` 的点击处理每次都 `expand.remove()`。打开时 `open === true`，后面那个“再插回去”的分支进不去。收起路径因此也到不了。
+
+改点击处理：按钮一直留在 `target` 末尾。打开时把 `rows.slice(cap)` 追加到按钮前面；收起时把这些行 `remove()`。文案在 `chatLabels.collapse` 和 `` `… ${rows.length - cap}` `` 之间切换。不要 `expand.remove()`。
+
+验收：超过上限的 diff、阅读、搜索卡片可以展开再收起，按钮始终在。
+
+### 15. 延迟语法加载完成后不会重绘已定稿的代码块
+
+根因：`tracked` 里存的是 `WeakRef`。`subscribeGrammarLoaded` 的回调把 `WeakRef` 交给 `upgradeCodeBlocks`。该函数发现参数没有 `querySelectorAll` 就返回。`deref()` 没有被调用。流式过程故意不高亮，定稿后的这一次若语法还没到，就再也没有机会。
+
+改 `packages/helper/assets/highlight.js`：
+
+```js
+module.subscribeGrammarLoaded(() => {
+  for (const ref of tracked) {
+    const root = ref.deref()
+    if (root) void upgradeCodeBlocks(root, { track: false })
+  }
+})
+```
+
+`upgradeCodeBlocks` 增加 `track` 参数，默认 `true`。回调里传 `false`，避免每次加载语法都再塞一个新的 `WeakRef`。`sweep` 继续删掉 `deref()` 为空的项。
+
+验收：一个 Python 代码块先以纯文本定稿，语法包随后加载完成，这块的 `pre.cb-plain` 被换成高亮节点。TypeScript 这种随包语法的行为不变。
+
+## 2. 宿主回合与遮罩
+
+### 2. 重叠截图时先结束的调用把遮罩关掉
+
+根因：`withCapture` 用调用本地的 `sentBegin` 决定要不要发 `active: false`。深度从 1 变到 2 的那次调用不发 begin。先返回的那次仍因为自己的 `sentBegin` 发 end。Helper 的 `cloak.ts` 是引用计数，这一下把 capture 计数减到 0，另一路截图还在读屏。`withInput` 已经是“深度回到 0 才发 end”，capture 没有对齐。
+
+改 `packages/host/src/overlay-guard.ts`。begin/end 跟“这一次调用”脱钩，跟深度脱钩：
+
+- 模块级（`createOverlayGuard` 闭包里）增加 `captureOpen`。
+- 深度从 0 到 1、当前没有 input 遮罩、helper 还在时，发 `active: true`，成功后 `captureOpen = true`。
+- `finally` 里先减深度。只有 `captureDepth === 0 && captureOpen` 才发 `active: false`，然后把 `captureOpen` 置回 false。
+- 内层调用不发 end。外层若先返回，此时深度仍大于 0，也不发 end。最后一层返回时由它发 end，即使 begin 是另一层发的。
+
+`packages/host/tests/overlay-guard.test.ts` 增加：两个 `withCapture` 重叠，先启动的那个先结束。发出的序列是一次 `true`、然后才是一次 `false`，`false` 出现在两个 `run` 都结束之后。现有“input 内部的 capture 不再发 capture 消息”的用例保持通过。
+
+### 29. 前台记忆把悬浮球自己记下来
+
+根因：`accept()` 在 `hello` 里调用 `foreground.start()`，`start()` 立刻采样。`chrome-windows` 是后一条消息，第一次采样时排除列表是空的。球的 HWND 被写入 `remembered`。之后的采样见到这个 HWND 已经在排除列表里就直接 return，不会把 `remembered` 清掉。`restore()` 再把焦点设回球。
+
+改 `packages/host/src/windows-foreground.ts` 的 `sample()`：
+
+- 当前前台 HWND 在 `chromeWindowIds()` 里，并且它就是 `remembered` 时，把 `remembered` 置 0。
+- `chromeWindowIds()` 仍为空时不要写入 `remembered`。等第一条 `chrome-windows` 到达后再采样。`accept()` 可以继续调用 `start()` 把定时器拉起来，但第一次有效采样以排除列表非空为准。
+
+`packages/host/tests/windows-foreground.test.ts`：先在空排除列表下采样到球的 HWND，随后排除列表包含这个 HWND，再采样一次，`restore()` 不得对这个 HWND 调用 `focus`。
+
+### 30. 中断标志涂到上一条已经完成的回答
+
+根因：`onAssistant` 先执行 `this.turnInterrupted = true`，再对上一条 `responseKeys` 调用 `block()`。`block()` 看到 `turnInterrupted && kind === 'assistant' && !running` 就给块加上 `interrupted: true`。降级旧回答走的就是这条路径。
+
+改 `onAssistant`：先用当前的 `responseKeys` 把上一条最终回答降级完，再根据 `record.interrupted` 设置 `turnInterrupted`。降级期间标志必须仍是 false。本条消息新写的、已经结束的 assistant 块才带 `interrupted`。
+
+测试：构造“上一条 assistant 已是 response，本条 `interrupted: true`”。上一条重新广播出去时没有 `interrupted`，本条未完成的块有。
+
+### 31. 取消失败，或取消期间来了新消息，仍把回合标成结束
+
+根因：`stopTurn` 在 `cancel` 抛错后仍调用 `finishTurn()`。`finishTurn` 不记录它要结束的是哪一次提交。`await cancel` 期间 `onPrompt` 可以把 `turnRunning` 再次设为 true，返回后的 `finishTurn()` 会把这次新提交清掉。
+
+改 `packages/host/src/orb.ts`：
+
+- 增加 `turnEpoch`。`onPrompt` 进入真正提交前 `turnEpoch += 1`，`stopTurn` 记下调用时的 epoch 和 `sessionId`。
+- `cancel` 成功且 epoch、`sessionId` 都没变，才 `finishTurn()`。
+- `cancel` 抛错时不要 `finishTurn()`。用现有的 `status()` 把失败写到球上，`turnRunning` 保持 true，等真正的 `turn/end` 再收口。
+- `finishTurn` 开头若发现 epoch 已变，直接返回。
+
+测试：`cancel` reject 时不广播 `turn running: false`。`cancel` 挂起期间插入一次 `onPrompt`，原来的 `stopTurn` 返回后新回合仍是 `running: true`。
+
+### 32. 旧的流式 attempt 还能把字写回来
+
+根因：同一 turn/step 的新 `start` 会 `rewindLiveStep`，但旧 `attemptId` 仍留在 `attemptPositions`。只有 `end` 帧会删。迟到的 chunk 用旧 id 查到同一个 turn/step，写进刚清空的步骤。
+
+改 `onAssistantStream` 的 `start` 分支：`previous` 存在且不同于新 id 时，先 `this.attemptPositions.delete(previous)`，再 `rewindLiveStep`。
+
+测试：start A、chunk A、start B、再来一个 A 的 chunk。B 的步骤里没有 A 的文本。
+
+### 35. 遮罩确认超时仍继续截图
+
+根因：`waitAck` 超时调用 `finish(false)`，这条路径 `resolve()`。调用方把“没有 ack”当成遮罩已经生效。
+
+改超时分支：`reject(new Error('dsh-orb: overlay ack timed out'))`。不要复用 abort 的 `finish(false)`。`withCapture` 在 begin 的 `await` 上收到拒绝后，不得调用 `run()`。`finally` 里若 begin 已经发出，仍按第 2 条的深度规则补一次 end，避免 helper 计数泄漏。
+
+验收：helper 不回 ack 时，这次截图失败并带超时错误，画面里不会带上未遮罩的球。agent 收到的是工具错误，可以重试。
+
+### 36. 超过 200 块时球上的节点还在
+
+根因：上限循环自己 `shift` + `delete`，没有走 `dropBlock`。`dropBlock` 才会 `publish({ type: 'block-drop' })`。
+
+把这段改成：
+
+```ts
+while (this.blockOrder.length > 200) {
+  const oldest = this.blockOrder[0]
+  if (oldest === undefined) break
+  this.dropBlock(oldest)
+}
+```
+
+`dropBlock` 自己会从 `blockOrder` 里摘掉。不要再 `shift` 一次。注意这段在 `blocks.set` 之前，被丢掉的是更旧的 key，那些 key 已经在 map 里，`dropBlock` 删得到。
+
+测试：写入 201 个块，广播序列里有对应的 `block-drop`，helper 侧 `removeBlock` 能把它从 DOM 拿掉。
+
+## 3. Windows 输入
+
+这一组改 `packages/computer-use/src/windows.ts` 和 `windows-native.ts`。`createWindowsDesktopBackend` 全进程只有一个，闭包里的状态就是跨会话共享的。
+
+### 5. 点击丢掉修饰键
+
+根因：`click` 不读 `ClickInput.modifiers`。`plugin.ts` 已经把 `shift` / `cmd` / `option` / `control` 传进来，结果文案也会把它们回显出去。
+
+在 `click` 里，移动并点击前后用现有的 `chord` 按住修饰键。映射：`shift -> 0x10`，`control -> 0x11`，`option` / `alt -> 0x12`，`cmd` / `meta -> 0x5B` 且带扩展键标志（见第 28 条）。按下、点击、在 `finally` 里按相反顺序抬起。抬起必须发生，即使点击中途 abort（和第 17 条一起做）。
+
+没有修饰键时行为与现在相同。工具结果可以继续回显修饰键，因为这次它们真的被按住了。
+
+`tests/windows.spec.ts` 增加 `click({ modifiers: ['shift', 'control'] })`，断言按键顺序是 shift down、ctrl down、左键 down/up、ctrl up、shift up。
+
+### 6. 提权判断看错窗口，读失败就放行
+
+根因：`targetBlocksInput` 用 `GetForegroundWindow()`。点击的目标是坐标下的窗口，热键的目标是即将激活的窗口，两者都不必是当前前台。token 读失败得到 `undefined`，条件 `rid !== undefined && rid > selfRid` 为假，函数返回 false，调用方就发 `SendInput`。UIPI 会把这些输入丢掉，函数仍正常返回。
+
+改 `windows-native.ts`：
+
+- `targetBlocksInput(hwnd)` 接收要接收输入的 HWND。`GetForegroundWindow()` 不再作为默认目标。
+- `click` / `drag` / `scroll` / `typeText`：指针移动完成后用 `WindowFromPoint` 取 HWND，再判断。
+- `hotkey`：先对“将要 `focusWindow` 的那个 hwnd”做判断，不通过就抛现有的 `ELEVATED_WINDOW`，不要先 `SetForegroundWindow`。
+- `OpenProcessToken` / `GetTokenInformation` 返回拒绝访问时，视为对方完整性更高，返回 true（拒绝输入）。只有在 HWND 无效时保持现在的“不拦截”。不要把所有异常都当成“未提权”。
+
+验收：前台是普通窗口、点击点落在管理员窗口上时，工具抛出提权错误，不发点击。前台是管理员窗口、点击点落在普通窗口上时，点击发出去。
+
+### 7. 热键焦点被别的会话的 `listScreens` 改掉
+
+根因：`let observed` 写在后端闭包里。任何一次 `listScreens` 都覆盖它，包括不持有 `withScreenLock` 的截图、等待和首帧。`hotkey` 再按这个过期的 hwnd 去 `focusWindow`。
+
+删掉 `observed`。`hotkey` 在自己持有屏幕锁的调用里现场算一次 `observationOf(host)`，把这个局部值传给 `restoreObservedFocus`。`listScreens` 只返回屏幕信息，不再给热键留状态。
+
+这样热键的目标是“发键这一刻、排除掉悬浮球之后的前台窗口”，并且别的会话改不了这个局部变量。
+
+测试：同一个 backend 先 `listScreens` 得到窗口 A，再让下一次 `listWindows` 返回窗口 B，然后 `hotkey`。`focusWindow` 的参数是 B。
+
+### 17. 取消点击、拖拽或组合键时按键不抬起
+
+根因：`longPress` 把 `mouseButton(false)` 放在 `finally`。`clickAt`、`drag`、`chord` 把抬起写在 `await delay` 后面，abort 时 `delay` 拒绝，后面的抬起不执行。
+
+三条路径都改成：一旦发出 down，对应的 up 放在 `finally`，并且 `finally` 里的 up 不检查 signal。`chord` 记录已经按下的修饰键和普通键，`finally` 按相反顺序全部抬起。第 5 条的点击修饰键用同一套 `finally`。
+
+测试：在 `BUTTON_HOLD_MS` 的 delay 上 abort，断言仍有 `left up`。组合键在修饰键间隔上 abort，断言每个 down 都有 up。
+
+### 23. `open_app` 用标题子串命中无关窗口
+
+根因：`activateApp` 的条件是 `app === wanted || title.includes(wanted)`，并且按 Z 序取第一个。`code` 能命中标题里含 “source code” 的浏览器。
+
+匹配改成两段，仍按 Z 序：
+
+1. 进程基名完全相等（现有逻辑），大小写不敏感。`.exe` 后缀可忽略：`code` 能中 `Code.exe`。
+2. 没有进程名命中时，窗口标题整串相等，或标题以 `wanted` 开头且后面是单词边界。不要用 `includes`。
+
+两段都没有才返回 false，走后面的 `launch`。不要在第一段失败前用标题命中一个别的进程。
+
+测试：可见窗口依次是标题 “source code review” 的浏览器、进程名 `Code.exe`。`open_app('code')` 激活 `Code.exe`。`open_app('word')` 不激活标题为 “password” 的窗口。
+
+### 28. Win 键没有扩展键标志
+
+根因：`VK_LWIN`（`0x5B`）的扫描码是 `E0 5B`。`windowsKeyIsExtended` 的集合里没有 `win` / `windows` / `meta` / `cmd` / `command` / `super`。`postedKey` 因此给 `extended: false`。开始菜单和 `Win+E` 不会登记。
+
+把这些名字加进 `EXTENDED_KEY_NAMES`。`postedVk(0x5B)` 那条若仍被点击修饰键使用，扩展标志要设为 true，不要让第 5 条再绕开这个集合。
+
+更新 `tests/windows.spec.ts`：`key:91:down:0` 改为带扩展标志的期望值（与 `postedKey` 现有编码方式一致，把最后的 `0` 改成扩展位）。这是在改正被测试钉死的错误行为。
+
+### 40. 光标半透明边缘按直通 alpha 再乘一次
+
+根因：`GetDIBits` 给出的 32 位光标颜色已经预乘。`cursor.ts` 对 `alpha !== 255` 又做了 `under * (1 - a) + over * a`。`over` 里已经含有 alpha。
+
+半透明像素改成：
+
+```ts
+target[destination + channel] = Math.round(under * (1 - opacity) + over)
+```
+
+`over` 不再乘 `opacity`。alpha 为 0 或 255 的分支不动。热点计算不动。
+
+用一张已知的预乘边缘像素做单元测试：底下是白色，光标像素是预乘后的灰色，混合结果不应比正确的预乘公式更暗。
+
+## 4. macOS 输入与截图
+
+### 8. 光标圆环用了左上角坐标画在左下角坐标系里
+
+根因：`compositeCursor` 里 `point.y` 是距捕获区顶部的距离。`CGContext` 原点在左下。光标精灵用 `image.height - top - cursor.height` 翻过一次，圆环的 `ringRect.y` 直接用了 `point.y`。
+
+圆环中心的上下文 y 改为 `CGFloat(image.height) - point.y`。`ringRect` 的 y 是这个中心减去半径。x 和半径不变。光标精灵的公式保持不变。
+
+改 `packages/computer-use/src/macos-sck-capture.swift` 后要重新跑 `packages/computer-use/scripts/build-macos-sck-capture.mjs`，把随包的二进制一起更新。只改 Swift 源文件不会改变已提交的捕获程序。
+
+验收：指针贴在窗口上沿时，圆环在上沿；贴下沿时圆环在下沿。精灵和圆环中心重合。
+
+### 10. 取消 HID 脚本后按键和鼠标保持按下
+
+根因：按下和抬起在同一个 `osascript` 里。`runHidScript` 把 `AbortSignal` 交给子进程，取消会杀掉进程，Node 侧没有补抬起。`longPressAt` 的按住时间最长 10 秒，最容易停在 down 和 up 之间。`clickAt`、`drag`、`chord`、`clickWithModifiers` 同样。
+
+在 `runHidScript` 的调用侧包一层。`signal` 已 abort，或 `run` 因 abort 失败时，再跑一段不带 signal 的释放脚本，超时几秒即可。释放脚本只做这些事，不依赖被杀掉的那份状态：
+
+- `LEFT_UP`、`RIGHT_UP` 各发一次，位置用当前光标。
+- `cmd`、`shift`、`option`、`control`、`fn` 各发一次 key up。
+
+多余的 up 对已经抬起的设备是空操作。不要把释放脚本挂在原来的 signal 上，否则它也会被杀掉。
+
+验收：长按进行中取消回合，系统鼠标不再处于拖拽状态，随后的普通点击只点一下。
+
+### 18. Fn 标志位写错
+
+`HID_RUNTIME` 里 `FLAG_FN` 从 `0x00008000` 改为 `0x00800000`（`kCGEventFlagMaskSecondaryFn`）。`chord` 里 `KEY_FN` 已会把这个常量 OR 进 flags，改常量即可。
+
+### 19. 键表缺少 F4
+
+在 `KEY_CODES` 增加 `f4: 118`（`kVK_F4` = `0x76`）。放在 `pageup: 116` 和 `end: 119` 之间，避免再漏看。
+
+测试：`keyCode` 或 `hotkey(['f4'])` 不再抛 `unknown key`，生成的脚本里含键码 118。
+
+### 20. 抬起第一个修饰键时 flags 被写成 0
+
+根因：`clickWithModifiers` 和 `chord` 抬起循环是 `postKey(mods[r], false, 0)`。Core Graphics 把这次事件的 flags 当成“当前已没有任何修饰键”。
+
+抬起时 flags 应是“这一键抬起之后仍然按住的修饰键”。从后往前释放时，剩余掩码是下标 `0 .. r-1` 那些键的标志 OR 在一起。最后一个抬起时掩码才是 0。按下循环可以继续在全部修饰键都声明后使用完整掩码。
+
+`tapKey` 的按下和抬起都带调用方传入的 flags，普通键那部分不用改。
+
+建议用一组键码做脚本字符串断言：`cmd+shift` 抬起 shift 时 flags 仍含 `FLAG_CMD`，再抬起 cmd 时 flags 为 0。
+
+### 21. `delete` 在 macOS 上实际是退格
+
+根因：键表里 `backspace` 和 `delete` 都是 51（`kVK_Delete`）。Windows 上 `delete` 是 `VK_DELETE`（向前删除），`backspace` 是 `VK_BACK`。工具说明是一套名字。
+
+macOS 改为：
+
+- `backspace: 51`
+- `delete: 117`（`kVK_ForwardDelete`）
+
+不要再让两个名字指向 51。Windows 映射不用动。若有测试把 macOS `delete` 期望成 51，把期望改成 117。
+
+### 22. 截图用取整后的矩形，点击用未取整的框
+
+根因：`regionCaptureSpec` 对 x、y、width、height 各自 `round`。`roundedPoint` 算的是 `round(bounds.x + fraction * bounds.width)`，用的是原始小数框。两边不是同一块像素。
+
+抽一个 `roundedRegion(bounds)`，返回 `{ x, y, width, height }`，规则与现在的 `regionCaptureSpec` 相同（宽高至少为 1）。
+
+- 捕获参数用这个结果。
+- 交给模型和 `roundedPoint` 的 `screen.bounds` 也换成这个结果，在屏幕信息离开 macOS 后端之前改好。
+- `roundedPoint` 继续对最终全局坐标 `round` 一次。因为 bounds 已经是整数，`round(x + fraction * width)` 落在图像列上。
+
+用文档里的例子做测试：bounds `{ x: 100.4, y: 0, width: 200.4, height: 10 }`，25% 的 x 是 `100 + 0.25 * 200 = 150`，不是 151。
+
+## 5. 剪贴板与打开路径
+
+### 24. Windows 系统目录不在打开黑名单里
+
+根因：`PATH_BLACKLIST` 只有 `/System`、`/etc` 这类 Unix 前缀。`resolveFinderOpen` 在 `realpath` 之前就调用它，所以这些 Unix 前缀在 Windows 上也会被拒绝。`C:\Windows` 匹配不到任何一条。
+
+在 `isForbiddenOpenPath` 里按平台追加判断，保留现有 Unix 前缀（Windows 上仍要拒绝 `/etc` 这种字符串）：
+
+- 规范化分隔符并去掉末尾斜杠后再比。
+- 拒绝 `process.env.SystemRoot`（缺省时用 `C:\Windows`）及其子路径。
+- 拒绝 `C:\Windows`、`C:\Windows\System32`、`C:\Program Files`、`C:\Program Files (x86)`。大小写不敏感。
+- 不要拒绝用户目录，例如 `C:\Users\...\Windows` 这种名字里碰巧带 Windows 的路径。用“路径等于前缀，或前缀后紧跟 `\`”判断。
+
+测试放在 `open` 的现有单测里：`C:\Windows\System32\notepad.exe` 抛禁止打开；`C:\Users\me\notes` 可以通过黑名单（文件不存在时仍是“路径不存在”，那是另一条错误）。
+
+### 25. 粘贴后只把字符串写回剪贴板
+
+根因：两端都是读出文本、清空、写入要粘贴的字符串、粘贴、再清空并把原字符串写回去。图片和文件列表没有文本格式，或者只有附带的文本，清空后就没了。
+
+macOS，改 `pasteText`：
+
+- 清空前用 `pasteboardItems` 记下每个 item 的全部 type 和 `dataForType`。
+- 粘贴结束后清空，再按原 item 把这些 type 写回去。原来没有文本时，不要 `setString` 一个空字符串。
+
+Windows，改 `readClipboardText` / `setClipboardText` 这一对在 `typeText` 里的用法：
+
+- 打开剪贴板后用 `EnumClipboardFormats` 把每种格式的 `HGLOBAL` 拷贝出来。
+- `EmptyClipboard` 只发生在保存完成之后。
+- 粘贴后按原格式 `SetClipboardData` 放回去。`typeText` 的 `finally` 调用这个恢复函数，不要调用只写 `CF_UNICODETEXT` 的 `setClipboardText`。
+
+单测可以用假的剪贴板操作：恢复时断言 `CF_DIB` 和 `CF_HDROP` 还在，而不只是 Unicode 文本。
+
+### 26. 截图写剪贴板时没有屏幕锁
+
+根因：`typeText` 经 `guiTurn` → `withScreenLock` 包住了“写入、粘贴、恢复”整段。`screenshot` 的 `execute` 在 `observeDesktop` 之后直接 `copyImageToClipboard`，不拿这把锁。锁是进程级的，不拿锁的写入可以插进另一会话的粘贴窗口。
+
+`screenshot` 里从 `copyImageToClipboard` 开始拿 `withScreenLock(exec.agent?.id, ...)`。观察和写桌面文件可以留在锁外，避免截图文件 I/O 占着鼠标锁。锁的范围只包住剪贴板写入。
+
+`open_in_browser` / `open_in_finder` 如果已经在锁里，不要为了这条再扩大范围。
+
+测试：一个持锁的 `typeText` 尚未恢复剪贴板时，另一会话的 `screenshot` 在锁释放前不能调用 `copyImageToClipboard`。`gui-lock` 的现有“占用时抛 `SCREEN_BUSY_MESSAGE`”可以直接用。
+
+## 6. 后台 code agent
+
+### 9. 还在收件箱里的跟进被当成已经开始
+
+根因：`intervalHasStarted` 写成 `code.status === 'running' || !holdsPrompt(...)`。上一轮还在跑时 `status` 已经是 `running`，这次 `requestId` 仍在 `inbox.nextTurn` 里也会返回 true。`runWatch` 接着 `whenIdle()`，等到的是当前回合结束前的空档，`lastAssistantText` 仍是上一轮。
+
+删掉 `status === 'running'` 这个短路。函数只保留：
+
+```ts
+function intervalHasStarted(code: Agent, requestId: SessionRequestId): boolean {
+  return !holdsPrompt(code, requestId)
+}
+```
+
+提示还在 `nextTurn` 或 `nextStep` 里就继续等。它被取走之后才进入 `whenIdle()`。注释改成同一句话，避免下一次有人把 `running` 加回来。
+
+测试：agent `status === 'running'` 且 `holdsPrompt` 为 true 时，`waitUntilIntervalStarts` 不返回。把提示从 inbox 拿掉之后才返回。完成通知里的正文来自这次请求结束时的 assistant 文本。
+
+### 27. 同一会话的下一次委托不取消上一个监视器
+
+根因：`recordDelegation` 对已有会话 `watches.push(watch)`。`registry.record` 只调用 `detachRecord` 卸掉书签的事件订阅，不调用上一个 `AbortController.abort()`。旧的 `runWatch` 继续等到后来的空档，用新任务的文本去填旧任务的通知。
+
+改 `recordDelegation`：写入新 watch 之前，把 `existing.watches` 里每个 controller `abort()`，然后把数组换成只含新 watch。`registry.record` 在替换同一 `sessionId` 时，若 `previous.watch` 不是这次传入的同一个 controller，也 `abort()` 它。`code_agent_stop` 仍 abort 全部，行为不变。
+
+测试：同一 `sessionId` 连续两次委托。第一次的 `AbortSignal` 已 aborted，只有第二次的 watch 能发出完成通知。
+
+## 7. 更新与 Electron 运行时
+
+### 3. 退出后安装和用户重新打开抢包
+
+根因：`APPLY_SCRIPT` 只等父进程退出再睡 1.5 秒就 `pnpm add`。`result.json` 在 `pnpm` 结束时才出现。下次启动的 `takeDeferredOutcome` 看不到“正在安装”，宿主会去加载正在被替换的目录。
+
+改 `packages/host/src/deferred-install.ts`：
+
+- `pnpm` 开始前把 `status.json` 写成 `{ phase: 'installing', spec, pid: process.pid }`。`result.json` 仍只在结束时写，写完把 `status.json` 删掉。
+- 新增 `deferredInstallInProgress(profileDir)`：存在 `status.json` 且没有 `result.json` 时为 true。用和脚本里 `alive()` 一样的规则看 `status.json` 的 pid；`EPERM` 表示还活着。pid 已死且 status 超过脚本的最长耗时（3 次 15 分钟加间隔）才把残留 status 当成失败结果收掉。
+- 宿主启动读到“正在安装”时，不要初始化球、不要加载 `koffi`。向日志和设置状态报告更新仍在进行。可以轮询 `result.json`，上限与脚本超时一致；等到结果再按现在的 `takeDeferredOutcome` 路径继续。
+
+设置文案改成：安装完成前不要把这次退出理解成“可以马上再打开”。状态页在 `phase === 'installing'` 时显示进行中，而不是“已安排、请重启”。
+
+测试：写一个 `status.json` 且不写 `result.json`，启动路径不调用原生模块加载。脚本逻辑用抽出的纯函数测“先写 status，再写 result”。
+
+### 4. 延迟安装丢掉 `approvedBuilds`
+
+根因：`DeferredInstall` 没有这个字段。`deferUntilExit` 在探测到已映射镜像时、以及 `EPERM` 之后，都不把 `install()` 收到的 `approvedBuilds` 放进 `job.json`。脚本的 argv 被写死成 `pnpm add <spec> --save-exact --registry=...`。
+
+- `DeferredInstall` 增加 `approvedBuilds: readonly string[]`。两处 `deferUntilExit` 都把本次参数传进去。没有批准时传空数组。
+- 脚本在 `pnpm add` 之前，若数组非空，把这些包名合并进 profile 的 `pnpm-workspace.yaml` 的 `onlyBuiltDependencies`。合并方式和 `exemptReleaseAge` 一样：读现有文件、按包名去重、写回，不要把别的键弄丢。官方 `installBundle({ approvedBuilds })` 若使用了不同的键，以那份实现为准，把同一份补丁放进脚本。脚本不能再忽略 `job.approvedBuilds`。
+- `koffi` 在名单里时，退出后的安装会执行它的构建脚本。
+
+测试：`deferUntilExit` 的 job 含 `['koffi']`。脚本生成的 workspace 文件含这个名字。空数组不改 `onlyBuiltDependencies`。
+
+### 33. 镜像 404 把网络失败显示成“没有新版本”
+
+根因：`curlText` 对 404 返回 `''`。`fetch` 把所有非 `undefined` 都记成 `answered = true`。后面的 GitHub 请求若传输失败返回 `undefined`，函数因为 `answered` 返回 `null`。`check()` 把 `null` 当成“仓库明确说没有 release”，清掉错误并写入 `checkedAt`，自动检查因此冷却一小时。
+
+`''` 表示这个源没有这份数据，继续下一个源，不要设 `answered`。`answered = true` 只发生在 HTTP 2xx 且正文能解析。所有镜像都是 404、GitHub 又传输失败时，`fetch` 返回 `undefined`，`check()` 走现有的 `error = 'network'`，并且不刷新 `checkedAt`。
+
+GitHub 自己返回 404（正文 `''`）时仍返回 `null`，这是“确实没有 release”。
+
+测试：两个镜像都 404、GitHub `undefined`，结果是 `undefined`。镜像返回合法版本 JSON 时行为不变。
+
+### 34. 下载锁在持有者写完 owner 之前被抢走
+
+根因：`lockExpired` 读不到 `owner` 就进 `catch` 并返回 true。胜者的顺序是 `mkdir` 成功，然后才 `writeFile(owner)`。失败者在这个窗口里认为锁过期，`rm` 掉目录。`process.kill(pid, 0)` 的 `EPERM` 也被当成进程已死，和 `deferred-install.ts` 的 `alive()` 相反。
+
+改 `lockExpired`：
+
+- `owner` 不存在：看锁目录的 mtime。小于 5 秒返回 false（还在创建）。超过 5 秒返回 true（持有者死在写 owner 之前）。
+- `process.kill` 抛 `EPERM`：返回 false。`ESRCH` 返回 true。
+- 其余读失败不要当成过期，返回 false，让外层继续等到 10 分钟截止。
+
+测试：owner 缺失且目录刚创建时不删除锁。`kill` 抛 `EPERM` 时不删除锁。owner 里的 pid 不存在时可以接管。
+
+### 39. 已提交的 bundle 设置页没有延迟更新文案
+
+根因：`packages/client-settings/client.js` 的 `updateNotice` 有 `update.deferred` 分支。`packages/bundle/client.js` 是组装前就提交的一份，少了这个分支。`assemble.mjs` 只在 pack 时覆盖它。直接链接仓库里的 bundle 包时，宿主已经广播 `state: 'deferred'`，页面却没有对应横幅。
+
+把 `client-settings/client.js` 里 `update.deferred` 那段和 `updateDeferred` 文案同步到 `packages/bundle/client.js`，放在 `restartRequired` 之前，和源文件顺序一致。
+
+加一个小测试：读两份 `client.js`，断言 bundle 那份含 `update.deferred` 和 `text.updateDeferred`。以后再改设置页时这个测试会先红。
+
+## 8. 设置页与路由
+
+### 16. 焦点触发的 GET 覆盖正在保存的 POST
+
+根因：`load()` 和 `mutate()` 都在响应回来时无条件 `setState`。`focus` 每次都 `load()`。`window.confirm` 会在 `mutate()` 开始前触发 focus，于是 GET 和 POST 并行，后返回的那次把 `snapshot` 和 `busy` 写成自己的结果。
+
+改 `packages/client-settings/client.js`，并同步到 `packages/bundle/client.js`（否则第 39 条的两份文件又会分叉）：
+
+- `loadGeneration` 从 0 开始。
+- `load()` 开头取 `const gen = ++loadGeneration`。写 state 前若 `gen !== loadGeneration`，直接返回。
+- `mutate()` 一进入就 `loadGeneration += 1`，记下这个 gen。这样 confirm 触发的那次 GET 作废。POST 回来时 gen 仍匹配才写入响应；期间又发生了新的 load 或 mutate 就丢弃这份响应。
+- 过期的 `load()` 不得把 `busy` 设回 false。
+
+测试：先发起 `load`，再发起 `mutate`，让 `load` 的响应后到。最终 snapshot 是 POST 的结果，`busy` 不是被那次 GET 清掉的 false（mutate 自己的结束状态除外）。
+
+### 37. 非法 JSON 的 POST 没有 HTTP 响应
+
+根因：`readJson` 直接 `JSON.parse`。`handle` 没有包住各路由。解析失败时 Promise 拒绝，`writeHead` 还没执行。
+
+- `readJson` 捕获 `SyntaxError`，抛出带 `status: 400` 的错误，消息用 `invalid-json`。
+- `registerOrbRoutes` 的 handler 包一层 `try/catch`。响应头还没写时，用 `sendJson` 返回该 status，body 为 `{ error }`。没有 status 的错误返回 500，body 不要带堆栈。
+- 头像上传现有的 413 仍走它自己的拒绝对象，被这层 catch 接住后应按 413 返回，不要变成 500。
+
+测试：`POST /.dsh-orb/update/auto` 正文 `{`，响应 400 且连接结束。超大头像仍是 413。
+
+## 9. 几何
+
+### 38. 吸边复原用了整块屏幕而不是工作区
+
+根因：`insideBallOrigin` 的 x 用 `display.bounds`，y 用 `display.workArea`。左右任务栏在 `bounds` 里、在 `workArea` 外。`dockedTabBounds` 也贴着传入的 `bounds` 边缘。自由拖动的 `clampedBallOrigin` 已经用工作区。
+
+- `insideBallOrigin` 的 x 改为工作区：左侧 `workArea.x + DOCK_IN_PAD`，右侧 `workArea.x + workArea.width - BALL_SIZE - DOCK_IN_PAD`。
+- `dockedTabBounds` 改为接收工作区矩形，标签贴工作区的左缘或右缘，y 仍夹在工作区高度内。调用处现在传入的是显示器 bounds 的，改传 `display.workArea`。
+
+底部任务栏的现有行为保持：y 已经在工作区内。
+
+测试：工作区比 bounds 窄、且从左侧缩进 48 像素时，复原后的球 x 是 `workArea.x + DOCK_IN_PAD`，标签不落在 `bounds.x`。
+
+## 10. 划词工具栏
+
+这三条对应的入口仍然关闭。把代码修好，不要在这次改动里恢复菜单、设置项或偏好默认值。恢复入口要单独开任务，并在 macOS 和 Windows 上把双击、拖选、混合 DPI 走一遍。
+
+### Windows 选区没有矩形时锚在 (0, 0)，坐标也不是 DIP
+
+根因：PowerShell 在没有四个矩形数时仍输出 `x = 0; y = 0`。`windows-dispatch.js` 看到数字就把坐标带上。`selection.ts` 用它覆盖鼠标抬起时的锚点。脚本输出的是物理像素，观察框那条路径才做了 `screenToDipRect`。
+
+- 没有有效矩形时，JSON 里不要带 `x` / `y` / `width` / `height`。`0` 不是“缺省”。
+- 有矩形时，在 Node 侧用该点所在显示器的 `scaleFactor` 转成 DIP，再交给 `dispatch`。转换函数与鼠标钩子已经在用的那套相同，不要在 PowerShell 里猜 DPI。
+- `selection.ts` 仅在 `event.x` 和 `event.y` 都是有限数、且不是缺失字段时才覆盖 `lastAnchor`。
+
+### Windows 选区读取乱序
+
+根因：每次左键抬起都 `void probe.readSelection()`，返回时不核对这次抬起还是不是最新一次。
+
+`dispatchWindowsSelectionMessage` 增加代次。左键按下或抬起时递增。发起读取时记下代次，`.then` 里代次不一致就丢掉结果，不发 `selection`。鼠标按下已经会藏起工具条，过期结果不得再把它显示出来。
+
+### macOS 双击和三击不读选区
+
+根因：`leftMouseUp` 要求 `press != nil && dragged`，`dragged` 要移动至少 8 像素。双击和三击的 `clickState` 大于 1，但位移不够。
+
+`shouldRead` 改为：发生过拖选，或者这次鼠标事件的 click count 大于等于 2。单击且没有拖动仍然不读。Windows 保持“每次左键抬起都读”。
+
+## 改完后的核对
+
+每一组合并前：
+
+- `pnpm typecheck` 和 `pnpm test` 通过。
+- 对应该组新加的断言失败时，先看是不是把旧的错误行为写进了期望。第 28 条的 `key:91:down:0` 就是这种期望，应改测试而不是改回代码。
+- 第 8 条要带上重新构建的 macOS 捕获程序，否则源文件和二进制不一致。
+- 第 16、39 条改了 `client-settings/client.js` 的，同步检查 `packages/bundle/client.js`。pack 出来的 tarball 以组装结果为准，链接安装则以提交的 `bundle/client.js` 为准，两份都要有同样的分支。
