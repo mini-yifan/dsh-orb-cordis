@@ -2,7 +2,7 @@
 
 给研发的实施说明。条目编号与 [BUGS.md](BUGS.md) 一致。每条都写了根因、要改的函数、改完的行为，以及建议补的测试。按下面的分组提交，同一组里的改动共享状态，不要拆开。
 
-本文已按 [FIX-PLAN-REVIEW.md](FIX-PLAN-REVIEW.md) 改过一版。审核里的根因复核成立。下面凡是和审核有关的条目，都改成了核对过源码之后的做法，不再保留会引入新故障的原文。第 40 条不进入本次修复，先做真机验证。
+本文已按 [FIX-PLAN-REVIEW.md](FIX-PLAN-REVIEW.md) 改过一版，并根据二轮复核把三处会实施错的地方写实了：第 7 条的落点（`windowId` 现在到不了插件层，要动五个文件）、第 26 条的 `screenLockState` 导出、第 31 条的 epoch 比较位置。第 40 条不进入本次修复，先做真机验证。
 
 实施前先跑一遍现有套件，改完再跑对应包的测试：
 
@@ -20,7 +20,7 @@ Windows 输入、macOS HID、延迟安装这几组还需要在对应系统上做
 | 1 | 悬浮球对话渲染 | 1、11、12、13、14、15 | 纯前端，可独立验证 |
 | 2 | 宿主回合与遮罩 | 2、29、30、31、32、35、36 | 第 2 条和第 35 条必须同一提交，否则 abort 会把遮罩泄漏成永久隐身 |
 | 3 | Windows 输入（接口） | 28、23、6 | 先改键标志和查询接口，后面的点击与热键才接得上 |
-| 4 | Windows 输入（热键与按住） | 7、5、17 | 第 7 条依赖第 6 条的完整性查询，也依赖第 2 条的遮罩深度 |
+| 4 | Windows 输入（热键与按住） | 7、5、17 | 第 7 条依赖第 6 条的完整性查询、第 2 条的遮罩深度，还要打通 `backend.ts` / `observe.ts` / `coordinate-mode.ts` 三层才能把 `windowId` 送到插件层 |
 | 5 | macOS 输入与截图 | 8、10、18、19、20、21、22 | 都在 `macos.ts` 的 JXA / 捕获路径。第 8 条要连二进制一起提交 |
 | 6 | 剪贴板与打开 | 24、25、26 | 会改工具的副作用 |
 | 7 | 后台 code agent | 9、27 | 完成通知的时序 |
@@ -139,7 +139,8 @@ module.subscribeGrammarLoaded(() => {
 改 `packages/host/src/windows-foreground.ts` 的 `sample()`：
 
 - 当前前台 HWND 在 `chromeWindowIds()` 里，并且它就是 `remembered` 时，把 `remembered` 置 0。
-- `chromeWindowIds()` 仍为空时不要写入 `remembered`。等第一条 `chrome-windows` 到达后再采样。`accept()` 可以继续调用 `start()` 把定时器拉起来，但第一次有效采样以排除列表非空为准。
+- `chromeWindowIds()` 仍为空时不要写入 `remembered`。等第一条 `chrome-windows` 到达后再采样。`accept()` 可以继续调用 `start()` 把定时器拉起来，`start()` 里那次同步采样会在排除列表为空时空跑，之后靠 `FOREGROUND_SAMPLE_MS`（250 ms）的下一次 tick 自动接上，不需要为这个消息额外挂钩。
+- 已知取舍：如果 helper 始终不上报 `chrome-windows`（旧版 helper），`remembered` 会一直是 0，`restore()` 变成 no-op，首次观察可能读到球。这比记住球再把焦点还给球要安全，接受这个行为。
 
 `packages/host/tests/windows-foreground.test.ts`：先在空排除列表下采样到球的 HWND，随后排除列表包含这个 HWND，再采样一次，`restore()` 不得对这个 HWND 调用 `focus`。
 
@@ -161,10 +162,9 @@ module.subscribeGrammarLoaded(() => {
   - `onPrompt` 进入真正提交之前。
   - `consume` 里的 `turn/start`（约 853 行）。code agent 完成通知会从这里把回合唤醒，不经过 `onPrompt`。
   - `openSession` 里 `row.running` 为真的分支（约 1641 行）。切到一个仍在跑的历史会话也是这样。
-- `stopTurn` 记下调用时的 epoch 和 `sessionId`。
-- `cancel` 成功且 epoch、`sessionId` 都没变，才 `finishTurn()`。
+- `stopTurn` 记下调用时的 epoch 和 `sessionId`。比较放在 `stopTurn` 自己身上，`finishTurn()` 的签名和所有调用点保持不动：`cancel` 成功、且 epoch 与 `sessionId` 都没变，才 `drain()` + `finishTurn()`。
 - `cancel` 抛错时不要 `finishTurn()`。用现有的 `status()` 把失败写到球上，`turnRunning` 保持 true，等真正的 `turn/end` 再收口。
-- `finishTurn` 开头若发现 epoch 已变，直接返回。
+- `finishTurn()` 不要自己比较 epoch。它是 `consume('turn/end')`（约 887 行）、`onPrompt` 的 catch（约 694 行）和 `stopTurn` 三方共用的收口。`turn/end` 是回合的权威关闭者，不能被 epoch 拦住；`onPrompt` 失败时也应当场收口。只有 `stopTurn` 这一次异步等待里的竞态需要判 epoch，所以判在它那里就够。
 
 测试：`cancel` reject 时不广播 `turn running: false`。`cancel` 挂起期间分别插入一次 `onPrompt`、一次 `turn/start`、一次打开仍在运行的历史会话，原来的 `stopTurn` 返回后新回合仍是 `running: true`。
 
@@ -194,11 +194,16 @@ module.subscribeGrammarLoaded(() => {
 while (this.blockOrder.length > 200) {
   const oldest = this.blockOrder[0]
   if (oldest === undefined) break
+  if (!this.blocks.has(oldest)) {
+    // 只可能在 map 写入之前被 push 的瞬时状态遇到；摘掉它，否则 dropBlock 会空转。
+    this.blockOrder.shift()
+    continue
+  }
   this.dropBlock(oldest)
 }
 ```
 
-`dropBlock` 自己会从 `blockOrder` 里摘掉。不要再 `shift` 一次。注意这段在 `blocks.set` 之前，被丢掉的是更旧的 key，那些 key 已经在 map 里，`dropBlock` 删得到。
+`dropBlock` 自己会从 `blockOrder` 里摘掉。不要再 `shift` 一次。注意这段在 `blocks.set` 之前，被丢掉的是更旧的 key，那些 key 已经在 map 里，`dropBlock` 删得到。`dropBlock` 在 key 不在 map 里时会静默返回、且不从 `blockOrder` 移除，所以要兜住上面那种 shift，否则有死循环风险。
 
 测试：写入 201 个块，广播序列里有对应的 `block-drop`，helper 侧 `removeBlock` 能把它从 DOM 拿掉。
 
@@ -210,7 +215,16 @@ while (this.blockOrder.length > 200) {
 
 根因：`click` 不读 `ClickInput.modifiers`。`plugin.ts` 已经把 `shift` / `cmd` / `option` / `control` 传进来，结果文案也会把它们回显出去。
 
-在 `click` 里，移动并点击前后用现有的 `chord` 按住修饰键。映射：`shift -> 0x10`，`control -> 0x11`，`option` / `alt -> 0x12`，`cmd` / `meta -> 0x5B` 且带扩展键标志（见第 28 条）。按下、点击、在 `finally` 里按相反顺序抬起。抬起必须发生，即使点击中途 abort（和第 17 条一起做）。
+在 `click` 里，移动并点击前后用现有的 `chord` 按住修饰键。映射：`shift -> 0x10`，`control -> 0x11`，`option` / `alt -> 0x12`，`cmd` / `meta -> 0x5B`。按下、点击、在 `finally` 里按相反顺序抬起。抬起必须发生，即使点击中途 abort（和第 17 条一起做）。
+
+Win 系修饰键的扩展标志按第 28 条处理，但**不要为了这条去改 `postedVk`**——`typeText` 的 Ctrl+A、Ctrl+V 也用 `postedVk(0x11)`，那两条的扩展标志必须是 false。在 `click` 这条路径上自己构造：
+
+```ts
+const posted = (vk: number): PostedKey =>
+  ({ vk, extended: vk === 0x5B || vk === 0x5C })
+```
+
+普通修饰键（shift / ctrl / option）仍然可以和现在一样走 `postedVk`。
 
 没有修饰键时行为与现在相同。工具结果可以继续回显修饰键，因为这次它们真的被按住了。
 
@@ -227,7 +241,7 @@ while (this.blockOrder.length > 200) {
 - 在 `bind()` 增加 `WindowFromPoint`。Win32 签名是 `HWND WindowFromPoint(POINT)`，参数是一个 `POINT` 结构，不要拆成两个 `int`。坐标与现有 `SetCursorPos` 用同一套屏幕坐标。`WindowsDesktopOps` 增加 `windowFromPoint(x, y): number`，返回 HWND 数值，无效时返回 0。
 - `targetBlocksInput(hwnd: number)` 接收要接收输入的 HWND。HWND 为 0 或窗口已不存在时返回 false，不拦截。除此之外，只要拿不到完整性级别（`integrityRid` 返回 `undefined`），就返回 true，拒绝输入。不要去读 `GetLastError`。koffi 下区分 `ERROR_ACCESS_DENIED` 和其他失败不值得，失败关闭已经覆盖提权进程拒绝打开 token 的情况。
 - `click` / `drag` / `scroll` / `typeText`：指针移动完成后用 `windowFromPoint` 取点击点上的 HWND，再判断。
-- `hotkey`：先对“将要 `focusWindow` 的那个 hwnd”做判断，不通过就抛现有的 `ELEVATED_WINDOW`，不要先 `SetForegroundWindow`。
+- `hotkey`：先对“将要 `focusWindow` 的那个 hwnd”做判断，不通过就抛现有的 `ELEVATED_WINDOW`，不要先 `SetForegroundWindow`。这个 hwnd 就是第 7 条里随 `hotkey` 传入的会话级 `windowId`。传入 undefined（该会话还没有观察结果）时不要回退到现场取前台，直接放过，和第 7 条“没有观察结果就不动焦点”保持一致。不要在 `hotkey` 里为了凑一个 hwnd 去调 `observationOf`。
 - 所有 fake，包括 `tests/windows.spec.ts`，改成 `targetBlocksInput: () => false` 的新签名 `(_hwnd) => false`，并补上 `windowFromPoint`。
 
 验收：前台是普通窗口、点击点落在管理员窗口上时，工具抛出提权错误，不发点击。前台是管理员窗口、点击点落在普通窗口上时，点击发出去。fake 在改完签名后 `pnpm test` 能编过。
@@ -242,13 +256,18 @@ while (this.blockOrder.length > 200) {
 
 热键要回到的是**这一次观察**看到的窗口，不是发键瞬间的前台。`restoreObservedFocus` 的注释写的就是上一次 `listScreens` 的窗口。发键时重新取样会改掉这个行为。
 
-改法：
+改法。这条要动五个文件，`windowId` 现在到不了插件层：
 
+- `ScreenInfo`（`backend.ts` 约 12 行）加一个可选 `appName`。Windows 的 `screenFromObservation`（约 316 行）填 `selected.appName`，macOS 的 `screenFromFrontmost`（约 562 行）填 `parsed.appName`（`ParsedFrontmost` 本来就有）。它是给 `restoreObservedFocus` 的报错文案用的，可选字段不会影响别的调用方。不想动它就把文案降级成 `window ${windowId}`，别打 `undefined`。
+- `ObservedScreen`（`observe.ts` 约 30 行）是中间层，现在只有 `screenIndex / logicalWidth / logicalHeight / scale / image`，**没有 windowId**。加可选 `windowId` 和 `transientWindowIds`。
+- `observeDesktop`（`observe.ts` 约 215 行）组装 `ObservedScreen` 时，把 `listed` 里 `ScreenInfo` 的 `windowId` / `transientWindowIds` / `appName` 透传进去。
+- `rememberObservation`（`coordinate-mode.ts` 约 200 行）现在只从 `screens[0].image` 取宽高，`observationCache` 的值类型是 `{ width, height }`。把值类型扩成带窗口 id 和 appName，并加一个 `lastObservedWindow(session)` 读取函数。**缓存里那个 `false` 哨兵是 fail-closed 语义（`lastAttachedRaster` 约 216 行依赖它），扩展时不要弄丢。**
+- `HotkeyInput`（`backend.ts` 约 119 行）增加三个可选字段：`windowId`、`transientWindowIds`、`appName`。macOS 的 `hotkey` 忽略这三个字段。
 - 删掉后端闭包里的 `observed`。`listScreens` 只返回屏幕，不给热键留进程级状态。
-- `HotkeyInput` 增加可选的 `windowId` 和 `transientWindowIds`。macOS 的 `hotkey` 忽略这两个字段。
-- 插件层按会话记住上一次 `listScreens` 返回的窗口。`rememberObservation` 现在只存栅格尺寸，旁边再存 `windowId` 和 `transientWindowIds`，键用 session。`listScreens` 走 `withCapture`，返回的窗口已经排除过悬浮球，这个结果可以留着给热键用。
-- `hotkey` 的 `execute` 把该会话记住的窗口传进 `backend.hotkey`。Windows 侧只用这个参数调用 `restoreObservedFocus`，不要在热键里再调 `observationOf`。
+- `hotkey` 的 `execute`（`plugin.ts` 约 560 行）把该会话 `lastObservedWindow(session)` 的结果传进 `backend.hotkey`。Windows 侧只用这个参数调用 `restoreObservedFocus`，不要在热键里再调 `observationOf`。
 - 该会话还没有观察结果时，不要猜一个前台窗口。直接发键，保持现在“没有 observed 就不动焦点”的行为。
+
+`listScreens` 走 `withCapture`，它的 `excludeWindowIds` 已经排除过悬浮球，所以记住的窗口天然是排除球之后的，可以直接给热键用。会话级缓存也让另一个会话的截图改不了这个值。
 
 `packages/computer-use/src/overlay-guard.ts` 开头注释写着“input 里面的嵌套 capture 仍会发 capture IPC”。宿主实现不是这样：`inputDepth > 0` 时 `cloaked` 为 false，不发 capture 消息，只把 `excludeWindowIds` 交给回调。不要按那句注释去改宿主。
 
@@ -411,7 +430,8 @@ Windows，改 `readClipboardText` / `setClipboardText` 这一对在 `typeText` �
 测试拆成两条，不要试图在一条里让真的 `typeText` 挂住剪贴板：
 
 - `withScreenLock` 已被占用时，第二次调用抛 `SCREEN_BUSY_MESSAGE`。这条用现有的锁单测即可。
-- 给 `screenshot` 的 `execute` 注入一个 backend，记录 `copyImageToClipboard` 调用时 `screenLockState().held` 是否为 true。断言写入剪贴板期间锁是持有的，函数返回后锁已释放。`guiTurn` 的 backend 可以替换，不需要把 `typeText` 的 `run()` 挂住。
+- 给 `screenshot` 的 `execute` 注入一个 backend，在 `copyImageToClipboard` 被调用时读锁状态。断言写入剪贴板期间锁是持有的，函数返回后锁已释放。`guiTurn` 的 backend 可以替换，不需要把 `typeText` 的 `run()` 挂住。
+- 为此要把 `screenLockState()` 从 `gui-lock.ts` 导出。它现在是模块私有函数（约 29 行），测试 import 不到。加一个 `export` 即可，不要改成读 `globalThis[Symbol.for('dsh-orb.gui-lock')]`——那样测试依赖 Symbol 名，太脆。
 
 ## 6. 后台 code agent
 
@@ -591,5 +611,8 @@ GitHub 自己返回 404（正文 `''`）时仍返回 `null`，这是“确实没
 - 第 8 条的 Swift 和重新构建的捕获二进制一起提交。
 - 第 2 条和第 35 条在同一个提交里。begin 已经广播之后，abort 和超时都要能补上 end。
 - 第 7 条的测试要经过 `wrapDesktopBackend`。只测裸 backend 时，排除列表本来就是空的。
+- 第 7 条要动五个文件才能闭环：`ScreenInfo` 加 `appName` 和 `HotkeyInput` 加三个字段（`backend.ts`）、`ObservedScreen` 加 `windowId` / `transientWindowIds` 加 `appName` 并透传（`observe.ts`）、`observationCache` 扩类型并加 `lastObservedWindow`（`coordinate-mode.ts`）、删掉闭包 `observed` 改用入参（`windows.ts`）、`hotkey` 的 `execute` 传参（`plugin.ts`）。漏掉中间那层，插件层拿不到 `windowId`，`rememberObservation` 会无处可取。`appName` 是给 `restoreObservedFocus` 的报错用的；不想动 `ScreenInfo` 就把文案降级成 window id，别打 `undefined`。
+- 第 26 条要 `export screenLockState()`，否则测试 import 不到。
+- 第 31 条的 epoch 比较写在 `stopTurn` 里，`finishTurn()` 的签名和调用点不要动。
 - 第 16、39 条改了 `client-settings/client.js` 的，同步 `packages/bundle/client.js`。pack 出来的 tarball 以组装结果为准，链接安装则以提交的 `bundle/client.js` 为准。
 - 第 40 条不在这次的提交里。
