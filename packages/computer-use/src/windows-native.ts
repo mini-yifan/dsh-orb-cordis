@@ -9,6 +9,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { selectAppWindow } from './app-match.ts'
 import koffi from './koffi.ts'
 import { compositeCursor, cursorDrawPlacement, flipRows, resolveCursorAlpha } from './cursor.ts'
 import type { WindowsDesktopSnapshot, WindowsWindowFact } from './windows-foreground.ts'
@@ -39,6 +40,8 @@ const TokenIntegrityLevel = 25
 const SW_SHOWNORMAL = 1
 const SW_RESTORE = 9
 const GW_OWNER = 4
+/** `GetAncestor` flag: the root (top-level) window of a child. */
+const GA_ROOT = 2
 const GWL_STYLE = -16
 const GWL_EXSTYLE = -20
 const WS_POPUP = 0x80000000
@@ -199,6 +202,7 @@ function bind(libraries: NativeBindings): {
   EnumChildWindows: (hwnd: unknown, callback: unknown, param: number) => number
   GetClassNameW: (hwnd: unknown, buffer: Buffer, max: number) => number
   GetWindow: (hwnd: unknown, command: number) => unknown
+  GetAncestor: (hwnd: unknown, flags: number) => unknown
   GetWindowLongPtrW: (hwnd: unknown, index: number) => unknown
   ShowWindow: (hwnd: unknown, command: number) => number
   SetForegroundWindow: (hwnd: unknown) => number
@@ -207,6 +211,7 @@ function bind(libraries: NativeBindings): {
   GetSystemMetrics: (index: number) => number
   GetCursorPos: (point: NativePoint) => number
   SetCursorPos: (x: number, y: number) => number
+  WindowFromPoint: (point: NativePoint) => unknown
   GetCursorInfo: (info: Buffer) => number
   GetIconInfo: (cursor: unknown, info: Buffer) => number
   SetThreadDpiAwarenessContext: ((context: DpiContext) => unknown) | undefined
@@ -284,6 +289,7 @@ function bind(libraries: NativeBindings): {
     EnumChildWindows: user32.func('int __stdcall EnumChildWindows(void *hWndParent, DshCuEnumChildProc *lpEnumFunc, intptr lParam)'),
     GetClassNameW: user32.func('int __stdcall GetClassNameW(void *hWnd, uint16_t *lpClassName, int nMaxCount)'),
     GetWindow: user32.func('void * __stdcall GetWindow(void *hWnd, uint32 uCmd)'),
+    GetAncestor: user32.func('void * __stdcall GetAncestor(void *hwnd, uint32 gaFlags)'),
     GetWindowLongPtrW: user32.func('intptr __stdcall GetWindowLongPtrW(void *hWnd, int nIndex)'),
     ShowWindow: user32.func('int __stdcall ShowWindow(void *hWnd, int nCmdShow)'),
     SetForegroundWindow: user32.func('int __stdcall SetForegroundWindow(void *hWnd)'),
@@ -292,6 +298,7 @@ function bind(libraries: NativeBindings): {
     GetSystemMetrics: user32.func('int __stdcall GetSystemMetrics(int nIndex)'),
     GetCursorPos: user32.func('int __stdcall GetCursorPos(_Out_ DSH_CU_POINT *lpPoint)'),
     SetCursorPos: user32.func('int __stdcall SetCursorPos(int X, int Y)'),
+    WindowFromPoint: user32.func('void * __stdcall WindowFromPoint(DSH_CU_POINT point)'),
     GetCursorInfo: user32.func('int __stdcall GetCursorInfo(_Inout_ uint8_t *pci)'),
     GetIconInfo: user32.func('int __stdcall GetIconInfo(void *hIcon, _Out_ uint8_t *piconinfo)'),
     SetThreadDpiAwarenessContext: setThreadDpi,
@@ -856,11 +863,24 @@ export function createProductionWindowsOps(): WindowsDesktopOps {
         }
       })
     },
-    targetBlocksInput() {
-      const hwnd = api.GetForegroundWindow()
-      if (isNull(hwnd) || selfRid === undefined) return false
-      const rid = integrityRid(api, pidOf(api, hwnd))
-      return rid !== undefined && rid > selfRid
+    targetBlocksInput(hwnd) {
+      const target = windowPointer(hwnd)
+      if (target === undefined) return false
+      if (selfRid === undefined) return false
+      const rid = integrityRid(api, pidOf(api, target))
+      // Fail closed: an elevated window commonly refuses the token read, and the caller
+      // must not post input that UIPI would only drop silently.
+      return rid === undefined || rid > selfRid
+    },
+    windowFromPoint(x, y) {
+      return perMonitor(() => {
+        const hit = api.WindowFromPoint({ x, y })
+        if (isNull(hit)) return 0
+        // The hit is usually a child control; the check deals in top-level HWNDs, and a
+        // child window cannot be resolved back to one.
+        const root = api.GetAncestor(hit, GA_ROOT)
+        return hwndId(isNull(root) ? hit : root) ?? 0
+      })
     },
     movePointer(x, y) {
       perMonitor(() => { placePointer(x, y) })
@@ -936,19 +956,13 @@ try { [System.Windows.Forms.Clipboard]::SetImage($image) } finally { $image.Disp
       return [...names]
     },
     activateApp(name) {
-      const wanted = name.trim().toLowerCase()
-      if (wanted === '') return false
       return perMonitor(() => {
-        let target: unknown
-        for (const hwnd of enumTopLevel(api)) {
-          if (api.IsWindowVisible(hwnd) === 0) continue
-          const app = (processBaseName(api, pidOf(api, hwnd)) ?? '').toLowerCase()
-          const title = windowText(api, hwnd).toLowerCase()
-          if (app === wanted || title.includes(wanted)) {
-            target = hwnd
-            break
-          }
-        }
+        const windows = enumTopLevel(api).filter((hwnd) => api.IsWindowVisible(hwnd) !== 0)
+        const index = selectAppWindow(windows.map((hwnd) => ({
+          appName: processBaseName(api, pidOf(api, hwnd)) ?? '',
+          title: windowText(api, hwnd),
+        })), name)
+        const target = index === undefined ? undefined : windows[index]
         if (target === undefined) return false
         if (!becomeForeground(target)) throw new Error(`computer-use: failed to activate ${name}`)
         return true

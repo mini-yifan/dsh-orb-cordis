@@ -51,8 +51,20 @@ export interface WindowsDesktopOps {
   /** Z-order snapshot in physical pixels, including the foreground hwnd. */
   listWindows(): WindowsDesktopSnapshot
   capturePng(bounds: WindowsRect): Uint8Array
-  /** True when the foreground window is elevated above this process (UIPI). */
-  targetBlocksInput(): boolean
+  /**
+   * True when the window `hwnd` is elevated above this process (UIPI), so posted input
+   * would be dropped. `0` and windows that are no longer on screen are never blocked;
+   * a window whose integrity level cannot be read is blocked.
+   * @param hwnd - top-level HWND from `listWindows`, `windowFromPoint`, or `foregroundWindowId`.
+   */
+  targetBlocksInput(hwnd: number): boolean
+  /**
+   * Top-level window at one physical screen point.
+   * @param x - screen x in the same physical space as `movePointer`.
+   * @param y - screen y in the same physical space as `movePointer`.
+   * @returns its HWND, or `0` when no window contains the point.
+   */
+  windowFromPoint(x: number, y: number): number
   movePointer(x: number, y: number): void
   mouseButton(button: 'left' | 'right', down: boolean): void
   scrollWheel(x: number, y: number, delta: number): void
@@ -69,7 +81,7 @@ export interface WindowsDesktopOps {
   listWindowApps(): readonly string[]
   /**
    * Bring a running app forward.
-   * @param name - process base name or a substring of the window title.
+   * @param name - process base name, or a window title that is or starts with `name` at a word boundary.
    * @returns false when no window matches `name`.
    * @throws when a window matches but does not become foreground.
    */
@@ -95,7 +107,7 @@ export interface WindowsDesktopOps {
   explorerFolder(hwnd: number): string | undefined
 }
 
-const ELEVATED_WINDOW = 'computer-use: the foreground window is running elevated, so this process cannot click or type into it'
+const ELEVATED_WINDOW = 'computer-use: the target window is running elevated, so this process cannot click or type into it'
 
 const KEY_NAMES: Readonly<Record<string, number>> = {
   ctrl: 0x11,
@@ -129,7 +141,10 @@ const KEY_NAMES: Readonly<Record<string, number>> = {
   insert: 0x2D,
 }
 
-/** Navigation keys whose scan code is the extended set. Numpad names are not in this map. */
+/**
+ * Keys whose scan code is the extended set: arrows, editing/navigation keys, and the
+ * Windows keys (`VK_LWIN` is `E0 5B`). Numpad names are not in this map.
+ */
 const EXTENDED_KEY_NAMES = new Set([
   'up',
   'down',
@@ -142,6 +157,12 @@ const EXTENDED_KEY_NAMES = new Set([
   'insert',
   'delete',
   'del',
+  'win',
+  'windows',
+  'meta',
+  'cmd',
+  'command',
+  'super',
 ])
 
 const MODIFIER_VKS = new Set([0x10, 0x11, 0x12, 0x5B, 0x5C])
@@ -184,7 +205,7 @@ export function windowsVirtualKey(key: string): number {
 /**
  * Whether a hotkey token needs `KEYEVENTF_EXTENDEDKEY`.
  * @param key - model-supplied key name.
- * @returns true for arrows, editing, and navigation keys. Letters and digits return false.
+ * @returns true for arrows, editing/navigation keys, and the Windows keys. Letters and digits return false.
  */
 export function windowsKeyIsExtended(key: string): boolean {
   return EXTENDED_KEY_NAMES.has(key.trim().toLowerCase())
@@ -254,8 +275,27 @@ function pointOf(position: readonly [number, number], screen: ScreenInfo): { x: 
   return { x: Math.round(mapped.x), y: Math.round(mapped.y) }
 }
 
-function assertInput(ops: WindowsDesktopOps): void {
-  if (ops.targetBlocksInput()) throw new Error(ELEVATED_WINDOW)
+/**
+ * Refuse pointer input whose window is elevated: the window under the point receives the
+ * click, not whatever holds the foreground.
+ * @param ops - Win32 operations.
+ * @param point - physical screen point the pointer was moved to.
+ * @throws when that window is elevated. Nothing is posted after that throw.
+ */
+function assertPointInput(ops: WindowsDesktopOps, point: { x: number; y: number }): void {
+  if (ops.targetBlocksInput(ops.windowFromPoint(point.x, point.y))) throw new Error(ELEVATED_WINDOW)
+}
+
+/**
+ * Refuse a focus change into an elevated window before it happens; UIPI would drop the
+ * posted keys. No observation means no focus change, so there is nothing to check.
+ * @param ops - Win32 operations.
+ * @param hwnd - window a hotkey is about to bring forward, if the session has one.
+ * @throws when that window is elevated. Focus is untouched after that throw.
+ */
+function assertTargetInput(ops: WindowsDesktopOps, hwnd: number | undefined): void {
+  if (hwnd === undefined) return
+  if (ops.targetBlocksInput(hwnd)) throw new Error(ELEVATED_WINDOW)
 }
 
 /**
@@ -287,6 +327,7 @@ async function clickAt(
 ): Promise<void> {
   ops.movePointer(point.x, point.y)
   await delay(POINTER_MOVE_SETTLE_MS, signal)
+  assertPointInput(ops, point)
   for (let index = 0; index < count; index += 1) {
     ops.mouseButton(button, true)
     await delay(BUTTON_HOLD_MS, signal)
@@ -393,13 +434,11 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
 
     async click(input: ClickInput, signal) {
       const host = await use()
-      assertInput(host)
       await clickAt(host, input.button, input.count, pointOf(input.position, input.screen), liveSignal(signal))
     },
 
     async typeText(input: TypeInput, signal) {
       const host = await use()
-      assertInput(host)
       const abort = liveSignal(signal)
       await clickAt(host, 'left', 1, pointOf(input.position, input.screen), abort)
       if (input.replace) await chord(host, [postedVk(0x11), postedVk(0x41)], abort)
@@ -420,8 +459,8 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
 
     async scroll(input: ScrollInput, signal) {
       const host = await use()
-      assertInput(host)
       const point = pointOf(input.position, input.screen)
+      assertPointInput(host, point)
       const abort = liveSignal(signal)
       const step = (input.direction === 'up' ? 1 : -1) * SCROLL_NOTCH
       for (let index = 0; index < input.scrollLevel; index += 1) {
@@ -433,18 +472,20 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
     async hotkey(input: HotkeyInput, signal) {
       signal?.throwIfAborted()
       const host = await use()
+      // The window about to receive the keys is the one to check, and it must be checked
+      // before focus moves: UIPI drops posted keys into an elevated window.
+      assertTargetInput(host, observed?.windowId)
       restoreObservedFocus(host, observed)
-      assertInput(host)
       await chord(host, input.keys.map(postedKey), liveSignal(signal))
     },
 
     async longPress(input: LongPressInput, signal) {
       const host = await use()
-      assertInput(host)
       const point = pointOf(input.position, input.screen)
       const abort = liveSignal(signal)
       host.movePointer(point.x, point.y)
       await delay(POINTER_MOVE_SETTLE_MS, abort)
+      assertPointInput(host, point)
       host.mouseButton('left', true)
       try {
         await delay(Math.round(input.durationSeconds * 1000), abort)
@@ -455,12 +496,12 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
 
     async drag(input: DragInput, signal) {
       const host = await use()
-      assertInput(host)
       const start = pointOf(input.startPosition, input.startScreen)
       const end = pointOf(input.endPosition, input.endScreen)
       const abort = liveSignal(signal)
       host.movePointer(start.x, start.y)
       await delay(POINTER_MOVE_SETTLE_MS, abort)
+      assertPointInput(host, start)
       host.mouseButton('left', true)
       await delay(BUTTON_HOLD_MS, abort)
       for (let step = 1; step <= DRAG_STEPS; step += 1) {

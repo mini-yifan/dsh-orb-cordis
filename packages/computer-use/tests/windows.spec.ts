@@ -8,7 +8,8 @@ vi.mock('../src/windows-native.ts', () => ({
     return {
       listWindows: () => ({ foregroundHwnd: 0, windows: [] }),
       capturePng: () => Uint8Array.from([]),
-      targetBlocksInput: () => false,
+      targetBlocksInput: (_hwnd: number) => false,
+      windowFromPoint: () => 0,
       movePointer: () => undefined,
       mouseButton: () => undefined,
       scrollWheel: () => undefined,
@@ -70,7 +71,8 @@ function ops(overrides: Partial<WindowsDesktopOps> = {}): WindowsDesktopOps & {
     calls,
     listWindows: () => shot([fact()]),
     capturePng: () => png,
-    targetBlocksInput: () => false,
+    targetBlocksInput: (_hwnd) => false,
+    windowFromPoint: () => 0,
     movePointer: (x, y) => { calls.push(`move:${String(x)},${String(y)}`) },
     mouseButton: (_button, down) => { calls.push(down ? 'down' : 'up') },
     scrollWheel: (_x, _y, delta) => { calls.push(`wheel:${String(delta)}`) },
@@ -102,6 +104,10 @@ describe('windows desktop backend', () => {
     expect(windowsVirtualKey('insert')).toBe(0x2D)
     expect(windowsKeyIsExtended('Delete')).toBe(true)
     expect(windowsKeyIsExtended('a')).toBe(false)
+    // The Windows key is `E0 5B`, an extended scan code, under every alias.
+    for (const name of ['win', 'windows', 'meta', 'cmd', 'command', 'super']) {
+      expect(windowsKeyIsExtended(name)).toBe(true)
+    }
     expect(() => { windowsVirtualKey('not-a-key') }).toThrow(/unknown key/u)
   })
 
@@ -195,7 +201,7 @@ describe('windows desktop backend', () => {
     expect(host.calls).toEqual(['key:46:down:1', 'key:46:up:1'])
     host.calls.length = 0
     await backend.hotkey({ keys: ['win'] })
-    expect(host.calls).toEqual(['key:91:down:0', 'key:91:up:0'])
+    expect(host.calls).toEqual(['key:91:down:1', 'key:91:up:1'])
     host.calls.length = 0
     await backend.hotkey({ keys: [] })
     expect(host.calls).toEqual([])
@@ -327,16 +333,18 @@ describe('windows desktop backend', () => {
     expect(host.calls).toEqual(['move:10,20', 'down', 'up'])
   })
 
-  it('refuses input into an elevated window and opens Explorer for reveal', async () => {
+  it('refuses a hotkey into the elevated observed window and opens Explorer for reveal', async () => {
     let blocked = true
     const host = ops({
-      targetBlocksInput: () => blocked,
+      targetBlocksInput: (_hwnd) => blocked,
       activateApp: (name) => {
         if (name === 'stuck') throw new Error('computer-use: failed to activate stuck')
         return name === 'notepad'
       },
     })
     const backend = createWindowsDesktopBackend(host)
+    // The check applies to the window an observation selected, not to the foreground.
+    await backend.listScreens()
     await expect(backend.hotkey({ keys: ['ctrl', 'c'] })).rejects.toThrow(/elevated/u)
     blocked = false
     await expect(backend.openApp({ name: 'notepad' })).resolves.toEqual({ kind: 'activated', name: 'notepad' })
@@ -353,6 +361,85 @@ describe('windows desktop backend', () => {
     expect(host.calls).toContain('launch:https://example.com')
     await backend.copyImageToClipboard({ path: 'C:\\shot.png', mediaType: 'image/png' })
     expect(host.calls).toContain('image:C:\\shot.png')
+  })
+
+  it('refuses a click whose point lands on an elevated window', async () => {
+    const host = ops({
+      windowFromPoint: () => 77,
+      targetBlocksInput: (hwnd) => hwnd === 77,
+    })
+    const backend = createWindowsDesktopBackend(host)
+    const screen = { index: 0, bounds, scale: 1 }
+    await expect(backend.click({ screen, position: [0, 0], button: 'left', count: 1 })).rejects.toThrow(/elevated/u)
+    // The pointer moved, but nothing was pressed.
+    expect(host.calls).toEqual(['move:10,20'])
+  })
+
+  it('clicks when the point is on a normal window even though the foreground is elevated', async () => {
+    const checked: number[] = []
+    const host = ops({
+      foregroundWindowId: () => 77,
+      windowFromPoint: () => 12,
+      targetBlocksInput: (hwnd) => {
+        checked.push(hwnd)
+        return hwnd === 77
+      },
+    })
+    const backend = createWindowsDesktopBackend(host)
+    const screen = { index: 0, bounds, scale: 1 }
+    await backend.click({ screen, position: [0, 0], button: 'left', count: 1 })
+    // The window under the point decides, exactly once per click.
+    expect(checked).toEqual([12])
+    expect(host.calls).toEqual(['move:10,20', 'down', 'up'])
+  })
+
+  it('refuses drag, scroll, long press, and typing into an elevated window', async () => {
+    const host = ops({
+      windowFromPoint: () => 77,
+      targetBlocksInput: (hwnd) => hwnd === 77,
+    })
+    const backend = createWindowsDesktopBackend(host)
+    const screen = { index: 0, bounds, scale: 1 }
+    await expect(backend.drag({
+      startScreen: screen, startPosition: [0, 0], endScreen: screen, endPosition: [1000, 1000],
+    })).rejects.toThrow(/elevated/u)
+    await expect(backend.scroll({ screen, position: [0, 0], direction: 'down', scrollLevel: 1 })).rejects.toThrow(/elevated/u)
+    await expect(backend.longPress({ screen, position: [0, 0], durationSeconds: 0.1 })).rejects.toThrow(/elevated/u)
+    await expect(backend.typeText({ screen, position: [0, 0], text: 'hi', replace: false, submit: false })).rejects.toThrow(/elevated/u)
+    expect(host.calls).not.toContain('down')
+    expect(host.calls).not.toContain('wheel:-120')
+    expect(host.calls).not.toContain('clip:hi')
+  })
+
+  it('refuses a hotkey into an elevated observed window before moving focus', async () => {
+    const host = ops({
+      foregroundWindowId: () => 9,
+      focusWindow: (hwnd) => {
+        host.calls.push(`focus:${String(hwnd)}`)
+        return true
+      },
+      targetBlocksInput: (hwnd) => hwnd === 5,
+    })
+    const backend = createWindowsDesktopBackend(host)
+    await backend.listScreens()
+    await expect(backend.hotkey({ keys: ['ctrl', 'c'] })).rejects.toThrow(/elevated/u)
+    // Focus never moved and no key was posted.
+    expect(host.calls.some((call) => call.startsWith('focus:'))).toBe(false)
+    expect(host.calls.some((call) => call.startsWith('key:'))).toBe(false)
+  })
+
+  it('posts keys without a target check when nothing was observed', async () => {
+    const checked: number[] = []
+    const host = ops({
+      targetBlocksInput: (hwnd) => {
+        checked.push(hwnd)
+        return true
+      },
+    })
+    const backend = createWindowsDesktopBackend(host)
+    await backend.hotkey({ keys: ['escape'] })
+    expect(checked).toEqual([])
+    expect(host.calls).toEqual(['key:27:down:0', 'key:27:up:0'])
   })
 
   it('wraps capture failures and returns no screen when nothing is operable', async () => {
