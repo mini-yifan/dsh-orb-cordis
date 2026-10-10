@@ -10,7 +10,10 @@ async function vendorModule() {
   loading ??= import('./vendor/shiki.js').then((module) => {
     vendor = module
     module.subscribeGrammarLoaded(() => {
-      for (const root of tracked) upgradeCodeBlocks(root)
+      for (const ref of tracked) {
+        const root = ref.deref()
+        if (root) void upgradeCodeBlocks(root, { track: false })
+      }
     })
     return module
   }, () => {
@@ -22,9 +25,9 @@ async function vendorModule() {
 }
 
 /** Replace plain code-block bodies with shiki HTML where a grammar is ready. */
-export async function upgradeCodeBlocks(root) {
+export async function upgradeCodeBlocks(root, { track = true } = {}) {
   if (root === null || typeof root.querySelectorAll !== 'function') return
-  tracked.add(new WeakRef(root))
+  if (track) tracked.add(new WeakRef(root))
   const module = await vendorModule()
   if (module === undefined) return
   for (const block of root.querySelectorAll('.cb[data-code-lang]')) {

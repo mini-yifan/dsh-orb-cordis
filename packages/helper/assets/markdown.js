@@ -257,6 +257,8 @@ export function renderMarkdown(text, options = {}) {
       const next = lines[index] ?? ''
       if (next.trim() === '') break
       if (paragraph.length > 0 && isBlockStart(next)) break
+      // A table glued under a prose line is its own block; leave it to the table branch.
+      if (paragraph.length > 0 && isTableRow(next) && isSeparatorRow(lines[index + 1] ?? '')) break
       paragraph.push(next)
       index += 1
     }
@@ -272,11 +274,30 @@ function isBlockStart(line) {
     || /^ {0,3}(?:\*{3,}|-{3,}|_{3,})\s*$/.test(line)
 }
 
+/**
+ * CJK runs (ideographs, kana, hangul, and their punctuation) read as one unit:
+ * a soft break inside them must not inject a space.
+ */
+const CJK_CHAR = /[\u2e80-\u303f\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef\u{20000}-\u{2fa1f}]/u
+
+/** CommonMark soft breaks render as a space, except between two CJK characters. */
+function softBreakSpace(previous, next) {
+  if (previous === '' || next === '' || /\s$/.test(previous)) return ''
+  const left = [...previous].at(-1) ?? ''
+  const right = [...next][0] ?? ''
+  return CJK_CHAR.test(left) && CJK_CHAR.test(right) ? '' : ' '
+}
+
 function renderParagraph(lines) {
-  return lines
-    .map((line, position) => {
-      const hard = /(\s{2,}|\\)$/.test(line) && position < lines.length - 1
-      return renderInline(hard ? line.replace(/(\s{2,}|\\)$/, '') : line) + (hard ? '<br>' : '')
-    })
-    .join('')
+  let html = ''
+  let previous
+  for (let position = 0; position < lines.length; position += 1) {
+    const line = lines[position] ?? ''
+    const hard = /(\s{2,}|\\)$/.test(line) && position < lines.length - 1
+    const text = hard ? line.replace(/(\s{2,}|\\)$/, '') : line
+    if (previous !== undefined && !previous.hard) html += softBreakSpace(previous.text, text)
+    html += renderInline(text) + (hard ? '<br>' : '')
+    previous = { text, hard }
+  }
+  return html
 }

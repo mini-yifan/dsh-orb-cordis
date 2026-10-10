@@ -502,6 +502,30 @@ export function diffLines({ oldText, newText }) {
   return lines
 }
 
+/* ----- Copy text for the tool cards ----- */
+
+/** Terminal card: the command line, plus its output when there is one. */
+export function terminalCopyText(model) {
+  const output = model.output ?? ''
+  return output === '' ? model.command : `${model.command}\n${output}`
+}
+
+/** Read card: the file body only; the gutter numbers stay on screen. */
+export function readCopyText(model) {
+  return model.lines.map((line) => line.text).join('\n')
+}
+
+/** Search card: the summary line, then every result under its file path. */
+export function searchCopyText(card, summary) {
+  if (card.kind !== 'matches') return [summary, ...card.paths].join('\n')
+  const lines = [summary]
+  for (const file of card.files) {
+    lines.push(file.path)
+    for (const match of file.matches) lines.push(`${match.lineNumber}  ${match.line}`)
+  }
+  return lines.join('\n')
+}
+
 /* ----- Localized copy for the card chrome ----- */
 
 export function toolLabels(zh) {

@@ -1,8 +1,8 @@
 import { renderMarkdown } from './markdown.js'
 import {
   processLabel, reasoningSummary, processTitle, toolTitle, toolLabels, classifyTool, deriveSummary,
-  formatToolBody, terminalCardModel, terminalFailed, readCardModel,
-  searchCardModel, webCardModel, diffCardModel, diffTotals, diffLines,
+  formatToolBody, terminalCardModel, terminalFailed, terminalCopyText, readCardModel, readCopyText,
+  searchCardModel, searchCopyText, webCardModel, diffCardModel, diffTotals, diffLines,
   usageLabels, tokenUsageTotal, formatTokenCount,
 } from './transcript-model.js'
 import { upgradeCodeBlocks } from './highlight.js'
@@ -987,6 +987,19 @@ function main() {
     }
   }
 
+  /**
+   * Wire a card's own copy button (terminal, read, search) to the text it owns.
+   * Cards are rebuilt on every update, so the binding happens at construction;
+   * the wired flag keeps the markdown pass from re-binding the button.
+   */
+  function copyText(button, text) {
+    button.dataset.wired = 'true'
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      copyToClipboard(text, button)
+    })
+  }
+
   function wireCopyButtons(root) {
     for (const button of root.querySelectorAll('.cb-copy, .term-copy, .search-copy')) {
       if (button.dataset.wired === 'true') continue
@@ -1018,25 +1031,20 @@ function main() {
     const show = rows.slice(0, cap)
     for (const row of show) target.append(row)
     if (rows.length <= cap) return
+    const hidden = rows.slice(cap)
     const expand = document.createElement('button')
     expand.type = 'button'
     expand.className = 'card-expand'
-    expand.textContent = `… ${rows.length - show.length}`
+    expand.textContent = `… ${hidden.length}`
     let open = false
     expand.addEventListener('click', (event) => {
       event.stopPropagation()
       open = !open
-      for (const row of rows.slice(show.length)) {
-        if (open) target.append(row)
+      for (const row of hidden) {
+        if (open) target.insertBefore(row, expand)
         else row.remove()
       }
-      expand.remove()
-      if (!open) {
-        for (const row of rows.slice(cap)) row.remove()
-        target.append(expand)
-      }
-      expand.textContent = open ? chatLabels.collapse : `… ${rows.length - show.length}`
-      if (!open) return
+      expand.textContent = open ? chatLabels.collapse : `… ${hidden.length}`
     })
     target.append(expand)
   }
@@ -1088,6 +1096,7 @@ function main() {
       }
       card.append(output)
     }
+    copyText(copy, terminalCopyText(model))
     return card
   }
 
@@ -1155,6 +1164,7 @@ function main() {
     cappedRows(code, rows, CHAT_READ_MAX_LINES)
     pre.append(code)
     card.append(pre)
+    copyText(copy, readCopyText(model))
     return card
   }
 
@@ -1213,10 +1223,11 @@ function main() {
       empty.className = 'search-empty'
       empty.textContent = chatLabels.noResults
       card.append(empty)
-      return card
+    } else {
+      cappedRows(body, rows, CHAT_SEARCH_MAX_LINES)
+      card.append(body)
     }
-    cappedRows(body, rows, CHAT_SEARCH_MAX_LINES)
-    card.append(body)
+    copyText(copy, searchCopyText(cardModel, summary.textContent))
     return card
   }
 
@@ -1248,7 +1259,7 @@ function main() {
         truncated.textContent = chatLabels.contentTruncated
         meta.append(truncated)
       }
-      fetch.append(url, meta)
+      fetch.append(meta)
       card.append(fetch)
       return card
     }
@@ -1581,9 +1592,9 @@ function main() {
         const actions = document.createElement('div')
         actions.className = 'am-actions'
         actions.hidden = true
-        const copyText = { text: '' }
-        messageCopyText.set(node, copyText)
-        actions.append(messageCopyButton(() => copyText.text))
+        const copyRecord = { text: '' }
+        messageCopyText.set(node, copyRecord)
+        actions.append(messageCopyButton(() => copyRecord.text))
         const usage = document.createElement('span')
         usage.className = 'am-usage'
         usage.hidden = true
@@ -1638,10 +1649,15 @@ function main() {
       const list = staged.splice(0)
       const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 120
       for (const item of list) {
-        if (item.type === 'block') upsertBlock(item)
-        else if (item.type === 'block-drop') removeBlock(item.key)
-        else if (item.type === 'turn') setRunning(item.running === true, item.interrupted === true)
-        else if (item.type === 'reset') clearTranscript()
+        // A card that fails to render must not swallow the rest of the frame.
+        try {
+          if (item.type === 'block') upsertBlock(item)
+          else if (item.type === 'block-drop') removeBlock(item.key)
+          else if (item.type === 'turn') setRunning(item.running === true, item.interrupted === true)
+          else if (item.type === 'reset') clearTranscript()
+        } catch (error) {
+          console.error('dsh-orb: transcript frame item failed', item, error)
+        }
       }
       if (nearBottom) transcript.scrollTop = transcript.scrollHeight
     })
@@ -1722,11 +1738,11 @@ function main() {
     const status = document.createElement('span')
     status.className = 'agent-chip-status'
     if (item.state === 'completed') {
-      status.innerHTML = icon(CHECK)
+      status.replaceChildren(icon(CHECK))
     } else if (item.state === 'stopped') {
-      status.innerHTML = icon(AGENT_STOP_ICON)
+      status.replaceChildren(icon(AGENT_STOP_ICON))
     } else if (item.state === 'ended') {
-      status.innerHTML = icon(AGENT_ALERT_ICON)
+      status.replaceChildren(icon(AGENT_ALERT_ICON))
     } else {
       const spinner = document.createElement('span')
       spinner.className = 'agent-spinner'

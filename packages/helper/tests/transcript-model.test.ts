@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { processLabel, reasoningSummary, classifyTool, deriveSummary, formatToolBody, terminalCardModel, terminalFailed, searchCardModel, webCardModel, diffCardModel, diffTotals, diffLines, processTitle, toolTitle, readCardModel, usageLabels, tokenUsageTotal, formatTokenCount } from '../assets/transcript-model.js'
+import { processLabel, reasoningSummary, classifyTool, deriveSummary, formatToolBody, terminalCardModel, terminalFailed, terminalCopyText, searchCardModel, searchCopyText, webCardModel, diffCardModel, diffTotals, diffLines, processTitle, toolTitle, readCardModel, readCopyText, usageLabels, tokenUsageTotal, formatTokenCount } from '../assets/transcript-model.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -171,6 +171,24 @@ describe('turn usage pill', () => {
     assert.equal(zh.count(formatTokenCount(1234)), '1.2K tok')
     assert.equal(zh.title, '本轮用量')
     assert.equal(en.title, 'Turn usage')
+  })
+})
+
+describe('tool card copy text', () => {
+  it('copies only the command when a terminal card has no output', () => {
+    assert.equal(terminalCopyText({ command: 'pnpm test', output: '' }), 'pnpm test')
+    assert.equal(terminalCopyText({ command: 'ls', output: 'a\nb' }), 'ls\na\nb')
+  })
+
+  it('keeps the read body lines but drops the gutter numbers', () => {
+    const text = readCopyText({ lines: [{ number: 4, text: 'alpha' }, { number: 5, text: 'beta' }] })
+    assert.equal(text, 'alpha\nbeta')
+  })
+
+  it('leads the search copy with the summary and every match', () => {
+    const card = { kind: 'matches', truncated: false, total: 2, files: [{ path: 'src/a.ts', matches: [{ lineNumber: 7, line: 'const a = 1' }] }] }
+    assert.equal(searchCopyText(card, '2 处匹配'), '2 处匹配\nsrc/a.ts\n7  const a = 1')
+    assert.equal(searchCopyText({ kind: 'paths', truncated: false, total: 1, paths: ['src/b.ts'] }, '1 个路径'), '1 个路径\nsrc/b.ts')
   })
 })
 

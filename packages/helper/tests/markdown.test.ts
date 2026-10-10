@@ -52,6 +52,24 @@ describe('transcript markdown', () => {
     assert.match(html, /<input type="checkbox" disabled>/)
   })
 
+  it('joins soft line breaks with a space, except between CJK characters', () => {
+    assert.match(renderMarkdown('Hello\nworld'), /<p>Hello world<\/p>/)
+    assert.match(renderMarkdown('结果\nOK'), /<p>结果 OK<\/p>/)
+    assert.match(renderMarkdown('注意\n如下'), /<p>注意如下<\/p>/)
+    assert.match(renderMarkdown('第一句。\n第二句'), /<p>第一句。第二句<\/p>/)
+    // Hard breaks keep their <br> and never gain a space.
+    assert.match(renderMarkdown('a  \nb'), /<p>a<br>b<\/p>/)
+  })
+
+  it('reads a table glued directly under a prose line as a table', () => {
+    const glued = renderMarkdown('结果如下\n| x | y |\n| --- | --- |\n| 1 | 2 |')
+    assert.match(glued, /<p>结果如下<\/p>/)
+    assert.match(glued, /<div class="md-table-scroll md-table-fill"><table><thead><tr><th>x<\/th><th>y<\/th><\/tr><\/thead>/)
+    const spaced = renderMarkdown('注意\n\n| x | y |\n| --- | --- |\n| 1 | 2 |')
+    assert.match(spaced, /<p>注意<\/p>/)
+    assert.match(spaced, /<table>/)
+  })
+
   it('applies the compact variant wrapper', () => {
     const html = renderMarkdown('text', { compact: true })
     assert.match(html, /^<div class="md md-compact"><p>text<\/p><\/div>$/)
