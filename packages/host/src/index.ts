@@ -9,7 +9,9 @@ import { registerOrbRoutes } from './routes.ts'
 import { installOrbServices, watchOrbPermissions } from './services.ts'
 import { watchAppearance } from './appearance.ts'
 import { OrbRuntime, type OrbContext } from './orb.ts'
-import { UpdateChecker } from './update.ts'
+import { exemptReleaseAge, ownPackage, UpdateChecker } from './update.ts'
+import { KOFFI_DIR_ENV, ownPackageRoot, removeStaleStages, stageKoffi } from './native-images.ts'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 
 /** Cordis plugin name. */
 export const name = 'orb-host'
@@ -34,7 +36,18 @@ export type { OrbContext }
  */
 export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): void {
   logWebPort(ctx)
+  const own = ownPackage()
+  // Before anything loads koffi: a loaded addon inside the package locks it against
+  // the next update on Windows (see native-images.ts).
+  if (process.platform === 'win32' && own !== undefined) stageNativeImages()
   const store = new ProfileStore(profileDirectory(ctx))
+  // pnpm appends a `name@version` rule for every young release it installs and reads
+  // only the first rule per package name, so a profile that installed this plugin
+  // through the market or `dsh plugin install` holds an exemption that shadows the
+  // installed version — and then removing ANY other plugin fails with
+  // ERR_PNPM_RESOLUTION_POLICY_VIOLATIONS_UNHANDLED. Re-canonicalise the list at
+  // start, whatever route installed the version.
+  if (own !== undefined) exemptReleaseAge(store.dir, own.name)
   const tcc = new TccMonitor()
   const runtime = new OrbRuntime(ctx, store, { tcc })
   installOrbServices(ctx, store)
@@ -71,6 +84,18 @@ export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): vo
       runtime.halt()
     }
   })
+}
+
+/** Point every koffi loader at a copy outside the package and clear what failed updates left. */
+function stageNativeImages(): void {
+  const root = ownPackageRoot()
+  try {
+    const dir = stageKoffi(root, dshHomePath('dsh-orb', 'native'))
+    if (dir !== undefined) process.env[KOFFI_DIR_ENV] = dir
+  } catch (error) {
+    console.error(`dsh-orb: koffi stays in the package: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  removeStaleStages(root)
 }
 
 /** Print the loopback port. The authenticated URL contains credentials, so it is never logged. */

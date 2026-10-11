@@ -1,12 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { deferredDir, type DeferredInstall } from '../src/deferred-install.ts'
 import { ProfileStore } from '../src/preferences.ts'
-import { AUTO_CHECK_INTERVAL_MS, compareVersions, installSpec, ownPackage, registryTarballUrl, releaseTarballUrl, UpdateChecker, versionFromRegistry, versionFromRelease } from '../src/update.ts'
+import { AUTO_CHECK_INTERVAL_MS, compareVersions, exemptReleaseAge, installRegistry, installSpec, ownPackage, registryTarballUrl, releaseTarballUrl, UpdateChecker, versionFromRegistry, versionFromRelease, withReleaseAgeExclusion } from '../src/update.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'orb-update-'))
 after(() => { rmSync(root, { recursive: true, force: true }) })
@@ -22,11 +23,14 @@ function store(): ProfileStore {
 /** A manager that records the spec it was handed and answers with a scripted result. */
 function manager(result: Record<string, unknown> = { application: 'restart-required' }) {
   const specs: string[] = []
+  const registries: Array<string | undefined> = []
   return {
     specs,
+    registries,
     service: {
-      async installBundle(spec: string) {
+      async installBundle(spec: string, options?: { registry?: string }) {
         specs.push(spec)
+        registries.push(options?.registry)
         return result
       },
     },
@@ -39,17 +43,21 @@ function checker(options: {
   latest?: string | undefined
   result?: Record<string, unknown>
   notify?: (version: string) => void
+  mapped?: string[]
 }) {
   const fake = manager(options.result)
   const announced: string[] = []
+  const deferred: DeferredInstall[] = []
   const update = new UpdateChecker({
     store: options.store,
     manager: () => fake.service,
     notify: (version) => { announced.push(version); options.notify?.(version) },
     fetchLatest: async () => options.latest,
     own: 'own' in options ? options.own : { name: 'dsh-orb', version: '0.1.0' },
+    mappedImages: () => options.mapped ?? [],
+    deferInstall: (job) => { deferred.push(job) },
   })
-  return { update, announced, specs: fake.specs }
+  return { update, announced, specs: fake.specs, registries: fake.registries, deferred }
 }
 
 /** A local http mock answering `routes[path]` with `[status, body]`; other paths hang up. */
@@ -112,6 +120,100 @@ describe('update versions', () => {
   })
 })
 
+describe('release-age exemption', () => {
+  it('replaces a versioned rule with the bare name, written first', () => {
+    const before = 'packages:\n  - .\n\nnodeLinker: hoisted\nminimumReleaseAgeExclude:\n  - dsh-orb@0.1.0\n'
+    assert.equal(
+      withReleaseAgeExclusion(before, 'dsh-orb'),
+      'packages:\n  - .\n\nnodeLinker: hoisted\nminimumReleaseAgeExclude:\n  - dsh-orb\n',
+    )
+  })
+
+  it('adds the key when the file has none', () => {
+    assert.equal(
+      withReleaseAgeExclusion('packages:\n  - .\n', 'dsh-orb'),
+      'packages:\n  - .\nminimumReleaseAgeExclude:\n  - dsh-orb\n',
+    )
+  })
+
+  it('keeps quiet when the package is already exempt by name', () => {
+    assert.equal(withReleaseAgeExclusion('minimumReleaseAgeExclude:\n  - dsh-orb\n', 'dsh-orb'), undefined)
+    assert.equal(withReleaseAgeExclusion('minimumReleaseAgeExclude:\n  - dsh-orb\n  - other\n', 'dsh-orb'), undefined)
+  })
+
+  it('collapses every rule a profile collected for one package into the first bare name', () => {
+    // The shape pnpm leaves behind: it appends one `name@version` rule per young
+    // release, and reads only the first rule per name, so the bare entry in the
+    // middle exempts nothing (pnpm #732) — which is what blocked uninstalls.
+    const before =
+      'packages:\n  - .\nminimumReleaseAgeExclude:\n  - dsh-orb@0.1.0\n  - dsh-orb@0.1.2\n  - dsh-orb\n  - dsh-orb@0.1.4\n  - dsh-orb@0.1.3\n  - other@1.0.0 || 2.0.0\n'
+    assert.equal(
+      withReleaseAgeExclusion(before, 'dsh-orb'),
+      'packages:\n  - .\nminimumReleaseAgeExclude:\n  - dsh-orb\n  - other@1.0.0 || 2.0.0\n',
+    )
+  })
+
+  it('drops a rule pnpm appends behind the bare name', () => {
+    assert.equal(
+      withReleaseAgeExclusion('minimumReleaseAgeExclude:\n  - dsh-orb\n  - dsh-orb@0.1.4\n', 'dsh-orb'),
+      'minimumReleaseAgeExclude:\n  - dsh-orb\n',
+    )
+  })
+
+  it('quotes a scoped name and leaves other entries untouched', () => {
+    assert.equal(
+      withReleaseAgeExclusion('minimumReleaseAgeExclude:\n\t- other\n', '@scope/orb'),
+      "minimumReleaseAgeExclude:\n\t- '@scope/orb'\n\t- other\n",
+    )
+  })
+
+  it('adds the bare name even when only versioned entries exist', () => {
+    assert.equal(
+      withReleaseAgeExclusion('minimumReleaseAgeExclude:\n  - dsh-orb@0.1.2\n', 'dsh-orb'),
+      'minimumReleaseAgeExclude:\n  - dsh-orb\n',
+    )
+  })
+
+  it('leaves an unfamiliar file shape alone', () => {
+    assert.equal(withReleaseAgeExclusion('minimumReleaseAgeExclude: [dsh-orb]\n', 'dsh-orb'), undefined)
+  })
+
+  it('writes the exemption into the profile before installing', async () => {
+    const profile = store()
+    writeFileSync(
+      join(profile.dir, 'pnpm-workspace.yaml'),
+      'packages:\n  - .\nminimumReleaseAgeExclude:\n  - dsh-orb@0.1.0\n',
+    )
+    const { update } = checker({ store: profile, latest: '0.2.0' })
+    await update.check()
+    await update.install()
+    assert.equal(
+      readFileSync(join(profile.dir, 'pnpm-workspace.yaml'), 'utf8'),
+      'packages:\n  - .\nminimumReleaseAgeExclude:\n  - dsh-orb\n',
+    )
+  })
+
+  it('repairs the profile at start, whatever route installed the version', () => {
+    const profile = store()
+    // What the market's or the plugin manager's own `pnpm add` leaves behind:
+    // pnpm's appended rule sits behind the first rule, which keeps governing.
+    const broken = 'packages:\n  - .\nminimumReleaseAgeExclude:\n  - dsh-orb@0.1.4\n  - dsh-orb@0.1.5\n'
+    writeFileSync(join(profile.dir, 'pnpm-workspace.yaml'), broken)
+    exemptReleaseAge(profile.dir, 'dsh-orb')
+    const repaired = 'packages:\n  - .\nminimumReleaseAgeExclude:\n  - dsh-orb\n'
+    assert.equal(readFileSync(join(profile.dir, 'pnpm-workspace.yaml'), 'utf8'), repaired)
+    // Idempotent: starting again changes nothing.
+    exemptReleaseAge(profile.dir, 'dsh-orb')
+    assert.equal(readFileSync(join(profile.dir, 'pnpm-workspace.yaml'), 'utf8'), repaired)
+  })
+
+  it('leaves a profile without a workspace file alone', () => {
+    const profile = store()
+    exemptReleaseAge(profile.dir, 'dsh-orb')
+    assert.equal(existsSync(join(profile.dir, 'pnpm-workspace.yaml')), false)
+  })
+})
+
 describe('update sources', () => {
   it('reads a registry dist-tag document and its tarball address', () => {
     assert.equal(versionFromRegistry('{"name":"dsh-orb","version":"0.2.0"}'), '0.2.0')
@@ -122,21 +224,24 @@ describe('update sources', () => {
       registryTarballUrl('https://registry.npmmirror.com', 'dsh-orb', '0.2.0'),
       'https://registry.npmmirror.com/dsh-orb/-/dsh-orb-0.2.0.tgz',
     )
+    assert.equal(installSpec('0.2.0', 'dsh-orb'), 'dsh-orb@0.2.0')
+    assert.equal(installSpec('v0.2.0-rc.1', 'dsh-orb'), 'dsh-orb@0.2.0-rc.1')
     assert.equal(
-      installSpec('0.2.0', undefined, 'dsh-orb'),
-      releaseTarballUrl('0.2.0'),
-      'GitHub stays the installer source when no registry answered',
+      installRegistry(undefined),
+      'https://registry.npmmirror.com',
+      'an unknown source asks the primary mirror first',
     )
+    assert.equal(installRegistry('https://registry.npmjs.org'), 'https://registry.npmjs.org')
     process.env.DSH_ORB_UPDATE_URL = 'http://127.0.0.1:9/downloads/dsh-orb-0.2.0.tgz'
     assert.equal(
-      installSpec('0.2.0', 'https://registry.npmmirror.com', 'dsh-orb'),
+      installSpec('0.2.0', 'dsh-orb'),
       'http://127.0.0.1:9/downloads/dsh-orb-0.2.0.tgz',
-      'the env override wins over the answering source',
+      'the env override wins over the version spec',
     )
     delete process.env.DSH_ORB_UPDATE_URL
   })
 
-  it('prefers a registry that answers and installs its tarball, over real HTTP', async () => {
+  it('prefers a registry that answers and installs that version from it, over real HTTP', async () => {
     const registry = await mockServer({ '/dsh-orb/latest': [200, '{"name":"dsh-orb","version":"0.3.0"}'] })
     try {
       await withEnv({ DSH_ORB_UPDATE_REGISTRIES: registry.base }, async () => {
@@ -153,7 +258,8 @@ describe('update sources', () => {
         assert.deepEqual(announced, ['0.3.0'])
         assert.equal(update.state().error, null)
         await update.install()
-        assert.deepEqual(fake.specs, [`${registry.base}/dsh-orb/-/dsh-orb-0.3.0.tgz`])
+        assert.deepEqual(fake.specs, ['dsh-orb@0.3.0'])
+        assert.deepEqual(fake.registries, [registry.base])
       })
     } finally {
       registry.close()
@@ -176,7 +282,8 @@ describe('update sources', () => {
         await update.check(true)
         assert.deepEqual(announced, ['0.4.0'], 'the second registry answered')
         await update.install()
-        assert.deepEqual(fake.specs, [`${registry.base}/dsh-orb/-/dsh-orb-0.4.0.tgz`])
+        assert.deepEqual(fake.specs, ['dsh-orb@0.4.0'])
+        assert.deepEqual(fake.registries, [registry.base])
       })
     } finally {
       registry.close()
@@ -200,9 +307,8 @@ describe('update sources', () => {
         await update.check(true)
         assert.deepEqual(announced, ['0.2.0'], 'the release answered after the registry 404ed')
         await update.install()
-        assert.deepEqual(fake.specs, [
-          'https://github.com/mini-yifan/dsh-orb-cordis/releases/download/plugin-v0.2.0/dsh-orb-0.2.0.tgz',
-        ])
+        assert.deepEqual(fake.specs, ['dsh-orb@0.2.0'])
+        assert.deepEqual(fake.registries, ['https://registry.npmmirror.com'], 'the version still installs from the primary mirror')
       })
     } finally {
       registry.close()
@@ -351,14 +457,13 @@ describe('update checker', () => {
     assert.equal(update.state().autoCheck, true)
   })
 
-  it('runs the official installer against the release tarball', async () => {
+  it('installer falls back to the primary mirror when no check source is known', async () => {
     const profile = store()
-    const { update, specs } = checker({ store: profile, latest: '0.2.0' })
+    const { update, specs, registries } = checker({ store: profile, latest: '0.2.0' })
     await update.check()
     await update.install()
-    assert.deepEqual(specs, [
-      'https://github.com/mini-yifan/dsh-orb-cordis/releases/download/plugin-v0.2.0/dsh-orb-0.2.0.tgz',
-    ])
+    assert.deepEqual(specs, ['dsh-orb@0.2.0'])
+    assert.deepEqual(registries, ['https://registry.npmmirror.com'], 'no check source still asks the primary mirror')
     const state = update.state()
     assert.equal(state.updating, false)
     assert.equal(state.error, null)
@@ -390,6 +495,97 @@ describe('update checker', () => {
     await blocked.update.install()
     assert.equal(blocked.update.state().error, 'build-blocked')
     assert.deepEqual(blocked.update.state().pendingBuilds, ['koffi'])
+
+    const diagnosed = checker({
+      store: profile,
+      latest: '0.2.0',
+      result: {
+        application: 'failed',
+        error: {
+          diagnostic: 'ERR_PNPM_NO_MATURE_MATCHING_VERSION: 1 version does not meet the minimumReleaseAge constraint\ndetail below',
+        },
+      },
+    })
+    await diagnosed.update.check()
+    await diagnosed.update.install()
+    assert.equal(
+      diagnosed.update.state().error,
+      'ERR_PNPM_NO_MATURE_MATCHING_VERSION: 1 version does not meet the minimumReleaseAge constraint',
+      'a codeless pnpm failure keeps its first diagnostic line',
+    )
+
+    const wrapped = checker({
+      store: profile,
+      latest: '0.2.0',
+      result: {
+        application: 'failed',
+        error: {
+          code: 'operation-error',
+          diagnostic: 'Progress: resolved 1, reused 0, downloaded 0, added 0\n[ERR_PNPM_MISSING_TARBALL_INTEGRITY] Cannot install package "dsh-orb@https://example.invalid/dsh-orb.tgz"\nmore',
+        },
+      },
+    })
+    await wrapped.update.check()
+    await wrapped.update.install()
+    assert.equal(
+      wrapped.update.state().error,
+      '[ERR_PNPM_MISSING_TARBALL_INTEGRITY] Cannot install package "dsh-orb@https://example.invalid/dsh-orb.tgz"',
+      'the generic operation-error wrapper yields to the pnpm line',
+    )
+  })
+
+  it('waits for the app to quit instead of replacing a package whose addon is loaded', async () => {
+    const profile = store()
+    const { update, specs, deferred } = checker({ store: profile, latest: '0.2.0', mapped: ['node_modules/koffi/build/koffi.node'] })
+    await update.check()
+    await update.install()
+    assert.deepEqual(specs, [], 'pnpm never sees a package it cannot replace')
+    assert.deepEqual(deferred, [{
+      profileDir: profile.dir,
+      spec: 'dsh-orb@0.2.0',
+      registry: 'https://registry.npmmirror.com',
+      parentPid: process.pid,
+    }])
+    const state = update.state()
+    assert.equal(state.error, null)
+    assert.equal(state.deferred, true)
+    assert.equal(state.restartRequired, true)
+    assert.equal(state.available, false, 'the button does not queue the same version twice')
+    assert.equal(state.installedVersion, '0.1.0', 'nothing is on disk yet')
+    await update.install()
+    assert.equal(deferred.length, 1)
+  })
+
+  it('hands a locked-file failure to the after-exit install', async () => {
+    const profile = store()
+    const { update, specs, deferred } = checker({
+      store: profile,
+      latest: '0.2.0',
+      result: {
+        application: 'failed',
+        error: {
+          code: 'operation-error',
+          diagnostic: '[ERR_PNPM_EPERM] [importPackage C:\\p\\node_modules\\dsh-orb] EPERM, Permission denied: \\\\?\\C:\\p\\node_modules\\dsh-orb_tmp_1_1\\node_modules',
+        },
+      },
+    })
+    await update.check()
+    await update.install()
+    assert.deepEqual(specs, ['dsh-orb@0.2.0'])
+    assert.equal(deferred.length, 1, 'the half-replaced package is repaired once the app quits')
+    assert.equal(update.state().error, null)
+    assert.equal(update.state().deferred, true)
+  })
+
+  it('reports a deferred install that failed after the app quit', () => {
+    const profile = store()
+    mkdirSync(deferredDir(profile.dir), { recursive: true })
+    const result = join(deferredDir(profile.dir), 'result.json')
+    writeFileSync(result, JSON.stringify({ spec: 'dsh-orb@0.2.0', ok: false, detail: 'ERR_PNPM_FETCH_404 not found' }))
+    const { update } = checker({ store: profile, latest: '0.2.0' })
+    assert.equal(update.state().error, 'ERR_PNPM_FETCH_404 not found')
+    assert.equal(existsSync(result), false, 'the outcome is reported once')
+    assert.equal(checker({ store: profile, latest: '0.2.0' }).update.state().error, null)
   })
 
   it('keeps working without the official plugin manager', async () => {

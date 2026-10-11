@@ -261,15 +261,16 @@ describe('docked tabs in usable work areas', () => {
   }
 })
 
-describe('edge-contact signals with display recovery', () => {
-  for (const signal of ['window', 'renderer'] as const) {
+describe('requested edge-contact placement with display recovery', () => {
+  for (const signal of ['window', 'requested'] as const) {
     for (const side of ['left', 'right'] as const) {
       it(`uses the work area for ${side} contact detected from the ${signal} origin`, async (t) => {
         t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
         const display = pair(-1440, -900, 1440, 900, { x: -1400, y: -870, width: 1360, height: 830 })
         const contact = { x: side === 'left' ? -1440 : -BALL_SIZE, y: -10 }
         const f = fixture([display], signal === 'window' ? contact.x : -700, signal === 'window' ? contact.y : -400)
-        const docking = f.placement.clamp(true, signal === 'renderer' ? contact : undefined)
+        if (signal === 'requested') f.placement.move(contact.x, contact.y)
+        const docking = f.placement.clamp(true)
         t.mock.timers.tick(300)
         assert.equal((await docking).docked, side)
         assertRectInside(f.bounds, display.workArea)
@@ -277,22 +278,28 @@ describe('edge-contact signals with display recovery', () => {
     }
   }
 
-  it('uses the renderer display work area when the window origin belongs to another display', async (t) => {
+  it('uses the requested placement display work area in a mixed-DPI layout', async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
-    const remoteDisplay = { ...pair(-1463, 0, 1463, 914, { x: -1423, y: 20, width: 1383, height: 854 }), scaleFactor: 1 }
+    const targetDisplay = { ...pair(-1463, 0, 1463, 914, { x: -1423, y: 20, width: 1383, height: 854 }), scaleFactor: 1.2 }
     const scaledPrimary = { ...primary, scaleFactor: 1.5 }
-    const f = fixture([scaledPrimary, remoteDisplay], 500, 400)
-    const docking = f.placement.clamp(true, { x: remoteDisplay.bounds.x, y: 800 })
+    const f = fixture([scaledPrimary, targetDisplay], 500, 400)
+    f.placement.move(targetDisplay.bounds.x, 800)
+    // Windows applies the full transparent window inside the target display.
+    f.bounds.x = targetDisplay.bounds.x
+    f.bounds.width = 97
+    f.bounds.height = 97
+    const docking = f.placement.clamp(true)
     t.mock.timers.tick(300)
     assert.equal((await docking).docked, 'left')
-    assertRectInside(f.bounds, remoteDisplay.workArea)
-    assert.equal(f.bounds.x, remoteDisplay.workArea.x)
+    assertRectInside(f.bounds, targetDisplay.workArea)
+    assert.equal(f.bounds.x, targetDisplay.workArea.x)
   })
 
-  it('does not let renderer-triggered docking overwrite recovery to the remaining monitor', async (t) => {
+  it('does not let requested docking overwrite recovery to the remaining monitor', async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
     const f = fixture([left, primary], 500, 400)
-    const docking = f.placement.clamp(true, { x: left.bounds.x, y: 600 })
+    f.placement.move(left.bounds.x, 600)
+    const docking = f.placement.clamp(true)
     t.mock.timers.tick(80)
     const remaining = pair(0, 0, 1920, 1080, { x: 40, y: 20, width: 1840, height: 1020 })
     f.displays = [remaining]
@@ -305,29 +312,87 @@ describe('edge-contact signals with display recovery', () => {
     assert.equal(f.window.visible, false)
   })
 
-  it('ignores non-finite and out-of-range renderer fallback origins', async () => {
+  it('ignores the removed renderer-origin argument, including valid edge coordinates', async () => {
     const f = fixture([primary], 500, 400)
     const before = { ...f.bounds }
     for (const origin of [
-      { x: Number.NaN, y: 400 }, { x: 0, y: Number.POSITIVE_INFINITY },
+      { x: 0, y: 400 }, { x: Number.NaN, y: 400 }, { x: 0, y: Number.POSITIVE_INFINITY },
       { x: 100_001, y: 400 }, { x: -100_001, y: 400 },
     ]) {
-      assert.equal((await f.placement.clamp(true, origin)).docked, undefined)
+      const legacyClamp = f.placement.clamp as unknown as (canDock: boolean, removedOrigin: unknown) => Promise<{ docked?: string }>
+      assert.equal((await legacyClamp.call(f.placement, true, origin)).docked, undefined)
       assert.deepEqual(f.bounds, before)
     }
   })
 
-  it('does not use renderer edge contact when docking is disabled', async () => {
+  it('does not dock a requested edge contact when docking is disabled', async () => {
     const f = fixture([primary], 500, 400)
-    assert.equal((await f.placement.clamp(false, { x: 0, y: 400 })).docked, undefined)
+    f.placement.move(0, 400, false)
+    assert.equal((await f.placement.clamp(false)).docked, undefined)
     assertBallInside(f.ball(), primary.workArea)
   })
 
-  it('does not dock at a shared display seam from the renderer signal', async () => {
+  it('does not dock a requested placement at a shared display seam', async () => {
     const displays = [pair(0, 0, 1440, 900), pair(1440, 0, 1920, 1080)]
     const f = fixture(displays, 500, 400)
-    assert.equal((await f.placement.clamp(true, { x: 1440, y: 400 })).docked, undefined)
-    assertBallInside(f.ball(), displays[0]!.workArea)
+    f.placement.move(1440, 400)
+    assert.equal((await f.placement.clamp(true)).docked, undefined)
+    assertBallInside(f.ball(), displays[1]!.workArea)
+  })
+})
+
+describe('display recovery during cursor gestures', () => {
+  for (const expanded of [false, true]) {
+    it(`invalidates an active ${expanded ? 'expanded' : 'collapsed'} drag after topology recovery`, async () => {
+      const f = fixture([left, primary], -1000, 400)
+      f.placement.setStrip(AGENT_STRIP_WIDTH)
+      if (expanded) f.placement.setExpanded(true)
+      f.placement.press({ x: -970, y: 430 })
+      f.placement.beginDrag()
+      f.placement.dragTo({ x: -870, y: 450 }, false)
+      f.displays = [primary]
+      f.placement.recoverDisplays(f.displays)
+      const recovered = { ...f.bounds }
+      f.placement.dragTo({ x: -1200, y: 100 }, false)
+      await f.placement.endDrag({ x: -1200, y: 100 }, false)
+      assert.deepEqual(f.bounds, recovered, 'late drag signals must not overwrite the recovered placement')
+      f.placement.recoverDisplays(f.displays)
+      assert.deepEqual(f.bounds, recovered)
+      assert.equal(f.window.visible, false)
+    })
+  }
+
+  it('discards a press that has not reached the drag threshold when the work area changes', async () => {
+    const f = fixture([primary], 500, 400)
+    f.placement.press({ x: 530, y: 430 })
+    const changed = pair(0, 0, 1920, 1080, { x: 40, y: 30, width: 1840, height: 1000 })
+    f.displays = [changed]
+    f.placement.recoverDisplays(f.displays)
+    const recovered = { ...f.bounds }
+    f.placement.beginDrag()
+    f.placement.dragTo({ x: 900, y: 600 }, false)
+    await f.placement.endDrag({ x: 900, y: 600 }, false)
+    assert.deepEqual(f.bounds, recovered)
+    // A new press after recovery starts a usable gesture in the new DIP layout.
+    f.placement.press({ x: f.ball().x + 30, y: f.ball().y + 30 })
+    f.placement.beginDrag()
+    f.placement.dragTo({ x: 730, y: 530 }, false)
+    await f.placement.endDrag({ x: 730, y: 530 }, false)
+    assert.deepEqual(f.ball(), { x: 700, y: 500 })
+  })
+
+  it('clears a stale requested origin so a recovered free ball does not dock on a removed edge', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+    const f = fixture([left, primary], -1200, 400)
+    f.placement.move(-1200, 400, false)
+    const remaining = pair(0, 0, 1920, 1080, { x: 40, y: 30, width: 1840, height: 1000 })
+    f.displays = [remaining]
+    f.placement.recoverDisplays(f.displays)
+    const recovered = { ...f.bounds }
+    const clamping = f.placement.clamp()
+    t.mock.timers.tick(300)
+    assert.equal((await clamping).docked, undefined)
+    assert.deepEqual(f.bounds, recovered)
   })
 })
 

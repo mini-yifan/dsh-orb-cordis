@@ -87,13 +87,11 @@ function runner(options: {
       }
       return { stdout: '', stderr: '' }
     }
-    if (file === '/usr/sbin/screencapture' || file === macosSckCaptureHelperPath() || file === '/usr/bin/sips') {
+    if (file === '/usr/sbin/screencapture' || file === macosSckCaptureHelperPath()) {
       if (options.capture instanceof Error) throw options.capture
       const output = file === macosSckCaptureHelperPath()
         ? args.find(arg => arg.startsWith('--out='))?.slice('--out='.length)
-        : file === '/usr/bin/sips'
-          ? args[args.indexOf('--out') + 1]
-          : args.at(-1)
+        : args.at(-1)
       if (typeof output !== 'string') throw new Error('missing capture path')
       await writeCaptureFile(output, options.capture ?? FAKE_DESKTOP_PNG)
       return { stdout: '', stderr: '' }
@@ -182,7 +180,7 @@ describe('macOS backend with an injected runner', () => {
     }])
   })
 
-  it('captures JPEG bytes written by screencapture plus sips crop', async () => {
+  it('captures the observed rectangle with one screencapture region call', async () => {
     const files: string[] = []
     const args: string[][] = []
     const backend = createMacosDesktopBackend(runner({ files, args }))
@@ -192,9 +190,9 @@ describe('macOS backend with an injected runner', () => {
     const captured = await backend.capture(screen!)
     expect(captured.mediaType).toBe('image/png')
     expect(captured.data).toEqual(FAKE_DESKTOP_PNG)
-    expect(files).toEqual(['/usr/sbin/screencapture', '/usr/bin/sips'])
-    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-t', 'jpg'])
-    expect(args[1]?.slice(0, 6)).toEqual(['--cropOffset', '0', '0', '-c', '100', '200'])
+    expect(files).toEqual(['/usr/sbin/screencapture'])
+    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '0,0,100,50'])
+    expect(args[0]?.slice(4, 6)).toEqual(['-t', 'jpg'])
   })
 
   it('captures a screen rectangle when inspect reports open menus', async () => {
@@ -215,9 +213,8 @@ describe('macOS backend with an injected runner', () => {
     files.length = 0
     args.length = 0
     await backend.capture(screen!)
-    expect(files).toEqual(['/usr/sbin/screencapture', '/usr/bin/sips'])
-    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-t', 'jpg'])
-    expect(args[1]?.slice(0, 6)).toEqual(['--cropOffset', '40', '20', '-c', '600', '800'])
+    expect(files).toEqual(['/usr/sbin/screencapture'])
+    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '10,20,400,300'])
   })
 
   it('captures a screen rectangle when the surface has no window id', async () => {
@@ -227,8 +224,83 @@ describe('macOS backend with an injected runner', () => {
     await backend.capture({
       index: 0, bounds: { x: 0, y: 0, width: 100, height: 50 }, scale: 2,
     })
-    expect(files).toEqual(['/usr/sbin/screencapture', '/usr/bin/sips'])
-    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-t', 'jpg'])
+    expect(files).toEqual(['/usr/sbin/screencapture'])
+    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '0,0,100,50'])
+  })
+
+  it('keeps a secondary-display rectangle in global coordinates instead of the main display', async () => {
+    const files: string[] = []
+    const args: string[][] = []
+    const backend = createMacosDesktopBackend(runner({
+      files,
+      args,
+      inspect: inspectJson({
+        x: -218,
+        y: -1080,
+        width: 1920,
+        height: 1080,
+        scale: 1,
+        screen: { x: -218, y: -1080, width: 1920, height: 1080 },
+      }),
+    }))
+    const [screen] = await backend.listScreens()
+    expect(screen).toEqual({
+      index: 0,
+      bounds: { x: -218, y: -1080, width: 1920, height: 1080 },
+      scale: 1,
+      windowId: 42,
+    })
+    files.length = 0
+    args.length = 0
+    await backend.capture(screen!)
+    expect(files).toEqual(['/usr/sbin/screencapture'])
+    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '-218,-1080,1920,1080'])
+  })
+
+  it('clips the observed rectangle to the display that owns the window', async () => {
+    const files: string[] = []
+    const args: string[][] = []
+    const backend = createMacosDesktopBackend(runner({
+      files,
+      args,
+      inspect: inspectJson({
+        x: -100,
+        y: 900,
+        width: 400,
+        height: 300,
+        scale: 1,
+        screen: { x: -1920, y: 0, width: 1920, height: 1080 },
+      }),
+    }))
+    const [screen] = await backend.listScreens()
+    expect(screen?.bounds).toEqual({ x: -100, y: 900, width: 100, height: 180 })
+    files.length = 0
+    args.length = 0
+    await backend.capture(screen!)
+    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '-100,900,100,180'])
+  })
+
+  it('reports no surface when the observed rectangle misses its display', async () => {
+    const backend = createMacosDesktopBackend(runner({
+      inspect: inspectJson({
+        x: 5000,
+        y: 5000,
+        screen: { x: 0, y: 0, width: 1470, height: 956 },
+      }),
+    }))
+    await expect(backend.listScreens()).resolves.toEqual([])
+  })
+
+  it('ignores an unusable display frame and keeps the raw window rectangle', async () => {
+    const backend = createMacosDesktopBackend(runner({
+      inspect: inspectJson({ x: -40, y: -60, screen: { x: 'nope', width: 0 } }),
+    }))
+    await expect(backend.listScreens()).resolves.toEqual([{
+      index: 0,
+      bounds: { x: -40, y: -60, width: 100, height: 50 },
+      scale: 2,
+      windowId: 42,
+    }])
   })
 
   it('captures JPEG bytes as image/jpeg', async () => {
@@ -370,6 +442,11 @@ describe('macOS backend with an injected runner', () => {
     expect(inspectForegroundScript([])).toContain(`var minEdge = ${String(MIN_LAYER0_WINDOW_EDGE)}`)
     expect(inspectForegroundScript([])).toContain(`const pad = ${String(CROSS_PID_TRANSIENT_PAD)}`)
     expect(inspectForegroundScript([])).toContain('found.transients = transients')
+    expect(inspectForegroundScript([])).toContain('function screenAt(x, y, w, h)')
+    expect(inspectForegroundScript([])).toContain(
+      'found.screen = { x: owner.x, y: owner.y, width: owner.width, height: owner.height }',
+    )
+    expect(inspectForegroundScript([])).toContain('var sy = primaryHeight - f.origin.y - f.size.height')
     expect(inspectForegroundScript([])).toContain('function relatedOwner(a, b)')
     expect(inspectForegroundScript([])).toContain("b.indexOf(a + ' ') === 0")
     expect(inspectForegroundScript([])).toContain("a.indexOf(b + ' ') === 0")

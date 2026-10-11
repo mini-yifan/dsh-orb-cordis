@@ -2,13 +2,17 @@
  * Update check and one-click upgrade for the installed bundle.
  * The check probes the package registries — npmmirror first: it mirrors npmjs
  * and answers where GitHub stalls — and falls back to the repository's GitHub
- * Releases when no registry knows the package. The upgrade installs the
- * version's tarball through the official plugin manager, served by the same
- * source that answered the check.
+ * Releases when no registry knows the package. The upgrade installs
+ * `name@version` through the official plugin manager, asking the registry that
+ * answered the check first. A bare tarball URL is not an install spec: pnpm
+ * 11.7 records it without `integrity` and refuses it before downloading.
  */
 
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { scheduleInstallAfterExit, takeDeferredOutcome, type DeferredInstall } from './deferred-install.ts'
+import { mappedImages, ownPackageRoot } from './native-images.ts'
 import type { ProfileStore } from './preferences.ts'
 
 /** The GitHub repository that publishes plugin releases, `plugin-v<version>` tags. */
@@ -37,6 +41,7 @@ export const EMPTY_UPDATE_STATE: UpdateState = {
   autoCheck: false,
   checkedAt: null,
   restartRequired: false,
+  deferred: false,
   error: null,
   pendingBuilds: [],
 }
@@ -54,6 +59,8 @@ export interface UpdateState {
   autoCheck: boolean
   checkedAt: number | null
   restartRequired: boolean
+  /** The update waits for the app to quit: a loaded native file blocks replacing the package now. */
+  deferred: boolean
   error: string | null
   pendingBuilds: string[]
 }
@@ -70,6 +77,8 @@ export interface PluginManager {
     enabled?: boolean
     requestId?: string
     approvedBuilds?: string[]
+    /** Registry asked first. The manager keeps its own fallbacks when this one is among them. */
+    registry?: string
   }): Promise<InstallResult>
 }
 
@@ -91,6 +100,10 @@ export interface UpdateDeps {
   fetchLatest?(name: string): Promise<string | undefined>
   /** Test seam: the installed manifest. */
   own?: OwnPackage | undefined
+  /** Test seam: native images in the package some process holds mapped (see `native-images.ts`). */
+  mappedImages?(): string[]
+  /** Test seam: hand the install to a script that runs once this process exits. */
+  deferInstall?(job: DeferredInstall): void
 }
 
 /**
@@ -152,6 +165,8 @@ export class UpdateChecker {
   private error: string | null = null
   private pendingBuilds: string[] = []
   private restartRequired = false
+  /** Version handed to the after-exit install; offering it again would only queue it twice. */
+  private deferred: string | null = null
   private timer: ReturnType<typeof setTimeout> | undefined
   private interval: ReturnType<typeof setInterval> | undefined
   /** The registry base that answered the last check; GitHub is the fallback when none did. */
@@ -163,6 +178,8 @@ export class UpdateChecker {
     this.own = 'own' in deps ? deps.own : ownPackage()
     this.installed = this.own?.version ?? ''
     this.latest = this.store.updateRecord().latestVersion || null
+    const outcome = takeDeferredOutcome(this.store.dir)
+    if (outcome !== undefined && !outcome.ok) this.error = outcome.detail === '' ? 'deferred-install-failed' : outcome.detail
   }
 
   state(): UpdateState {
@@ -179,6 +196,7 @@ export class UpdateChecker {
       autoCheck: this.store.updateRecord().autoCheck,
       checkedAt: this.store.updateRecord().checkedAt || null,
       restartRequired: this.restartRequired,
+      deferred: this.deferred !== null,
       error: this.error,
       pendingBuilds: [...this.pendingBuilds],
     }
@@ -243,10 +261,17 @@ export class UpdateChecker {
   }
 
   /**
-   * Install the version the check found through the official plugin manager,
-   * from the release tarball the version names. The manager owns the profile
-   * lock, the download and the manifest restore; an already-installed bundle is
-   * replaced and the result says the restart carries the new code.
+   * Install the version the check found through the official plugin manager.
+   * The spec is `name@version` and the registry is the one that answered the
+   * check, so pnpm resolves registry metadata — including `dist.integrity` —
+   * instead of a bare tarball URL. The manager owns the profile lock, the
+   * download and the manifest restore; an already-installed bundle is replaced
+   * and the result says the restart carries the new code.
+   *
+   * On Windows a package whose native addon is loaded cannot be replaced: pnpm
+   * fails with EPERM after it has already deleted part of the live package.
+   * When the probe finds such an addon, or pnpm fails that way anyway, the
+   * install waits for the app to quit instead (see `deferred-install.ts`).
    */
   async install(approvedBuilds?: string[]): Promise<void> {
     const version = this.availableVersion()
@@ -256,12 +281,24 @@ export class UpdateChecker {
     this.error = null
     this.pendingBuilds = []
     try {
-      const result = await manager.installBundle(installSpec(version, this.source, this.own.name), {
+      exemptReleaseAge(this.store.dir, this.own.name)
+      const spec = installSpec(version, this.own.name)
+      const registry = installRegistry(this.source)
+      if (this.lockedImages().length > 0) {
+        this.deferUntilExit(version, spec, registry)
+        return
+      }
+      const result = await manager.installBundle(spec, {
         requestId: `dsh-orb-update-${Date.now()}`,
+        registry,
         ...approvedBuilds === undefined ? {} : { approvedBuilds },
       })
+      if (result.application === 'failed' && isLockedFileFailure(result.error)) {
+        this.deferUntilExit(version, spec, registry)
+        return
+      }
       if (result.application === 'failed') {
-        this.error = result.error?.code ?? 'operation-error'
+        this.error = reportedInstallError(result.error)
         this.pendingBuilds = result.pendingBuilds === undefined ? [] : [...result.pendingBuilds]
         if (this.pendingBuilds.length > 0) this.error = 'build-blocked'
         return
@@ -282,7 +319,32 @@ export class UpdateChecker {
   }
 
   private available(): boolean {
-    return this.own !== undefined && this.latest !== null && compareVersions(this.latest, this.installed) > 0
+    return this.own !== undefined && this.latest !== null && this.latest !== this.deferred
+      && compareVersions(this.latest, this.installed) > 0
+  }
+
+  private lockedImages(): string[] {
+    if (this.deps.mappedImages !== undefined) return this.deps.mappedImages()
+    if (process.platform !== 'win32' || this.own === undefined) return []
+    // A workspace checkout runs from `packages/`, which is no installed package.
+    if (ownPackage(import.meta.url)?.name !== this.own.name) return []
+    try {
+      return mappedImages(ownPackageRoot(import.meta.url))
+    } catch {
+      return []
+    }
+  }
+
+  private deferUntilExit(version: string, spec: string, registry: string): void {
+    const job: DeferredInstall = { profileDir: this.store.dir, spec, registry, parentPid: process.pid }
+    try {
+      (this.deps.deferInstall ?? scheduleInstallAfterExit)(job)
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : String(error)
+      return
+    }
+    this.deferred = version
+    this.restartRequired = true
   }
 
   private async fetch(): Promise<string | null | undefined> {
@@ -363,16 +425,151 @@ export function registryTarballUrl(base: string, name: string, version: string):
 }
 
 /**
- * The spec the installer receives: the `DSH_ORB_UPDATE_URL` override wins, then
- * the tarball of the source that answered the check — a registry tarball is a
- * plain https file, the same shape the manager already fetches from GitHub
- * Releases — else the GitHub release tarball.
+ * The spec the installer receives.
+ * `name@version` makes pnpm read `dist.integrity` from registry metadata.
+ * pnpm 11.7 (the version the official client bundles) rejects a bare tarball
+ * URL whose lockfile entry has no integrity, before it downloads the file
+ * (`ERR_PNPM_MISSING_TARBALL_INTEGRITY`). `DSH_ORB_UPDATE_URL` overrides the
+ * whole spec (tests, staged releases).
  */
-export function installSpec(version: string, source: string | undefined, name: string): string {
+export function installSpec(version: string, name: string): string {
   const overridden = process.env.DSH_ORB_UPDATE_URL?.trim()
   if (overridden !== undefined && overridden !== '') return overridden
-  if (source !== undefined) return registryTarballUrl(source, name, version)
-  return releaseTarballUrl(version)
+  const clean = version.trim().replace(/^v/, '')
+  return `${name}@${clean}`
+}
+
+/**
+ * Registry the manager should ask first: the one that answered the check, or
+ * the primary mirror when this process has not checked yet. The manager still
+ * falls through to its own list when this registry is one of them.
+ */
+export function installRegistry(source: string | undefined): string {
+  return source ?? REGISTRY_BASES[0] ?? 'https://registry.npmmirror.com'
+}
+
+/**
+ * Text for a failed install. A specific manager code (incompatible version,
+ * and so on) wins. `operation-error` is the manager's wrapper around a pnpm
+ * failure, so the card shows the `ERR_PNPM_*` line from the diagnostic instead
+ * of that wrapper.
+ */
+export function reportedInstallError(error: InstallResult['error']): string {
+  const code = error?.code
+  const lines = error?.diagnostic?.split('\n').map((line) => line.trim()).filter((line) => line !== '') ?? []
+  if (code !== undefined && code !== '' && code !== 'operation-error') return code
+  const detail = lines.find((line) => line.includes('ERR_PNPM_')) ?? lines[0]
+  if (detail !== undefined && detail !== '') return detail.slice(0, 200)
+  return code === undefined || code === '' ? 'operation-error' : code
+}
+
+/** A pnpm failure from replacing a package whose files Windows keeps locked. */
+export function isLockedFileFailure(error: InstallResult['error']): boolean {
+  const text = `${error?.code ?? ''}\n${error?.diagnostic ?? ''}`
+  return /ERR_PNPM_EPERM|ERR_PNPM_EBUSY|\bEPERM\b|\bEBUSY\b/.test(text)
+}
+
+/**
+ * Record the package as an explicit exemption from pnpm's minimum-release-age
+ * gate. pnpm v11 defaults `minimumReleaseAge` to 24 hours, so a registry-named
+ * resolution silently settles for an older version while a fresh release waits
+ * out the cutoff (observed 2026-10-06: `dsh-orb` resolved to 0.1.1 everywhere
+ * the hour after 0.1.2 shipped), and the manager's install pipeline verifies the
+ * lockfile against the gate before pnpm's own auto-exemption can apply. The
+ * entry is the bare package name — pnpm grants it to every version, and unlike
+ * exact `name@version` entries it passes the lockfile verification path
+ * reliably (observed: versioned entries still failed verification). The write
+ * puts that name first among its own rules, because pnpm honours only the first
+ * one (see `withReleaseAgeExclusion`).
+ *
+ * Called twice: once when the plugin starts, so the profile reads correctly
+ * whatever route installed the version (pnpm's own auto-exemption appends a
+ * `name@version` rule that an older rule shadows), and once before an update
+ * installs. Best-effort: an unreadable or unexpected file skips the write, and
+ * the caller proceeds on pnpm's own defaults.
+ */
+export function exemptReleaseAge(profileDir: string, name: string): void {
+  try {
+    const file = join(profileDir, 'pnpm-workspace.yaml')
+    const next = withReleaseAgeExclusion(readFileSync(file, 'utf8'), name)
+    if (next !== undefined) writeFileSync(file, next)
+  } catch {
+    // No workspace file (dev checkout, older profile): nothing to exempt.
+  }
+}
+
+/** The package an exemption entry names, with any version or version union dropped. */
+function excludedPackageName(entry: string): string {
+  const at = entry.startsWith('@') ? entry.indexOf('@', 1) : entry.indexOf('@')
+  return at === -1 ? entry : entry.slice(0, at)
+}
+
+/**
+ * Write the package's exemption as the first entry of the profile's
+ * `minimumReleaseAgeExclude` block, replacing whatever rules the file already
+ * carried for the same name.
+ *
+ * pnpm's `evaluateVersionPolicy` returns at the FIRST rule whose package name
+ * matches, so a rule only counts when nothing of the same name precedes it
+ * (pnpm #732). Appending the bare name — what this used to do — is therefore
+ * dead the moment any `name@version` rule sits earlier, and pnpm appends such a
+ * rule for every young version it installs, so the file grows one shadowing
+ * entry per release. The result is a profile where the package is not actually
+ * exempt: `pnpm remove` re-resolves the young dependency, produces a
+ * resolution-policy violation, and aborts with
+ * `ERR_PNPM_RESOLUTION_POLICY_VIOLATIONS_UNHANDLED` (its remove path never wires
+ * the violation callback), which blocks uninstalling ANY other plugin until the
+ * version ages past the cutoff.
+ *
+ * A bare name exempts every version, so the same-name `name@version` rules a
+ * profile collected are dropped instead of being left to shadow it later, and
+ * the bare entry is written first. Other packages' lines keep their order and
+ * spelling. Returns the new text, or undefined when the file already reads that
+ * way or is not the block list pnpm writes.
+ */
+export function withReleaseAgeExclusion(text: string, name: string): string | undefined {
+  if (name === '') return undefined
+  const lines = text.split('\n')
+  let key = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    if (line === 'minimumReleaseAgeExclude:') {
+      key = index
+      break
+    }
+    // Inline arrays and shorthand are not pnpm's own output: leave them alone.
+    if (/^minimumReleaseAgeExclude\s*:/.test(line)) return undefined
+  }
+  // `@` cannot start a plain YAML scalar, so a scoped name is quoted the way pnpm writes one.
+  const entry = name.startsWith('@') ? `'${name.replaceAll("'", "''")}'` : name
+  if (key === -1) {
+    const head = text === '' || text.endsWith('\n') ? text : `${text}\n`
+    return `${head}minimumReleaseAgeExclude:\n  - ${entry}\n`
+  }
+  // One rule per name: this package's own lines are replaced by the bare entry,
+  // and a file that already reads that way is left byte for byte.
+  const kept: string[] = []
+  let indent: string | undefined
+  let seen = 0
+  let bareFirst = false
+  let index = key + 1
+  for (; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    const written = /^([ \t]+)-[ \t]+\S/.exec(line)
+    if (written === null) break
+    indent ??= written[1]
+    const body = line.slice(line.indexOf('-') + 1).trim().replace(/^['"]|['"]$/g, '')
+    if (excludedPackageName(body) === name) {
+      if (seen === 0) bareFirst = body === name
+      seen += 1
+      indent = written[1] ?? indent
+      continue
+    }
+    kept.push(line)
+  }
+  if (bareFirst && seen === 1) return undefined
+  const updated = [...lines.slice(0, key + 1), `${indent ?? '  '}- ${entry}`, ...kept, ...lines.slice(index)].join('\n')
+  return updated === text ? undefined : updated
 }
 
 /** The version a release names: `plugin-v0.2.0` → `0.2.0`. */

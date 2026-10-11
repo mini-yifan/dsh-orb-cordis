@@ -169,3 +169,16 @@ Windows 上的实测反馈:在浏览器里点球、输入、回车提交后,**Ag
 - **修复**(`packages/host/src/open-main.ts`):新增 `openEnvironment()`——复制环境并删掉 `ELECTRON_RUN_AS_NODE`,`spawnOpen` 用它作为子进程环境。macOS 走 `open`,由 LaunchServices 启动应用、拿不到这个环境,因此不受影响(该函数在 darwin 上是惰性的)。
 - **验证**:真机在 `ELECTRON_RUN_AS_NODE=1` 下调用真实 `openMainWindow`,最小化的主窗口被唤醒并成为前台(`IsIconic=False`、前台窗口即主窗口);修复前同一条件无反应。
 - **测试**:`host/tests/open-main.test.ts` 新增用例(删标记、保留其余变量、不改动调用方对象)。
+
+## 12. 副屏窗口截图返回主屏画面(2026-10-08)
+
+现象:双屏(主屏 MacBook 1470×956@2x + 副屏 1920×1080@1x,副屏在主屏正上方)下,让 Agent 操作副屏上的窗口——观察框彩带正确围住副屏窗口,但 Agent 收到的截图始终是**主屏**内容。
+
+- **观察框正确、截图错误说明两者走了不同数据源**:彩带由 `screens[0].bounds`(CGWindow 全局点坐标)直接摆位,而截图像素来自另一条路径——所以问题只可能在采集。
+- **根因(本机 macOS 26.4 实测)**:`screencapture` 不带 `-D`/`-R` 时**只写主屏**。实测 `screencapture -x -t jpg full.jpg` → 2940×1912(= 主屏 1470×956 的 2 倍图),与 `-D 1` 完全相同;`-D 2` 才是副屏的 1920×1080。而 `packages/computer-use/src/macos.ts` 的常规路径是「整屏 `screencapture` + `sips --cropOffset` 裁窗口矩形」,裁切坐标按 `bounds × 该窗口所在屏的 scale` 计算,并且 `Math.max(0, …)` 把负的原点直接抹平。副屏窗口(原点 -218,-1080)于是被裁成 `0,0,1920×1080`——正好是主屏左上角那一块,尺寸还恰好等于窗口尺寸,所以从尺寸上看不出异常。
+- **修复**:常规路径改成 `screencapture -x -C -R x,y,w,h`(全局点坐标,与 CGWindow bounds 同一套 top-left 坐标系)。`-R` 由系统自己解析该矩形属于哪块显示器,并按那块显示器的像素倍率出图,负坐标、混合 DPI、副屏在主屏上方/左侧等布局一并解决;`sips` 两步走被删掉(少一次进程、少一次全屏 JPEG)。JXA 侧新增 `screenAt()`:在原有 `screenIndex()` 基础上多返回**翻转过 y 轴**的显示器 frame(`sy = primaryHeight - f.origin.y - f.size.height`),随窗口 JSON 以 `screen` 字段上报;`ScreenInfo.bounds` 在 `screenFromFrontmost` 里先与该 frame 求交——因为 `-R` 会丢弃显示器之外的部分,不裁的话彩带、栅格与 0–1000 点击映射会变成三个矩形。窗口完全不在该显示器上时不再上报 surface(`listScreens` 返回 `[]`,观察只剩 `<frontmost_app>` 标签),而不是让 `-R` 以 "does not intersect any displays" 失败并被包装成「缺少屏幕录制权限」。
+- **`-R` 此前被误判为不可用**:旧注释写「`screencapture -R` fails on this OS」。本机复测:`-R -218,-1080,1920,1080` → 1920×1080(副屏,1x)、`-R 0,0,1470,956` → 2940×1912(主屏,2x)、`-R -218,-1080,400,300 -C` 正常出图;只有把坐标填成 Cocoa 左下原点(`-R 100,1000,400,300`、`-R -218,2036,…`)才会 `does not intersect any displays` 退出 1——那条注释大概率就是这么来的。
+- **实测验证(真实前台窗口,只比对元数据与数值,不看画面内容)**:改动后 `listScreens()` 返回当前副屏全屏窗口 `bounds {-218,-1080,1920,1080} scale 1`,真实采集得到 1920×1080 的 JPEG。与 `screencapture -x -D 2`(系统认定的副屏)做灰度平均绝对差:新路径 **0.55**(两次实拍间的内容抖动),旧路径主屏裁切 **13.67**——数值上确认新路径拿到的就是副屏。随后前台换成主屏窗口(`bounds {0,33,1470,923} scale 2`)再采一次,得到 2940×1846,与 `bounds × scale` 完全一致。
+- **顺带发现的第二个缺陷:`sips` 裁切会静默退化成整图**:窗口矩形贴近主屏右/下边缘时,`sips --cropOffset` 偶发不裁,而退出码仍是 0、不报错。合成图复现:2940×1912 输入 + `--cropOffset 66 0 -c 1846 2940` → 输出仍是 2940×1912(改成 `-c 1845 2940` 就正常出 2940×1845),同一命令在 400×300 输入上却正常;真实场景也命中过——主屏最大化窗口的旧路径产出的是整块主屏栅格(2940×1912),而 `bounds` 只是窗口矩形,画面与 0–1000 点击映射因此对不上。`-R` 一步出图后这条路径整体消失。
+- **测试**:`tests/macos.spec.ts` 更新 3 例(单次 `-x -C -R` 调用、参数按逻辑点、`sips` 断言删除),新增 4 例:副屏负原点窗口保持全局坐标不被抹平、跨显示器边缘的窗口裁到显示器内、窗口完全落在显示器外时返回 `[]`、畸形 `screen` 字段退化为不裁切;JXA 断言补 `screenAt`/`found.screen`/y 轴翻转公式。`pnpm typecheck`、`pnpm build`、`pnpm test` 通过(仅剩两例环境性失败:本机沙箱不允许在 `$HOME` 建临时目录与写 `~/.npm` 缓存,把 `HOME`/`npm_config_cache` 指到工作区后全绿)。
+- **装机**:构建产物已按最小面同步进实际加载的两处 profile(`~/.dsh/profiles/desktop/node_modules/dsh-orb/dist/computer-use`,桌面版正在用的 0.1.5;以及 `~/.dsh/profiles/web/…`),只替换 `dist/computer-use` 并删掉两个旧 chunk,`package.json` 版本不动——重启应用/`dsh web` 后生效;要让改动可持久复现(避免下次 `pnpm install` 还原成已发布的 0.1.5),仍需按 RELEASE 流程发 0.1.6。

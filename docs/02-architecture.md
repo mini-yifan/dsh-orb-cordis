@@ -213,7 +213,7 @@ interface OverlaySpec {
 }
 ```
 
-悬浮球吸边:拖动松手时球一接触屏幕左右边缘即停靠。停靠判定同时采信两路球原点——主进程窗口 bounds 派生的位置与渲染端拖动坐标(`orb:clamp` 的 `origin` 字段),任一触边即吸,以规避 Windows 每显示器 DPI 下窗口 bounds 与输入坐标不一致的问题(electron#10862);每次松手 helper 会向 stderr 输出一行 `[orb-geom]` 诊断日志,记录窗口 bounds、两路原点与各显示器 scaleFactor。
+悬浮球拖动由主进程按系统光标定位,渲染端只发信号。按下时主进程记录 `grab = 光标 - 球原点`(`orb:drag-press`);拖动中每次 `pointermove` 发 `orb:drag-move`,主进程把球放到 `光标 - grab`(`FloatingPlacement.dragTo`);松手时 `orb:drag-end` 同样以光标位置落位,再判定吸边。`screen.getCursorScreenPoint()` 与 `BrowserWindow.setBounds()` 按 Electron 的约定同处 DIP 坐标系,且读取的都是实时值(Windows 混合 DPI 下的表现需实机验证),因此球的位置不再依赖渲染端的坐标。渲染端只用 `clientX` 判定 4 px 拖动阈值与拉出吸边标签,这段时间窗口通常是静止的(提问、附件或书签条变化可能在按住期间改动窗口,此时阈值判定会有偏差)。此前的实现用 `screenX`,或「按下时缓存的窗口原点 + `clientX`」推算球位置,窗口移动期间这些值滞后,误差来回震荡,表现为拖动抖动和跳跃。拖动公式无状态;光标到达左右两侧显示器外缘时球靠边(缝隙处除外,见 `edgeTouchesDisplay`;运行中或提问中不吸边)。吸边判定看拖动请求的球原点,而不是窗口读回值。Windows 在缩放不是 100% 时会把窗口拉回屏幕内,12px 透明边就让读回的球停在边缘内侧大约 12 DIP,超过 `DOCK_OVERLAP`(3 DIP);120% 时 96px 的球窗口还会被向上取整读成 97px,必须仍当作球而不是展开的面板。`DOCK_OVERLAP` 继续吸收剩余的 1–2 DIP 量化误差(`物理宽 / scaleFactor` 不是整数时,如 1920/1.5、2560/1.25、3840/1.75)。松手结果同时携带展开方向,运行中的面板若因松手位置改变朝向,渲染端会同步更新。设 `DSH_ORB_DOCK_DEBUG=1` 后每次松手向 stderr 输出一行 `[orb-dock]` 诊断日志,记录光标位置、窗口 bounds、各显示器 scaleFactor 与停靠结果,供无法复现的 DPI/多屏布局定位。
 
 划词监控不进这个接口。它在 Host 里跑，把「选中的文字 + 屏幕坐标」发给 helper。
 

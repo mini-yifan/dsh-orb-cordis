@@ -1,6 +1,6 @@
 {
   "name": "dsh-orb",
-  "version": "0.1.2",
+  "version": "0.1.6",
   "type": "module",
   "description": "Installable Orb bundle. Inserts the Computer Use preset and the floating-ball host.",
   "keywords": [
@@ -39,6 +39,10 @@
     "./computer-use/code-agent": {
       "types": "./dist/computer-use/code-agent.d.ts",
       "default": "./dist/computer-use/code-agent.js"
+    },
+    "./computer-use/code-agent-registry": {
+      "types": "./dist/computer-use/code-agent-registry.d.ts",
+      "default": "./dist/computer-use/code-agent-registry.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"

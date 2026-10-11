@@ -1,11 +1,18 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('dshOrb', {
-  move(x, y, canDock) {
-    return ipcRenderer.invoke('orb:move', { x, y, canDock: canDock !== false })
+  // Drag signals only: the main process reads the cursor itself, so no coordinates cross IPC.
+  dragPress() {
+    ipcRenderer.send('orb:drag-press')
   },
-  clamp(canDock, origin) {
-    return ipcRenderer.invoke('orb:clamp', { canDock: canDock !== false, origin })
+  dragBegin() {
+    ipcRenderer.send('orb:drag-begin')
+  },
+  dragMove(canDock) {
+    ipcRenderer.send('orb:drag-move', canDock !== false)
+  },
+  dragEnd(canDock) {
+    return ipcRenderer.invoke('orb:drag-end', canDock !== false)
   },
   unsnap() {
     return ipcRenderer.invoke('orb:unsnap')

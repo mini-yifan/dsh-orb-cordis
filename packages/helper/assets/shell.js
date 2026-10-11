@@ -271,7 +271,6 @@ function main() {
   let processGroup
   let processClock
   let dragging = false
-  let collapsing = false
   let skipClick = false
   let skipDockCommit = false
   let suppressExpand = false
@@ -281,8 +280,16 @@ function main() {
   let dockHoverTimer
   let collapseTimer
   let collapseFrame
-  let pointer
-  let lastOrigin
+  /**
+   * Pointer bookkeeping. `pointerHeld` spans the whole time a button is down, so
+   * enter/leave cannot flip the panel while a gesture is in flight. The renderer
+   * never computes a window position: the main process reads the OS cursor on every
+   * drag signal, so `pressAt` (client coordinates) only serves the drag threshold
+   * and the dock tab's pull-out distance, both measured while the window is static.
+   */
+  let pointerHeld = false
+  let pointerPointerId
+  let pressAt = { x: 0, y: 0 }
   let permission = 'danger-full-access'
   let permissionOpen = false
   let historyOpen = false
@@ -502,15 +509,75 @@ function main() {
 
   function applyDockedFrom(result) {
     if (result == null) return
+    // A release can re-anchor an open panel to the other side; the page follows the result.
+    if (result.expanded === true) applyDirection(result)
     applyDocked(result.docked)
   }
 
-  async function moveBall(x, y) {
-    applyDockedFrom(await api.move(x, y, !(running || asking())))
+  /**
+   * Press on `element`: keep the client point the drag threshold and the dock tab's
+   * pull are measured from (both while the window is still static), and capture the
+   * pointer so the gesture survives the window moving out from under the cursor.
+   */
+  function beginPointer(element, event) {
+    pressAt = { x: event.clientX, y: event.clientY }
+    pointerPointerId = event.pointerId
+    pointerHeld = true
+    element.setPointerCapture(event.pointerId)
   }
 
-  async function clampBall(origin) {
-    applyDockedFrom(await api.clamp(!(running || asking()), origin))
+  function ownsPointer(event) {
+    if (pointerPointerId === undefined) return false
+    return event.pointerId === undefined || event.pointerId === pointerPointerId
+  }
+
+  // A gesture that ends outside the window (or while the compositor holds the
+  // capture) must never leave the panel locked shut.
+  window.addEventListener('blur', () => {
+    if (pointerHeld) void finishGesture()
+  })
+
+  /**
+   * The gesture is over. A drag is committed by the main process, which places the
+   * ball under the OS cursor and decides the dock. A press without a drag is left to
+   * the click handler, so this returns false.
+   */
+  async function finishGesture() {
+    const moved = dragging
+    pointerHeld = false
+    pointerPointerId = undefined
+    dragging = false
+    if (!moved) return false
+    skipClick = true
+    const skipDock = skipDockCommit
+    skipDockCommit = false
+    if (!skipDock) applyDockedFrom(await api.dragEnd(!(running || asking())))
+    return true
+  }
+
+  /**
+   * The ball gesture passed the motion threshold. A free panel collapses first: its
+   * DOM now, its window in the main process, before any move signal goes out. A
+   * running or asking agent keeps the panel open and the ball simply follows.
+   */
+  function startBallDrag() {
+    dragging = true
+    if (!(running || asking())) {
+      pinned = false
+      document.body.classList.remove('pinned')
+      void setExpanded(false, true)
+    }
+    api.dragBegin()
+  }
+
+  function syncExpand() {
+    if (pointerHeld || dragging) return
+    if (docked !== undefined) {
+      if (dockHoverArmed) void unsnapDocked()
+      return
+    }
+    if (suppressExpand) return
+    void setExpanded(true)
   }
 
   async function unsnapDocked() {
@@ -560,11 +627,6 @@ function main() {
       panel.hidden = true
       void api.setExpanded(false)
     }, ANIMATION_MS)
-  }
-
-  function ballGrabOffset(event) {
-    const rect = ball.getBoundingClientRect()
-    return { dx: event.clientX - rect.left, dy: event.clientY - rect.top }
   }
 
   function scheduleCollapse() {
@@ -1950,85 +2012,46 @@ function main() {
     return (event.buttons & 1) === 1
   }
 
-  document.body.addEventListener('pointerenter', () => {
+  document.body.addEventListener('pointerenter', (event) => {
     dockPointerInside = true
-    if (dragging || collapsing) return
-    if (docked !== undefined) {
-      if (dockHoverArmed) void unsnapDocked()
-      return
-    }
-    if (suppressExpand) return
-    void setExpanded(true)
+    // A dropped pointerup (capture stolen, window hidden mid-gesture) would leave the
+    // press flags stuck and the panel permanently unable to expand. Only a reported
+    // "no buttons" counts: an absent field must not end a live drag.
+    if (pointerHeld && typeof event.buttons === 'number' && event.buttons === 0) void finishGesture()
+    syncExpand()
   })
   document.body.addEventListener('pointerleave', () => {
     dockPointerInside = false
     suppressExpand = false
-    if (dragging || collapsing) return
+    if (pointerHeld || dragging) return
     scheduleCollapse()
   })
 
   ball.addEventListener('pointerdown', (event) => {
     if (!isPrimaryButton(event)) return
     dragging = false
-    collapsing = false
     skipClick = false
-    lastOrigin = undefined
-    pointer = { ...ballGrabOffset(event), startX: event.screenX, startY: event.screenY }
-    ball.setPointerCapture(event.pointerId)
+    beginPointer(ball, event)
+    api.dragPress()
   })
   ball.addEventListener('pointermove', (event) => {
-    if (pointer === undefined) return
+    if (!ownsPointer(event)) return
     if (!primaryButtonHeld(event)) {
-      void finishPointer(event)
+      void finishGesture()
       return
     }
-    lastOrigin = { x: event.screenX - pointer.dx, y: event.screenY - pointer.dy }
     if (!dragging) {
-      if (Math.hypot(event.screenX - pointer.startX, event.screenY - pointer.startY) <= 4) return
-      dragging = true
-      if (running || asking()) {
-        void moveBall(lastOrigin.x, lastOrigin.y)
-        return
-      }
-      collapsing = true
-      pinned = false
-      document.body.classList.remove('pinned')
-      void setExpanded(false, true).then(() => {
-        collapsing = false
-        if (dragging && lastOrigin !== undefined) void moveBall(lastOrigin.x, lastOrigin.y)
-      })
-      return
+      if (Math.hypot(event.clientX - pressAt.x, event.clientY - pressAt.y) <= 4) return
+      startBallDrag()
     }
-    if (!collapsing) void moveBall(lastOrigin.x, lastOrigin.y)
+    api.dragMove(!(running || asking()))
   })
-  async function finishPointer(event) {
-    if (dragging) {
-      skipClick = true
-      dragging = false
-      collapsing = false
-      const origin = pointer === undefined
-        ? lastOrigin
-        : { x: event.screenX - pointer.dx, y: event.screenY - pointer.dy }
-      pointer = undefined
-      lastOrigin = undefined
-      const skipDock = skipDockCommit
-      skipDockCommit = false
-      if (!skipDock) {
-        if (origin !== undefined) await moveBall(origin.x, origin.y)
-        await clampBall(origin)
-      }
-      return true
-    }
-    pointer = undefined
-    lastOrigin = undefined
-    return false
-  }
   ball.addEventListener('pointerup', async (event) => {
     if (!isPrimaryButton(event)) {
-      void finishPointer(event)
+      void finishGesture()
       return
     }
-    const dragged = await finishPointer(event)
+    const dragged = await finishGesture()
     if (dragged || skipClick) {
       skipClick = false
       return
@@ -2037,33 +2060,29 @@ function main() {
     document.body.classList.toggle('pinned', pinned)
     if (pinned) await setExpanded(true)
   })
-  ball.addEventListener('pointercancel', (event) => { void finishPointer(event) })
-  ball.addEventListener('lostpointercapture', (event) => { void finishPointer(event) })
+  ball.addEventListener('pointercancel', () => { void finishGesture() })
+  ball.addEventListener('lostpointercapture', () => { void finishGesture() })
 
   dockTab.addEventListener('pointerdown', (event) => {
     if (!isPrimaryButton(event)) return
     dragging = false
-    collapsing = false
     skipClick = true
-    lastOrigin = undefined
-    pointer = { dx: 0, dy: 0, startX: event.screenX, startY: event.screenY }
-    dockTab.setPointerCapture(event.pointerId)
+    beginPointer(dockTab, event)
   })
   dockTab.addEventListener('pointermove', (event) => {
-    if (pointer === undefined || docked === undefined) return
+    if (!ownsPointer(event) || docked === undefined) return
     if (!primaryButtonHeld(event)) {
-      void finishPointer(event)
+      void finishGesture()
       return
     }
-    lastOrigin = { x: event.screenX, y: event.screenY }
-    const inward = docked === 'right' ? pointer.startX - event.screenX : event.screenX - pointer.startX
-    if (inward <= DOCK_DRAG_OFF_PX) return
+    const pulled = docked === 'right' ? pressAt.x - event.clientX : event.clientX - pressAt.x
+    if (pulled <= DOCK_DRAG_OFF_PX) return
     dragging = true
     void unsnapDocked()
   })
-  dockTab.addEventListener('pointerup', (event) => { void finishPointer(event) })
-  dockTab.addEventListener('pointercancel', (event) => { void finishPointer(event) })
-  dockTab.addEventListener('lostpointercapture', (event) => { void finishPointer(event) })
+  dockTab.addEventListener('pointerup', () => { void finishGesture() })
+  dockTab.addEventListener('pointercancel', () => { void finishGesture() })
+  dockTab.addEventListener('lostpointercapture', () => { void finishGesture() })
 
   const selectionChip = document.querySelector('#selection-chip')
   const selectionChipText = document.querySelector('#selection-chip-text')

@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import koffi from 'koffi'
+import koffi from './koffi.ts'
 import { compositeCursor, cursorDrawPlacement, flipRows, resolveCursorAlpha } from './cursor.ts'
 import type { WindowsDesktopSnapshot, WindowsWindowFact } from './windows-foreground.ts'
 import { encodeBgraPng, type WindowsDesktopOps, type WindowsRect } from './windows.ts'

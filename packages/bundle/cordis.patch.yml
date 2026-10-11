@@ -63,6 +63,8 @@
               postActionWaitMs: 600
           - id: tool-code-agent
             name: 'dsh-orb/computer-use/code-agent'
+    - id: orb-code-agent-registry
+      name: 'dsh-orb/computer-use/code-agent-registry'
     - id: orb-host
       name: 'dsh-orb/host'
       config:

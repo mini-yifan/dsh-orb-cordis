@@ -1,11 +1,16 @@
 /**
- * Cross-plugin bookmark registry for `code_agent` background sessions.
- * The orb host reads it as the `codeAgentRegistry` service to render the
- * floating ball's bookmark strip. Lifetime is the host process: the strip
- * shows what this process knows, nothing older.
+ * Bookmark registry for `code_agent` background sessions, provided as the
+ * app-level `codeAgentRegistry` service for the orb host's bookmark strip.
+ * Lifetime is the host process: the strip shows what this process knows,
+ * nothing older.
+ * The provide lives in {@link apply} on purpose: `cordis.patch.yml` inserts
+ * this module at the top level, outside every agent preset. A provide from a
+ * preset-internal plugin lands in the root realm and the official preset-mount
+ * audit rejects it ("Preset services require isolate realms").
  * @module @dsh-orb/computer-use/src/code-agent-registry
  */
 
+import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types'
@@ -13,6 +18,9 @@ import { holdsPrompt, lastAssistantText, lastTurnEndedUserAborted } from './code
 
 /** Cordis service name the orb host polls the bookmarks from. */
 export const CODE_AGENT_REGISTRY = 'codeAgentRegistry'
+
+/** Cordis plugin name for the app-level provider row in `cordis.patch.yml`. */
+export const name = 'computer-use-code-agent-registry'
 
 /** A finished stretch either delivered its outcome or was cancelled. */
 export type CodeAgentBookmarkState = 'running' | 'completed' | 'stopped'
@@ -72,6 +80,15 @@ let shared: CodeAgentBookmarkRegistry | undefined
 export function sharedCodeAgentRegistry(): CodeAgentBookmarkRegistry {
   shared ??= createCodeAgentRegistry()
   return shared
+}
+
+/**
+ * Publish the process-wide registry as an app-level service.
+ * Inserted at the top level of the patch (never inside a preset) so the orb
+ * host — also top level — can read it across the preset boundary.
+ */
+export function apply(ctx: Context): void {
+  ctx.provide(CODE_AGENT_REGISTRY, sharedCodeAgentRegistry())
 }
 
 export function createCodeAgentRegistry(): CodeAgentBookmarkRegistry {

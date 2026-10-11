@@ -35,7 +35,13 @@ function profileWith(install) {
 
 function checkInstalled(profile, root) {
   const names = ownNames()
-  assert.deepEqual(names.sort(), ['dsh-orb', 'dsh-orb/computer-use', 'dsh-orb/computer-use/code-agent', 'dsh-orb/host'])
+  assert.deepEqual(names.sort(), [
+    'dsh-orb',
+    'dsh-orb/computer-use',
+    'dsh-orb/computer-use/code-agent',
+    'dsh-orb/computer-use/code-agent-registry',
+    'dsh-orb/host',
+  ])
   for (const specifier of names) {
     const file = resolveFromProfile(profile, specifier)
     assert.ok(existsSync(file), `${specifier} -> ${file}`)
