@@ -44,6 +44,10 @@ window.__ModuleLoader__.load({
       millifractionDescription: '新建对话使用截图的 0–1000 比例。关闭后使用已附加图片的像素。更改此项会新建对话。',
       millifractionToggle: '使用千分比坐标',
       millifractionConfirm: '新编码只在新对话中生效。当前对话不变，仍可从历史记录打开。取消不写入、不新建。',
+      frameTitle: '观察框彩带',
+      frameDescription: 'Computer Use 操作某个窗口时，窗口周围显示这条彩带。关闭后不再显示。',
+      frameToggle: '显示观察框彩带',
+      runtimePreparing: '正在准备悬浮球：首次使用需要下载约 124–150 MB 的运行时，完成后悬浮球会自动出现。',
       tccTitle: 'Mac 权限',
       tccDescription: 'Computer Use 需要屏幕录制与辅助功能。点按钮打开系统设置对应页。',
       tccAppHint: '在列表里打开 {name}。',
@@ -65,6 +69,7 @@ window.__ModuleLoader__.load({
       updateNow: '更新',
       updating: '正在更新到 {version}…',
       updateDone: '已更新到 {version}，重启 {name} 后生效。',
+      updateDeferred: '{version} 将在退出 {name} 后自动安装，请完全退出后稍等片刻再重新打开。',
       updateFailed: '更新失败：',
       updateOffline: '无法连接镜像或 npm，请检查网络后重试。',
       updateBuildBlocked: '新版本依赖的安装脚本未获授权，安装已停止。',
@@ -113,6 +118,10 @@ window.__ModuleLoader__.load({
       millifractionDescription: 'New chats use 0–1000 fractions of the screenshot. Turn off to use pixels of the attached image. Changing this creates a new conversation.',
       millifractionToggle: 'Use millifraction coordinates',
       millifractionConfirm: 'The new encoding takes effect in a new conversation. The current conversation stays unchanged and remains in History. Cancel leaves the default and this chat as they are.',
+      frameTitle: 'Observation ribbon',
+      frameDescription: 'Draws the coloured ribbon around the window Computer Use is working on. Turn it off to hide it.',
+      frameToggle: 'Show the observation ribbon',
+      runtimePreparing: 'Preparing the floating ball: the first launch downloads a ~124–150 MB runtime, then the ball appears on its own.',
       tccTitle: 'Mac permissions',
       tccDescription: 'Computer Use needs Screen Recording and Accessibility. Each button opens that System Settings pane.',
       tccAppHint: 'In the list, turn on {name}.',
@@ -134,6 +143,7 @@ window.__ModuleLoader__.load({
       updateNow: 'Update',
       updating: 'Updating to {version}…',
       updateDone: 'Updated to {version}. Restart {name} to apply it.',
+      updateDeferred: '{version} installs once {name} quits. Quit it fully, wait a moment, then reopen it.',
       updateFailed: 'Update failed: ',
       updateOffline: 'no registry could be reached. Check the network and try again.',
       updateBuildBlocked: 'A dependency of the new version needs install-script approval, so the install stopped.',
@@ -307,6 +317,24 @@ window.__ModuleLoader__.load({
         return () => { clearInterval(timer) }
       }, [installing])
 
+      // The first launch prepares the helper runtime inside the host; poll until
+      // the ball lands or the failure surfaces, so the waiting line tracks it.
+      const preparing = typeof state.snapshot?.helperPhase === 'string' && state.snapshot.helperPhase !== ''
+      React.useEffect(() => {
+        if (!preparing) return undefined
+        const timer = setInterval(() => { void refreshSettings() }, 2000)
+        return () => { clearInterval(timer) }
+      }, [preparing])
+
+      async function refreshSettings() {
+        try {
+          const snapshot = await request('/.dsh-orb/settings')
+          setState((prev) => prev.snapshot ? { ...prev, snapshot } : prev)
+        } catch {
+          // Keep the last known state; the next poll or a page reload tries again.
+        }
+      }
+
       async function refreshUpdate() {
         try {
           const update = await request('/.dsh-orb/update')
@@ -360,7 +388,7 @@ window.__ModuleLoader__.load({
           ? h('p', { className: 'dsh-orb-set-error', role: 'alert' }, `${text.saveError} ${state.error}`)
           : null,
         snap.supported ? null : h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.linux),
-        helperNotice(text, snap),
+        helperNotice(text, snap, disabled, mutate),
         snap.permissionFallback === true
           ? h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.permissionFallback)
           : null,
@@ -431,15 +459,43 @@ window.__ModuleLoader__.load({
               void mutate('/.dsh-orb/millifraction', { enabled })
             },
           })),
+          card(text.frameTitle, text.frameDescription, h(Toggle, {
+            checked: snap.observationFrameEnabled !== false,
+            label: text.frameToggle,
+            disabled,
+            onChange: (enabled) => {
+              if (enabled === snap.observationFrameEnabled) return
+              void mutate('/.dsh-orb/observation-frame', { enabled })
+            },
+          })),
           snap.tcc && snap.tcc.applicable ? tccCard(text, snap, disabled, mutate) : null))
     }
 
-    function helperNotice(text, snap) {
+    /**
+     * Why the ball is not on screen yet: preparing (first-launch runtime), or
+     * failed with a retry. Nothing shows while a ball is up or the ball is off.
+     */
+    function helperNotice(text, snap, disabled, mutate) {
+      if (snap.ballEnabled === false) return null
+      const retry = () => {
+        // POST the toggle's own value: the host restarts the helper and grants
+        // a fresh download budget.
+        void mutate('/.dsh-orb/ball', { enabled: true })
+      }
       if (snap.helperError === 'helper-exited') {
-        return h('p', { className: 'dsh-orb-set-error', role: 'alert' }, text.helperFailed)
+        return h('div', { className: 'dsh-orb-set-banner' },
+          h('p', { className: 'dsh-orb-set-error', role: 'alert' }, text.helperFailed),
+          h('div', { className: 'dsh-orb-set-actions' },
+            h('button', { type: 'button', className: 'dsh-orb-set-button dsh-orb-set-ghost', disabled, onClick: retry }, text.retry)))
       }
       if (snap.helperError === 'runtime-download') {
-        return h('p', { className: 'dsh-orb-set-error', role: 'alert' }, text.runtimeFailed)
+        return h('div', { className: 'dsh-orb-set-banner' },
+          h('p', { className: 'dsh-orb-set-error', role: 'alert' }, text.runtimeFailed),
+          h('div', { className: 'dsh-orb-set-actions' },
+            h('button', { type: 'button', className: 'dsh-orb-set-button dsh-orb-set-ghost', disabled, onClick: retry }, text.retry)))
+      }
+      if (typeof snap.helperPhase === 'string' && snap.helperPhase !== '') {
+        return h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.runtimePreparing)
       }
       return null
     }
@@ -499,6 +555,12 @@ window.__ModuleLoader__.load({
             ? text.updateBuildBlocked
             : update.error
         return h('p', { className: 'dsh-orb-set-error', role: 'alert' }, `${text.updateFailed}${detail}`)
+      }
+      if (update.deferred) {
+        const app = snap.tcc && snap.tcc.appName ? snap.tcc.appName : 'DeepSeek Harness'
+        return h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.updateDeferred
+          .replaceAll('{version}', update.latestVersion || '')
+          .replaceAll('{name}', app))
       }
       if (update.restartRequired) {
         const app = snap.tcc && snap.tcc.appName ? snap.tcc.appName : 'DeepSeek Harness'

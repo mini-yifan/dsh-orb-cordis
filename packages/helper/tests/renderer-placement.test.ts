@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { describe, it } from 'node:test'
+import { dragHandlers } from './fixtures/drag-harness.ts'
 import { AGENT_STRIP_WIDTH, BALL_WINDOW_SIZE, CHROME_INSET, FloatingPlacement, PANEL_WINDOW_SIZE, type DisplayPair, type ExpandState, type Rect } from '../src/geometry.ts'
 
 const primary = pair(0, 0, 1920, 1080)
@@ -18,10 +19,10 @@ describe('expanded placement through the renderer IPC consumers', () => {
           const f = fixture([left, upper, primary], 1848, 900)
           f.placement.setStrip(strip)
           const renderer = rendererFixture(f, f.placement.setExpanded(true), mode)
-          await renderer.moveBall(target.x, target.y)
+          await renderer.dragBall(target.x, target.y)
           assert.deepEqual(renderer.ball(), target)
           renderer.assertStrip(strip)
-          await renderer.clampBall()
+          await renderer.releaseBall()
           assert.deepEqual(renderer.ball(), target)
           renderer.assertStrip(strip)
         })
@@ -33,7 +34,7 @@ describe('expanded placement through the renderer IPC consumers', () => {
         const renderer = rendererFixture(f, f.placement.setExpanded(true), mode)
         const before = renderer.ball()
         f.displays = [{ ...primary, workArea: { x: 0, y: 0, width: 900, height: 1080 } }]
-        await renderer.clampBall()
+        await renderer.releaseBall()
         assert.deepEqual(renderer.ball(), before)
         renderer.assertStrip(strip)
       })
@@ -43,7 +44,7 @@ describe('expanded placement through the renderer IPC consumers', () => {
       const f = fixture([left, primary], 1600, 400)
       const renderer = rendererFixture(f, f.placement.setExpanded(true), mode)
       const target = { x: -821, y: 400 }
-      await renderer.moveBall(target.x, target.y)
+      await renderer.dragBall(target.x, target.y)
       for (const strip of [AGENT_STRIP_WIDTH, 0, AGENT_STRIP_WIDTH]) {
         renderer.applyState(f.placement.setStrip(strip))
         renderer.assertStrip(strip)
@@ -70,30 +71,61 @@ function rendererFixture(f: ReturnType<typeof fixture>, state: ExpandState, mode
     assert.ok(match, `renderer function ${name} exists`)
     return match[0]
   }
+  const window = {
+    isDestroyed: () => false,
+    webContents: { send(channel: string, next: unknown) {
+      assert.equal(channel, 'orb:expand-state')
+      context.applyDirection(next)
+    } },
+  }
+  const handlers = dragHandlers(window, f.placement)
+  const event = { sender: window.webContents }
   const context = vm.createContext({
     document: { body: {
       classList: { toggle(name: string, enabled: boolean) { enabled ? classes.add(name) : classes.delete(name) } },
       style: { setProperty(name: string, value: string) { styles.set(name, value) } },
     } },
     api: {
-      move: async (x: number, y: number, canDock: boolean) => {
+      dragMove: (canDock: boolean) => {
         assert.equal(canDock, false)
-        return f.placement.move(x, y, canDock)
+        handlers.invoke('orb:drag-move', event, canDock)
       },
-      clamp: async (canDock: boolean) => {
+      dragEnd: async (canDock: boolean) => {
         assert.equal(canDock, false)
-        return f.placement.clamp(canDock)
+        return handlers.invoke('orb:drag-end', event, canDock)
       },
     },
     running: mode === 'running', asking: () => mode === 'asking',
     // Both states disable docking, so its unrelated UI updates are excluded.
     applyDocked: (side: unknown) => { assert.equal(side, undefined) },
+    dragging: false, pointerHeld: false, pointerPointerId: undefined,
+    skipDockCommit: false, skipClick: false,
   })
-  vm.runInContext(['applyDirection', 'applyDockedFrom', 'moveBall', 'clampBall'].map(extract).join('\n'), context)
+  vm.runInContext(['applyDirection', 'applyDockedFrom', 'finishGesture'].map(extract).join('\n'), context)
   context.applyDirection(state)
+  function startGesture() {
+    if (context.dragging) return
+    const origin = ball()
+    handlers.cursor({ x: origin.x + 30, y: origin.y + 30 })
+    handlers.invoke('orb:drag-press', event)
+    handlers.invoke('orb:drag-begin', event)
+    context.dragging = true
+    context.pointerHeld = true
+  }
+  // Compute the visible ball from the actual CSS rules, independently of geometry's direction.
+  function ball() {
+    return {
+      x: f.bounds.x + (classes.has('expand-left') ? f.bounds.width - chrome - ballSize : chrome),
+      y: f.bounds.y + (classes.has('expand-up') ? f.bounds.height - chrome - ballSize : chrome),
+    }
+  }
   return {
-    moveBall: context.moveBall,
-    clampBall: context.clampBall,
+    dragBall(x: number, y: number) {
+      startGesture()
+      handlers.cursor({ x: x + 30, y: y + 30 })
+      context.api.dragMove(false)
+    },
+    releaseBall() { startGesture(); return context.finishGesture() },
     applyState: context.applyDirection,
     assertStrip: (strip: number) => {
       assert.equal(f.bounds.width, PANEL_WINDOW_SIZE.width + strip)
@@ -102,11 +134,7 @@ function rendererFixture(f: ReturnType<typeof fixture>, state: ExpandState, mode
       assert.equal(classes.has('strip-left'), strip > 0 && classes.has('expand-left'))
       assert.equal(classes.has('strip-right'), strip > 0 && classes.has('expand-right'))
     },
-    // Compute the visible ball from the actual CSS rules, independently of geometry's direction.
-    ball: () => ({
-      x: f.bounds.x + (classes.has('expand-left') ? f.bounds.width - chrome - ballSize : chrome),
-      y: f.bounds.y + (classes.has('expand-up') ? f.bounds.height - chrome - ballSize : chrome),
-    }),
+    ball,
   }
 }
 

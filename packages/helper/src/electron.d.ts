@@ -9,6 +9,7 @@ declare module 'electron' {
   interface Display {
     bounds: Rectangle
     workArea: Rectangle
+    scaleFactor: number
   }
 
   interface WebContents {
@@ -60,6 +61,8 @@ declare module 'electron' {
     show?: boolean
     backgroundColor?: string
     roundedCorners?: boolean
+    /** Windows only. `false` drops the resize border on a frameless window. */
+    thickFrame?: boolean
     type?: string
     webPreferences?: {
       preload?: string
@@ -110,6 +113,8 @@ declare module 'electron' {
     getPrimaryDisplay(): Display
     getAllDisplays(): Display[]
     getDisplayNearestPoint(point: { x: number; y: number }): Display
+    /** Absolute cursor position in DIPs, the same space `BrowserWindow` bounds use. */
+    getCursorScreenPoint(): { x: number; y: number }
     screenToDipRect(window: null, rect: Rectangle): Rectangle
   }
 

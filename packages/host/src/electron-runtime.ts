@@ -26,12 +26,18 @@ export const PINNED_SHA256: Readonly<Record<string, string>> = {
   'electron-v44.0.0-win32-x64.zip': 'e61aa3bcea8152bc0730abd015e47c032d778a0ef10e2a1c78ba3c4ea47942f9',
 }
 
+/** What {@link resolveElectronBinary} is busy with, for the settings page's progress line. */
+export type ElectronRuntimePhase = 'downloading' | 'extracting'
+
 /**
  * Resolve the helper executable.
  * `DSH_ORB_ELECTRON_PATH` wins. Otherwise use the cached official zip, downloading it once.
+ * @param report - optional phase callback; fires only when a download is actually needed.
  * @returns absolute path to the Electron executable.
  */
-export async function resolveElectronBinary(): Promise<string> {
+export async function resolveElectronBinary(
+  report?: (phase: ElectronRuntimePhase) => void,
+): Promise<string> {
   const override = process.env.DSH_ORB_ELECTRON_PATH?.trim()
   if (override) {
     await access(override)
@@ -41,11 +47,16 @@ export async function resolveElectronBinary(): Promise<string> {
   const binary = join(dest, binaryRelative())
   const marker = join(dest, `.complete-${ELECTRON_VERSION}`)
   if (await exists(binary) && await exists(marker)) return binary
-  await downloadRuntime(dest, binary, marker)
+  await downloadRuntime(dest, binary, marker, report)
   return binary
 }
 
-async function downloadRuntime(dest: string, binary: string, marker: string): Promise<void> {
+async function downloadRuntime(
+  dest: string,
+  binary: string,
+  marker: string,
+  report?: (phase: ElectronRuntimePhase) => void,
+): Promise<void> {
   const parent = dirname(dest)
   await mkdir(parent, { recursive: true })
   await withDownloadLock(parent, async () => {
@@ -58,7 +69,9 @@ async function downloadRuntime(dest: string, binary: string, marker: string): Pr
     const zipPath = join(parent, `.electron-${stamp}.zip`)
     const staging = join(parent, `.electron-staging-${stamp}`)
     try {
+      report?.('downloading')
       await downloadVerifiedZip(fileName, expected, zipPath)
+      report?.('extracting')
       await mkdir(staging, { recursive: true })
       await extractZip(zipPath, staging)
       const stagedBinary = join(staging, binaryRelative())

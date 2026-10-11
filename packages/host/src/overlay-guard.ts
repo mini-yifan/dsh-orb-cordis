@@ -31,6 +31,8 @@ export interface OverlayGuardTransport {
    * reports nothing: the ball there is a non-activating panel and never becomes foreground.
    */
   chromeWindowIds?(): readonly number[]
+  /** The user's observation-ribbon preference; absent or true draws frames. */
+  observationFrameEnabled?(): boolean
   sleep?(ms: number): Promise<void>
 }
 
@@ -105,14 +107,17 @@ export function createOverlayGuard(transport: OverlayGuardTransport) {
 
     async setObservationFrame(bounds: OverlayRect | null, signal?: AbortSignal): Promise<void> {
       if (!transport.hasHelper()) return
-      if (bounds !== null && signal?.aborted) {
+      // Switched off: a show request collapses to a hide, so a frame that is
+      // already on screen goes away and no new one comes back.
+      const wanted = bounds === null || transport.observationFrameEnabled?.() === false ? null : bounds
+      if (wanted !== null && signal?.aborted) {
         await transport.send({ type: 'observation-frame', id: randomUUID(), bounds: null })
         return
       }
       try {
-        await transport.send({ type: 'observation-frame', id: randomUUID(), bounds }, signal)
+        await transport.send({ type: 'observation-frame', id: randomUUID(), bounds: wanted }, signal)
       } catch (error) {
-        if (bounds !== null && signal?.aborted) {
+        if (wanted !== null && signal?.aborted) {
           await transport.send({ type: 'observation-frame', id: randomUUID(), bounds: null })
           return
         }

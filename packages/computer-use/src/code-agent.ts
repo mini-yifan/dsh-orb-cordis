@@ -14,7 +14,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { SessionCreateRequest, SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types'
 import { watchCodeAgentCompletion } from './code-agent-completion.ts'
-import { CODE_AGENT_REGISTRY, sharedCodeAgentRegistry } from './code-agent-registry.ts'
+import { sharedCodeAgentRegistry } from './code-agent-registry.ts'
 import { attachUnattendedCodeAgent } from './code-agent-unattended.ts'
 import { selectModelKeepDefault, type SelectModelKeepDefaultHost } from './select-model.ts'
 import type {} from '@deepseek-ai/dsh-agent'
@@ -263,12 +263,10 @@ export function apply(ctx: Context): void {
   const byCaller = new Map<SessionId, Map<SessionId, Delegation>>()
   const rememberedCallers = new WeakSet<Agent>()
   const unattended = new WeakSet<Agent>()
+  // Provided app-level (code-agent-registry's apply): a provide from inside
+  // this preset fails the official mount audit ("Preset services require
+  // isolate realms: codeAgentRegistry").
   const registry = sharedCodeAgentRegistry()
-  try {
-    ctx.provide(CODE_AGENT_REGISTRY, registry)
-  } catch {
-    // One registry per host process; a repeated apply reuses the provided one.
-  }
 
   ctx.tools.register(defineTool({
     name: TOOL_NAME,

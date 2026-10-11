@@ -7,7 +7,7 @@
  * Windows only: every entry point is inert on other platforms.
  */
 
-import { createRequire } from 'node:module'
+import { requireKoffi } from './native-images.ts'
 
 /** How often the foreground window is sampled. */
 export const FOREGROUND_SAMPLE_MS = 250
@@ -127,8 +127,7 @@ function keyboardInput(virtualKey: number, down: boolean): Buffer {
 }
 
 function loadWindowsForeground(): ForegroundNative {
-  const require = createRequire(import.meta.url)
-  const koffi = require('koffi') as { load(path: string): { func(signature: string): (...args: unknown[]) => unknown } }
+  const koffi = requireKoffi<{ load(path: string): { func(signature: string): (...args: unknown[]) => unknown } }>(import.meta.url)
   const user32 = koffi.load('user32.dll')
   const getForeground = user32.func('void * __stdcall GetForegroundWindow()')
   const setForeground = user32.func('int __stdcall SetForegroundWindow(void *hWnd)')

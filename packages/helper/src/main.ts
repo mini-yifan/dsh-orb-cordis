@@ -126,15 +126,37 @@ ipcMain.handle('orb:expand', (event, expanded) => {
   return placement.setExpanded(expanded)
 })
 
-ipcMain.handle('orb:move', (event, request) => {
-  if (!fromBall(event) || !placement || !isMove(request)) return { docked: undefined }
-  return placement.move(request.x, request.y, request.canDock)
+// Drag: the renderer only signals. Every position comes from the OS cursor, which
+// shares the DIP space the window bounds use, so no renderer-side coordinate can go stale.
+ipcMain.on('orb:drag-press', (event) => {
+  if (!fromBall(event) || !placement) return
+  placement.press(cursorPoint())
 })
 
-ipcMain.handle('orb:clamp', async (event, canDock) => {
-  if (!fromBall(event) || !placement) return { docked: undefined }
-  return placement.clamp(canDock !== false)
+ipcMain.on('orb:drag-begin', (event) => {
+  if (!fromBall(event) || !placement) return
+  placement.beginDrag()
 })
+
+ipcMain.on('orb:drag-move', (event, canDock) => {
+  if (!fromBall(event) || !placement) return
+  const state = placement.dragTo(cursorPoint(), canDock !== false)
+  // An expanded cross-screen drag can change growth direction on this step.
+  if (state.horizontal && state.vertical) win?.webContents.send('orb:expand-state', state)
+})
+
+ipcMain.handle('orb:drag-end', async (event, canDock) => {
+  if (!fromBall(event) || !placement) return { docked: undefined }
+  const cursor = cursorPoint()
+  const result = await placement.endDrag(cursor, canDock !== false)
+  logDockDiagnostics(cursor, result)
+  return result
+})
+
+function cursorPoint(): { x: number; y: number } {
+  const point = screen.getCursorScreenPoint()
+  return { x: point.x, y: point.y }
+}
 
 ipcMain.handle('orb:unsnap', async (event) => {
   if (!fromBall(event) || !placement) return { docked: undefined }
@@ -241,6 +263,9 @@ function openWindow(): BrowserWindow {
     show: false,
     backgroundColor: '#00000000',
     roundedCorners: false,
+    // The default thick frame is a resize border. On a scaled display its DIP
+    // inset does not match the bounds we set, so the ball stops short of the edge.
+    ...process.platform === 'win32' ? { thickFrame: false } : {},
     ...process.platform === 'darwin' ? { type: 'panel' } : {},
     webPreferences: {
       preload: fileURLToPath(new URL('../preload.cjs', import.meta.url)),
@@ -462,13 +487,28 @@ function write(message: unknown): void {
   live.write(`${JSON.stringify(message)}\n`)
 }
 
-function isMove(value: unknown): value is { x: number; y: number; canDock: boolean } {
-  if (typeof value !== 'object' || value === null) return false
-  const point = value as { x?: unknown; y?: unknown; canDock?: unknown }
-  return typeof point.x === 'number' && typeof point.y === 'number'
-    && Number.isFinite(point.x) && Number.isFinite(point.y)
-    && Math.abs(point.x) <= 100_000 && Math.abs(point.y) <= 100_000
-    && typeof point.canDock === 'boolean'
+/**
+ * Docking diagnostics, off unless `DSH_ORB_DOCK_DEBUG` is set. One stderr line per
+ * drag release: the cursor the drag ended on, the window bounds the OS applied,
+ * every display with its scaleFactor, and the decision. A machine that will not
+ * dock reports here, which is the only way to diagnose a display/DPI layout we
+ * cannot reproduce.
+ */
+function logDockDiagnostics(cursor: { x: number; y: number }, result: { docked?: 'left' | 'right' }): void {
+  if (process.env.DSH_ORB_DOCK_DEBUG !== '1') return
+  if (!win || win.isDestroyed()) return
+  const displays = screen.getAllDisplays().map((display) => ({
+    bounds: display.bounds,
+    workArea: display.workArea,
+    scaleFactor: display.scaleFactor,
+  }))
+  console.error(`[orb-dock] ${JSON.stringify({
+    electron: process.versions.electron,
+    cursor,
+    window: win.getBounds(),
+    displays,
+    docked: result.docked ?? null,
+  })}`)
 }
 
 function zhLocale(): boolean {
@@ -580,6 +620,9 @@ function updateStatusText(message: { state?: unknown; version?: unknown; reason?
   }
   if (message.state === 'done') {
     return zh ? `已更新到 ${version}，重启 DeepSeek Harness 后生效` : `Updated to ${version} — restart DeepSeek Harness to apply it`
+  }
+  if (message.state === 'deferred') {
+    return zh ? `${version} 将在退出 DeepSeek Harness 后自动安装，请退出后再重新打开` : `${version} installs once DeepSeek Harness quits — quit it, then reopen it`
   }
   if (message.state === 'failed') {
     return zh ? `更新失败：${updateFailureText(message.reason, true)}` : `Update failed: ${updateFailureText(message.reason, false)}`

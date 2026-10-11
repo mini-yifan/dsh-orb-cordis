@@ -83,7 +83,9 @@ describe('settings routes', () => {
       async setBackgroundModel(selection) { store.setBackground(selection); calls.push(['background', selection]) },
       async setSelectionEnabled(enabled) { store.setSelectionEnabled(enabled) },
       async setMillifractionEnabled(enabled) { store.setMillifractionEnabled(enabled) },
+      async setObservationFrameEnabled(enabled) { store.setObservationFrameEnabled(enabled) },
       async setBallEnabled(enabled) { store.setBallEnabled(enabled) },
+      helperPhase: () => 'downloading',
       updateState: () => ({
         currentVersion: '0.1.0',
         installedVersion: '0.1.0',
@@ -150,12 +152,14 @@ describe('settings routes', () => {
     const snapshot = JSON.parse(settings.body.toString('utf8')) as {
       avatarUrl: string
       ballEnabled: boolean
+      helperPhase: string
       overlay: { model: string }
       supported: boolean
       permissionFallback: boolean
       update: { currentVersion: string; latestVersion: string; available: boolean; autoCheck: boolean }
     }
     assert.equal(settings.status, 200)
+    assert.equal(snapshot.helperPhase, 'downloading', 'the settings page can show the runtime wait')
     assert.equal(snapshot.avatarUrl, '/.dsh-orb/avatar?v=0')
     assert.equal(snapshot.avatarUrl.includes('token'), false)
     assert.equal(snapshot.ballEnabled, true)
@@ -205,6 +209,11 @@ describe('settings routes', () => {
     await handler(request('POST', '/.dsh-orb/millifraction', JSON.stringify({ enabled: true }), { 'x-dsh-user': 'ok' }), fraction)
     assert.equal(JSON.parse(fraction.body.toString('utf8')).millifractionEnabled, true)
     assert.equal(store.coordinateMode(), 'millifraction')
+
+    const frame = response()
+    await handler(request('POST', '/.dsh-orb/observation-frame', JSON.stringify({ enabled: false }), { 'x-dsh-user': 'ok' }), frame)
+    assert.equal(JSON.parse(frame.body.toString('utf8')).observationFrameEnabled, false)
+    assert.equal(store.observationFrameEnabled(), false)
 
     const ball = response()
     await handler(request('POST', '/.dsh-orb/ball', JSON.stringify({ enabled: false }), { 'x-dsh-user': 'ok' }), ball)
@@ -290,6 +299,7 @@ describe('settings routes', () => {
       async setBackgroundModel() {},
       async setSelectionEnabled() {},
       async setMillifractionEnabled() {},
+      async setObservationFrameEnabled() {},
       async setBallEnabled() {},
       updateState: () => ({ ...emptyUpdate, currentVersion: '0.1.0', installedVersion: '0.1.0' }),
       async checkUpdate() { calls.push('check') },
@@ -362,6 +372,7 @@ describe('settings routes', () => {
       async setBackgroundModel() {},
       async setSelectionEnabled() {},
       async setMillifractionEnabled() {},
+      async setObservationFrameEnabled() {},
       async setBallEnabled() {},
       updateState: () => ({ ...emptyUpdate }),
       async checkUpdate() {},

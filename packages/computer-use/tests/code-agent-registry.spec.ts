@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { createCodeAgentRegistry } from '../src/code-agent-registry.ts'
+import { apply, CODE_AGENT_REGISTRY, createCodeAgentRegistry, sharedCodeAgentRegistry } from '../src/code-agent-registry.ts'
 
 type Listener = (payload?: unknown) => void
 
@@ -89,6 +90,15 @@ function recordOptions(overrides: Partial<Parameters<ReturnType<typeof createCod
     ...overrides,
   }
 }
+
+describe('registry provider plugin', () => {
+  it('provides the shared registry under the app-level service name', () => {
+    const provided = new Map<string, unknown>()
+    const ctx = { provide: (key: string, value: unknown) => { provided.set(key, value) } } as unknown as Context
+    apply(ctx)
+    expect(provided.get(CODE_AGENT_REGISTRY)).toBe(sharedCodeAgentRegistry())
+  })
+})
 
 describe('code agent bookmark registry', () => {
   it('records a delegation as running and reports its fields', () => {

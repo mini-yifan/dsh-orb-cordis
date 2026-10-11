@@ -90,6 +90,15 @@ describe('profile preferences', () => {
     assert.equal(JSON.parse(readFileSync(join(path, 'millifraction-coordinates.json'), 'utf8')).enabled, true)
   })
 
+  it('keeps the observation ribbon on by default and remembers it switched off', () => {
+    const path = dir('observation-frame')
+    const store = new ProfileStore(path)
+    assert.equal(store.observationFrameEnabled(), true)
+    store.setObservationFrameEnabled(false)
+    assert.equal(JSON.parse(readFileSync(join(path, 'observation-frame.json'), 'utf8')).enabled, false)
+    assert.equal(new ProfileStore(path).observationFrameEnabled(), false)
+  })
+
   it('turns the ball off in ball-enabled.json and accepts only gif, png, and webp avatars', () => {
     const path = dir('avatar')
     const store = new ProfileStore(path)

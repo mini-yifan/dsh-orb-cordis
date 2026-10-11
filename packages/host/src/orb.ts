@@ -155,6 +155,14 @@ interface AgentBookmarkRegistry {
 
 /** Cordis service name of {@link AgentBookmarkRegistry}. */
 const CODE_AGENT_REGISTRY = 'codeAgentRegistry'
+/**
+ * Backoff before the first-run runtime download is retried; the last entry is
+ * the self-heal attempt. One dropped connection must not cost the user the ball
+ * until they find the toggle.
+ */
+const RUNTIME_RETRY_DELAYS_MS = [5_000, 30_000, 2 * 60_000]
+/** Same shape for a helper that exits right after launch; the last entry self-heals. */
+const HELPER_RETRY_DELAYS_MS = [500, 2_000, 10_000, 5 * 60_000]
 /** Strip poll cadence; the helper ticks elapsed clocks itself. */
 const AGENT_POLL_MS = 1_000
 /** How long a ball-initiated jump target stays valid: long enough for a cold app launch. */
@@ -258,6 +266,9 @@ export class OrbRuntime {
   private opening = false
   private pendingStart = false
   private helperError: string | undefined
+  /** 'downloading'/'extracting' while the helper runtime is prepared; '' otherwise. */
+  private runtimePhase = ''
+  private runtimeRetries = 0
   private userData = ''
   /** Newer version waiting to be installed, or null once none is known. */
   private updateAvailable: string | null = null
@@ -301,6 +312,7 @@ export class OrbRuntime {
     send: (message, signal) => this.waitAck(message, signal),
     setHidInput: (active) => { this.selection.setHidInput(active) },
     chromeWindowIds: () => this.chromeWindowIds(),
+    observationFrameEnabled: () => this.store.observationFrameEnabled(),
   })
   /**
    * Windows only. Clicking the ball makes it the system foreground window, so the window
@@ -404,6 +416,7 @@ export class OrbRuntime {
     this.halted = false
     this.failures = 0
     this.helperError = undefined
+    this.runtimePhase = ''
     if (this.child !== undefined && this.child.exitCode === null && this.child.signalCode === null && this.server) return
     if (this.retry) clearTimeout(this.retry)
     this.retry = undefined
@@ -431,6 +444,46 @@ export class OrbRuntime {
     return this.helperError ?? ''
   }
 
+  /** What the runtime preparation is busy with, for the settings page's waiting line. */
+  helperPhase(): string {
+    return this.runtimePhase
+  }
+
+  /**
+   * The first-run runtime download retried with backoff. While attempts remain
+   * the phase stays on screen; only a spent budget surfaces the failure.
+   */
+  private async beginRuntime(generation: number): Promise<boolean> {
+    try {
+      this.binary = await resolveElectronBinary((phase) => { this.runtimePhase = phase })
+      this.runtimePhase = ''
+      this.runtimeRetries = 0
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`dsh-orb: ${message}`)
+      this.runtimeRetries += 1
+      const delay = RUNTIME_RETRY_DELAYS_MS[this.runtimeRetries - 1]
+      if (delay !== undefined && !this.halted && generation === this.generation) {
+        this.runtimePhase = 'downloading'
+        console.error(`dsh-orb: retrying the runtime download in ${Math.round(delay / 1000)}s`)
+        this.retry = setTimeout(() => {
+          this.retry = undefined
+          void this.start().catch((error: unknown) => {
+            console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
+          })
+        }, delay)
+        this.retry.unref()
+        return false
+      }
+      this.runtimePhase = ''
+      this.helperError = 'runtime-download'
+      this.server?.close()
+      this.server = undefined
+      return false
+    }
+  }
+
   private async begin(generation: number): Promise<void> {
     if (!this.server) await this.listen()
     if (this.halted || generation !== this.generation) {
@@ -444,16 +497,7 @@ export class OrbRuntime {
       this.sessionError = error instanceof Error ? error.message : String(error)
       console.error(`dsh-orb: session setup failed: ${this.sessionError}`)
     })
-    try {
-      this.binary = await resolveElectronBinary()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error(`dsh-orb: ${message}`)
-      this.helperError = 'runtime-download'
-      this.server?.close()
-      this.server = undefined
-      return
-    }
+    if (!await this.beginRuntime(generation)) return
     await sessionTask
     if (this.halted || generation !== this.generation) return
     this.userData = helperDataDirectory(this.store.dir)
@@ -476,6 +520,7 @@ export class OrbRuntime {
     this.generation += 1
     this.halted = true
     this.pendingStart = false
+    this.runtimePhase = ''
     if (this.retry) clearTimeout(this.retry)
     this.retry = undefined
     this.stopWatch()
@@ -1279,13 +1324,14 @@ export class OrbRuntime {
       settled = true
       if (this.child === child) this.child = undefined
       this.failures += 1
-      if (this.failures > 3) {
+      const delay = HELPER_RETRY_DELAYS_MS[this.failures - 1]
+      if (delay === undefined) {
         this.helperError = 'helper-exited'
         console.error('dsh-orb: helper exited too many times; ball stays hidden')
         return
       }
       console.error(`dsh-orb: helper exited (${reason}); retry ${this.failures}`)
-      this.retry = setTimeout(() => this.launch(), 500)
+      this.retry = setTimeout(() => this.launch(), delay)
       this.retry.unref()
     }
     child.once('error', (error) => fail(error.message))
@@ -1384,10 +1430,19 @@ export class OrbRuntime {
     else await this.publishChrome()
   }
 
+  /** The observation ribbon. Turning it off takes any live frame down at once. */
+  async setObservationFrameEnabled(enabled: boolean): Promise<void> {
+    if (this.store.observationFrameEnabled() === enabled) return
+    this.store.setObservationFrameEnabled(enabled)
+    if (!enabled) await this.overlay.setObservationFrame(null)
+  }
+
   async setBallEnabled(enabled: boolean): Promise<void> {
     this.store.setBallEnabled(enabled)
     if (process.platform === 'linux') return
     if (enabled) {
+      // A manual retry grants a fresh download budget.
+      this.runtimeRetries = 0
       void this.start().catch((error: unknown) => {
         console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
       })
@@ -1434,7 +1489,7 @@ export class OrbRuntime {
         })
         return
       }
-      this.broadcast({ type: 'update', state: 'done', version, restart: state.restartRequired })
+      this.broadcast({ type: 'update', state: state.deferred ? 'deferred' : 'done', version, restart: state.restartRequired })
     })
   }
 

@@ -4,9 +4,12 @@
  * so mouse/hotkey/scroll use numeric event types with a retained event source
  * and intra-event sleeps, and `input_text` pastes via NSPasteboard + Cmd+V.
  * Tests inject a {@link CommandRunner}; production uses `/usr/bin/osascript`
- * and `/usr/sbin/screencapture` plus `sips` crop of the frontmost-app window union,
- * or the ScreenCaptureKit overlay-exclude path when overlay window ids are active
- * (`screencapture -R` fails on this OS). Desktop Host calls `captureExcludedRegion`
+ * and `/usr/sbin/screencapture -R` over the frontmost-app window union,
+ * or the ScreenCaptureKit overlay-exclude path when overlay window ids are active.
+ * `-R` resolves the display that owns the rectangle, so a window on a secondary
+ * display is read from that display; a bare `screencapture` writes the main display
+ * only, which made every secondary-display observation return main-display pixels.
+ * Desktop Host calls `captureExcludedRegion`
  * so ScreenCaptureKit runs in the Electron process; CLI still spawns `macos-sck-capture`.
  * Foreground inspect uses
  * CGWindowList (skip overlay ids only) plus Finder AppleScript for the current
@@ -71,7 +74,6 @@ export type CommandRunner = (
 const SCREENCAPTURE = '/usr/sbin/screencapture'
 const OSASCRIPT = '/usr/bin/osascript'
 const OPEN = '/usr/bin/open'
-const SIPS = '/usr/bin/sips'
 
 /**
  * Absolute path of the Darwin ScreenCaptureKit overlay-exclude helper.
@@ -178,6 +180,8 @@ function jxaKeySet(keys: readonly (number | string)[]): string {
  * Binds `CGWindowListCopyWindowInfo` as returning `id` so `ObjC.deepUnwrap` is an array.
  * Skips remaining windows with an edge below {@link MIN_LAYER0_WINDOW_EDGE}.
  * Then unions every same-screen window of that app family into `x`/`y`/`width`/`height`.
+ * The owning display's flipped frame is reported as `screen`, so the capture region can be
+ * clipped to it without a second screen lookup.
  * Family PIDs come from NSWorkspace: same process, related localized names, or bundle-id prefix.
  * Unrelated PIDs join only at layer 101 when they intersect the owner.
  * @param excludeWindowIds - overlay CGWindowIDs omitted from the remaining z-order.
@@ -197,23 +201,36 @@ const pad = ${String(CROSS_PID_TRANSIENT_PAD)}
 const windows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)) || []
 const primary = $.NSScreen.screens.objectAtIndex(0).frame
 const primaryHeight = primary.size.height
-function screenIndex(x, y, w, h) {
+function screenAt(x, y, w, h) {
   var cx = x + w / 2
   var cy = y + h / 2
   var screens = $.NSScreen.screens.js
   for (var i = 0; i < screens.length; i++) {
     var f = screens[i].frame
+    // AppKit frames use a bottom-left origin; window bounds and the screencapture
+    // region flag share the main display's top-left origin, so flip the frame here.
     var sx = f.origin.x
     var sy = primaryHeight - f.origin.y - f.size.height
     if (cx >= sx && cx < sx + f.size.width && cy >= sy && cy < sy + f.size.height) {
-      return i
+      return {
+        index: i,
+        x: sx,
+        y: sy,
+        width: f.size.width,
+        height: f.size.height,
+        scale: Number(screens[i].backingScaleFactor),
+      }
     }
   }
-  return -1
+  return null
+}
+function screenIndex(x, y, w, h) {
+  var screen = screenAt(x, y, w, h)
+  return screen ? screen.index : -1
 }
 function screenScale(x, y, w, h) {
-  var index = screenIndex(x, y, w, h)
-  if (index >= 0) return Number($.NSScreen.screens.js[index].backingScaleFactor)
+  var screen = screenAt(x, y, w, h)
+  if (screen && screen.scale > 0) return screen.scale
   var main = $.NSScreen.mainScreen
   var fallback = main ? Number(main.backingScaleFactor) : 1
   return fallback > 0 ? fallback : 1
@@ -274,10 +291,11 @@ for (var i = 0; i < windows.length; i++) {
   var y = b ? Number(b.Y) : NaN
   var width = b ? Number(b.Width) : NaN
   var height = b ? Number(b.Height) : NaN
-  var scale = screenScale(x, y, width, height)
+  var owner = screenAt(x, y, width, height)
+  var scale = owner ? owner.scale : screenScale(x, y, width, height)
   if (!(width >= minEdge) || !(height >= minEdge) || !(scale > 0)) continue
   ownerPid = Number(w.kCGWindowOwnerPID)
-  ownerScreen = screenIndex(x, y, width, height)
+  ownerScreen = owner ? owner.index : -1
   found = {
     appName: name,
     windowId: id,
@@ -286,6 +304,11 @@ for (var i = 0; i < windows.length; i++) {
     width: width,
     height: height,
     scale: scale,
+  }
+  // The owning display rect lets the caller clip the capture region the same way the
+  // screencapture region flag does, so raster, ribbon, and click mapping stay one rectangle.
+  if (owner) {
+    found.screen = { x: owner.x, y: owner.y, width: owner.width, height: owner.height }
   }
   var title = w.kCGWindowName
   if (typeof title === 'string' && title.trim().length > 0) found.windowTitle = title.trim()
@@ -447,6 +470,8 @@ interface ParsedFrontmost {
   readonly bounds?: ScreenInfo['bounds']
   readonly scale?: number
   readonly transientWindowIds?: readonly number[]
+  /** Display that owns {@link bounds}, in the same top-left global space. */
+  readonly displayBounds?: ScreenInfo['bounds']
 }
 
 function parseTransientIds(value: unknown): number[] | undefined {
@@ -458,6 +483,17 @@ function parseTransientIds(value: unknown): number[] | undefined {
     ids.push(id)
   }
   return ids.length === 0 ? undefined : ids
+}
+
+function parseDisplayBounds(value: unknown): ScreenInfo['bounds'] | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  const x = Number(row.x)
+  const y = Number(row.y)
+  const width = Number(row.width)
+  const height = Number(row.height)
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return undefined
+  return { x, y, width, height }
 }
 
 function parseFrontmost(stdout: string): ParsedFrontmost | undefined {
@@ -478,6 +514,7 @@ function parseFrontmost(stdout: string): ParsedFrontmost | undefined {
     const height = Number(row.height)
     const scale = Number(row.scale)
     const transientWindowIds = parseTransientIds(row.transients)
+    const displayBounds = parseDisplayBounds(row.screen)
     const hasSurface = Number.isInteger(windowId)
       && windowId > 0
       && [x, y, width, height, scale].every(Number.isFinite)
@@ -492,6 +529,7 @@ function parseFrontmost(stdout: string): ParsedFrontmost | undefined {
         bounds: { x, y, width, height },
         scale,
         ...transientWindowIds === undefined ? {} : { transientWindowIds },
+        ...displayBounds === undefined ? {} : { displayBounds },
       } : {},
     }
   } catch {
@@ -499,13 +537,37 @@ function parseFrontmost(stdout: string): ParsedFrontmost | undefined {
   }
 }
 
+/**
+ * Intersect one observed rectangle with the display that owns it.
+ * `screencapture -R` drops the part of a region outside its display, so the reported
+ * bounds must be that same visible rectangle; otherwise the 0–1000 click mapping,
+ * the observation ribbon, and the attached raster would describe three rectangles.
+ * @param bounds - window union in global logical points.
+ * @param display - owning display frame, or `undefined` when JXA found no screen.
+ * @returns the visible rectangle, or `undefined` when nothing is on that display.
+ */
+function clipToDisplay(
+  bounds: ScreenInfo['bounds'],
+  display: ScreenInfo['bounds'] | undefined,
+): ScreenInfo['bounds'] | undefined {
+  if (display === undefined) return bounds
+  const x = Math.max(bounds.x, display.x)
+  const y = Math.max(bounds.y, display.y)
+  const right = Math.min(bounds.x + bounds.width, display.x + display.width)
+  const bottom = Math.min(bounds.y + bounds.height, display.y + display.height)
+  if (!(right > x) || !(bottom > y)) return undefined
+  return { x, y, width: right - x, height: bottom - y }
+}
+
 function screenFromFrontmost(parsed: ParsedFrontmost): ScreenInfo | undefined {
   if (parsed.windowId === undefined || parsed.bounds === undefined || parsed.scale === undefined) {
     return undefined
   }
+  const bounds = clipToDisplay(parsed.bounds, parsed.displayBounds)
+  if (bounds === undefined) return undefined
   return {
     index: 0,
-    bounds: parsed.bounds,
+    bounds,
     scale: parsed.scale,
     windowId: parsed.windowId,
     ...parsed.transientWindowIds === undefined ? {} : { transientWindowIds: parsed.transientWindowIds },
@@ -590,27 +652,18 @@ function parseOpenAppDecision(stdout: string): { kind: 'activated' | 'launch'; n
   throw new Error('computer-use: open_app failed: unreadable activate result')
 }
 
+/**
+ * `screencapture -R` region argument: rounded logical points in global top-left space.
+ * The tool resolves the display that owns the rectangle and returns that display's pixels.
+ * @param bounds - observed rectangle, already clipped to its owning display.
+ * @returns `x,y,width,height`.
+ */
 function regionCaptureSpec(bounds: ScreenInfo['bounds']): string {
   const x = Math.round(bounds.x)
   const y = Math.round(bounds.y)
   const width = Math.max(1, Math.round(bounds.width))
   const height = Math.max(1, Math.round(bounds.height))
   return `${String(x)},${String(y)},${String(width)},${String(height)}`
-}
-
-function regionCropPixels(screen: ScreenInfo): {
-  readonly x: number
-  readonly y: number
-  readonly width: number
-  readonly height: number
-} {
-  const scale = screen.scale
-  return {
-    x: Math.max(0, Math.round(screen.bounds.x * scale)),
-    y: Math.max(0, Math.round(screen.bounds.y * scale)),
-    width: Math.max(1, Math.round(screen.bounds.width * scale)),
-    height: Math.max(1, Math.round(screen.bounds.height * scale)),
-  }
 }
 
 function keyCode(token: string): number {
@@ -895,21 +948,11 @@ export function createMacosDesktopBackend(
       try {
         const region = regionCaptureSpec(screen.bounds)
         if (excludeWindowIds.length === 0) {
-          const full = join(dir, 'full.jpg')
-          // `-C` bakes the system cursor into the raster so the agent can see where its clicks actually land.
-          await run(SCREENCAPTURE, ['-x', '-C', '-t', 'jpg', full], { signal })
-          const crop = regionCropPixels(screen)
-          await run(SIPS, [
-            '--cropOffset',
-            String(crop.y),
-            String(crop.x),
-            '-c',
-            String(crop.height),
-            String(crop.width),
-            full,
-            '--out',
-            file,
-          ], { signal })
+          // `-R` reads the rectangle from the display that owns it, at that display's pixel
+          // scale, and `-C` bakes the system cursor in so the agent sees where its clicks land.
+          // A bare `screencapture` would write the main display only and the observed window
+          // of a secondary display would come back as main-display pixels.
+          await run(SCREENCAPTURE, ['-x', '-C', '-R', region, '-t', 'jpg', file], { signal })
         } else {
           await overlayCapture(region, excludeWindowIds)
         }
