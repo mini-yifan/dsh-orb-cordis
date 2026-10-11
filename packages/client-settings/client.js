@@ -284,16 +284,27 @@ window.__ModuleLoader__.load({
         avatarError: '',
       })
 
+      // Responses overtake each other: a focus-triggered load, a poll, and a save can all be
+      // in flight. Only the newest generation may write the snapshot, so a stale GET cannot
+      // undo a save that landed after it.
+      let loadGeneration = 0
+
+      function applySnapshot(gen, next) {
+        if (gen !== loadGeneration) return
+        setState(next)
+      }
+
       async function load() {
+        const gen = ++loadGeneration
         setState((prev) => ({ ...prev, status: prev.snapshot ? prev.status : 'loading', error: '', avatarError: '' }))
         try {
           const [snapshot, catalog] = await Promise.all([
             request('/.dsh-orb/settings'),
             request('/.dsh-orb/models'),
           ])
-          setState({ status: 'ready', error: '', snapshot, catalog: catalog || { groups: [] }, busy: false, avatarError: '' })
+          applySnapshot(gen, { status: 'ready', error: '', snapshot, catalog: catalog || { groups: [] }, busy: false, avatarError: '' })
         } catch (error) {
-          setState((prev) => ({
+          applySnapshot(gen, (prev) => ({
             ...prev,
             status: 'error',
             busy: false,
@@ -327,24 +338,29 @@ window.__ModuleLoader__.load({
       }, [preparing])
 
       async function refreshSettings() {
+        const gen = ++loadGeneration
         try {
           const snapshot = await request('/.dsh-orb/settings')
-          setState((prev) => prev.snapshot ? { ...prev, snapshot } : prev)
+          applySnapshot(gen, (prev) => prev.snapshot ? { ...prev, snapshot } : prev)
         } catch {
           // Keep the last known state; the next poll or a page reload tries again.
         }
       }
 
       async function refreshUpdate() {
+        const gen = ++loadGeneration
         try {
           const update = await request('/.dsh-orb/update')
-          setState((prev) => prev.snapshot ? { ...prev, snapshot: { ...prev.snapshot, update } } : prev)
+          applySnapshot(gen, (prev) => prev.snapshot ? { ...prev, snapshot: { ...prev.snapshot, update } } : prev)
         } catch {
           // Keep the last known state; the next poll or a page reload tries again.
         }
       }
 
       async function mutate(path, body, avatarError) {
+        // This save outranks anything already in flight (the confirm-dialog focus load, a
+        // poll): whatever started earlier must not overwrite the response to it.
+        const gen = ++loadGeneration
         setState((prev) => ({ ...prev, busy: true, avatarError: avatarError || '' }))
         try {
           const snapshot = await request(path, {
@@ -354,10 +370,10 @@ window.__ModuleLoader__.load({
               : { 'content-type': 'application/json' },
             body: body instanceof ArrayBuffer ? body : JSON.stringify(body),
           })
-          setState((prev) => ({ ...prev, status: 'ready', snapshot, busy: false, avatarError: '' }))
+          applySnapshot(gen, (prev) => ({ ...prev, status: 'ready', snapshot, busy: false, avatarError: '' }))
         } catch (error) {
           const code = error instanceof Error ? error.message : ''
-          setState((prev) => ({
+          applySnapshot(gen, (prev) => ({
             ...prev,
             busy: false,
             avatarError: code === 'too-large' || code === 'invalid-type' ? code : prev.avatarError,

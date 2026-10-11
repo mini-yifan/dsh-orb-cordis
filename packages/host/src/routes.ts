@@ -77,8 +77,30 @@ export function registerOrbRoutes(deps: RouteDeps): () => void {
   return deps.ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX,
-    handler: (req, res) => handle(deps, req, res),
+    // A rejected handler used to hang the request (the official server does not answer it):
+    // a bad body must come back as 400, not as an unhandled rejection.
+    handler: (req, res) => handle(deps, req, res).catch((error: unknown) => {
+      if (res.headersSent) {
+        res.end()
+        return
+      }
+      const status = errorStatus(error) ?? 500
+      if (status === 500) {
+        console.error(`dsh-orb: route failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      sendJson(res, status, { error: status === 500 ? 'internal-error' : errorMessage(error) })
+    }),
   })
+}
+
+/** A status a rejected route asked for: `readBody` sets 413, `readJson` sets 400. */
+function errorStatus(error: unknown): number | undefined {
+  const status = (error as { status?: unknown } | undefined)?.status
+  return typeof status === 'number' && status >= 400 && status < 600 ? status : undefined
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message !== '' ? error.message : 'request-failed'
 }
 
 export function orbSupported(platform: NodeJS.Platform = process.platform): boolean {
@@ -425,7 +447,12 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const bytes = await readBody(req, 64 * 1024)
   if (bytes.length === 0) return undefined
-  return JSON.parse(bytes.toString('utf8')) as unknown
+  try {
+    return JSON.parse(bytes.toString('utf8')) as unknown
+  } catch {
+    // The route wrapper answers 400; without it the request would hang.
+    throw Object.assign(new Error('invalid-json'), { status: 400 })
+  }
 }
 
 function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {

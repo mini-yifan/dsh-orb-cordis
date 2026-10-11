@@ -6,7 +6,7 @@ import { after, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { normalizeCatalog } from '../src/catalog.ts'
-import { ProfileStore } from '../src/preferences.ts'
+import { ProfileStore, MAX_AVATAR_BYTES } from '../src/preferences.ts'
 import { orbSupported, registerOrbRoutes, tokensMatch, type OrbControl } from '../src/routes.ts'
 import { TccMonitor } from '../src/tcc.ts'
 
@@ -418,6 +418,55 @@ describe('settings routes', () => {
     const invalidPost = response()
     await handler(request('POST', '/.dsh-orb/jump', '{}', { 'x-dsh-user': 'ok' }), invalidPost)
     assert.equal(invalidPost.status, 400)
+    dispose()
+  })
+
+  it('answers a malformed JSON body with 400 and an oversized avatar with 413', async () => {
+    const profile = join(root, 'profile-bad-body')
+    mkdirSync(profile, { recursive: true })
+    const control: OrbControl = {
+      helperAuthorized: () => false,
+      takeJump: () => null,
+      confirmJump() {},
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setObservationFrameEnabled() {},
+      async setBallEnabled() {},
+      updateState: () => ({ ...emptyUpdate }),
+      async checkUpdate() {},
+      installUpdate() {},
+      setAutoCheck() {},
+    }
+    let handler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined
+    const dispose = registerOrbRoutes({
+      ctx: {
+        webServer: { register(route) { handler = route.handler; return () => { handler = undefined } } },
+        connection: {
+          admit(req) {
+            return req.headers['x-dsh-user'] === 'ok' ? { peer: { id: 'local' } } : { rejection: 401 }
+          },
+        },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+      },
+      store: new ProfileStore(profile),
+      tcc: new TccMonitor(),
+      control,
+    })
+    assert.ok(handler)
+
+    // A body that is not JSON used to reject the handler and hang the request.
+    const bad = response()
+    await handler(request('POST', '/.dsh-orb/update/auto', '{', { 'x-dsh-user': 'ok' }), bad)
+    assert.equal(bad.status, 400)
+    assert.equal(JSON.parse(bad.body.toString('utf8')).error, 'invalid-json')
+
+    const huge = response()
+    await handler(request('POST', '/.dsh-orb/avatar', Buffer.alloc(MAX_AVATAR_BYTES + 64), { 'x-dsh-user': 'ok' }), huge)
+    assert.equal(huge.status, 413, 'the avatar limit keeps its own status')
+    assert.equal(JSON.parse(huge.body.toString('utf8')).error, 'too-large')
     dispose()
   })
 })

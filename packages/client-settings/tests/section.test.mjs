@@ -12,7 +12,7 @@ const root = join(here, '../../..')
 // preset added on the host side without copy here fails a test instead of shipping.
 const { AVATAR_PRESETS } = await import(pathToFileURL(join(root, 'packages/host/src/avatar-presets.ts')).href)
 
-function loadSection() {
+function loadSection(hooks = {}) {
   const calls = []
   let mode = 'ready'
   let confirm = false
@@ -109,6 +109,9 @@ function loadSection() {
     navigator: { language: 'zh-CN' },
     fetch: async (path, options = {}) => {
       calls.push({ path, options })
+      // A test can answer one request itself, e.g. to let a stale response arrive late.
+      const custom = hooks.answer?.(path, options, snapshot)
+      if (custom !== undefined) return custom
       if (String(path).includes('token') || String(path).startsWith('http')) throw new Error(`credentialed fetch ${path}`)
       if (path === '/.dsh-orb/jump') {
         if (options.method === 'POST') return json({ ok: true })
@@ -467,6 +470,44 @@ describe('settings section', () => {
     const texts = find(view, (node) => typeof node.type === 'string').map((node) => (node.children ?? []).filter((child) => typeof child === 'string').join('')).join(' ')
     assert.equal(texts.includes('插件更新'), false)
     assert.equal(texts.includes('检查更新'), false)
+  })
+
+  it('lets the save win when a slower settings reload answers after it', async () => {
+    const held = Promise.withResolvers()
+    let armed = false
+    const page = loadSection({
+      answer: (path, _options, snapshot) => {
+        if (!armed || path !== '/.dsh-orb/settings') return undefined
+        armed = false
+        // What the page showed before the save: this reload arrives late.
+        const stale = JSON.stringify({ ...snapshot, ballEnabled: true })
+        return { ok: true, status: 200, async text() { await held.promise; return stale } }
+      },
+    })
+    await page.flush()
+    const check = () => find(page.render(), (node) => node.props?.['aria-label'] === '启用悬浮球')[0]
+
+    // The helper-runtime poll is armed, and the next settings load is held back.
+    page.snapshot.helperPhase = 'downloading'
+    page.render()
+    await page.flush()
+    page.render()
+    armed = true
+    const ticking = page.tick()
+    await settle()
+    assert.equal(armed, false, 'a settings load asked and is now in flight')
+
+    // The user saves in the meantime: the ball goes off.
+    check().props.onClick()
+    await settle()
+    assert.equal(check().props['aria-checked'], 'false')
+
+    held.resolve()
+    await ticking
+    await settle()
+    // The late reload must not put the pre-save snapshot back on screen.
+    assert.equal(check().props['aria-checked'], 'false')
+    page.snapshot.helperPhase = ''
   })
 })
 
