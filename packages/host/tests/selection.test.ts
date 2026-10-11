@@ -60,6 +60,9 @@ describe('selection lines', () => {
     assert.match(swift, /tapCreate/)
     assert.match(swift, /shouldRead/)
     assert.match(swift, /minDragPixels/)
+    // A double- or triple-click selects without dragging: the click count must be read.
+    assert.match(swift, /mouseEventClickState/)
+    assert.match(swift, /dragged \|\| clickCount >= 2/)
     assert.match(swift, /@_cdecl\("dsh_macos_selection_start"\)/)
     assert.equal(swift.includes('setActivationPolicy'), false)
     assert.equal(swift.includes('DispatchQueue.main.sync'), false)
@@ -67,6 +70,11 @@ describe('selection lines', () => {
     assert.match(worker, /SetWindowsHookExW/)
     assert.match(hooks, /worker_threads/)
     assert.match(hooks, /PostThreadMessageW/)
+    // A rectangle-less selection carries no coordinates, and a real rectangle is DIP-converted.
+    assert.equal(hooks.includes('$x = 0; $y = 0; $width = 0; $height = 0'), false)
+    assert.match(hooks, /\$out\.x = \$rects\[0\]/)
+    assert.match(hooks, /monitorScale\(/)
+    assert.match(hooks, /dipRect\(/)
   })
 })
 
@@ -166,6 +174,31 @@ describe('windows selection dispatch', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     assert.deepEqual(events.map((event) => event.type), ['mouse-up', 'mouse-up', 'key', 'selection'])
     assert.equal(events[3]?.text, 'picked')
+  })
+
+  it('drops a slow selection read that a newer click superseded', async () => {
+    const events: { type: string; text?: string }[] = []
+    const handlers = { onEvent: (event: { type: string; text?: string }) => { events.push(event) } }
+    let resolveSlow = (value: { text: string; pid: number; x: number; y: number }) => {}
+    const slow = new Promise<{ text: string; pid: number; x: number; y: number }>((resolve) => { resolveSlow = resolve })
+    let reads = 0
+    const probe = {
+      readSelection: () => {
+        reads += 1
+        return reads === 1 ? slow : Promise.resolve({ text: 'fresh', pid: 5, x: 9, y: 9 })
+      },
+      activatePid() {},
+    }
+    const state = { generation: 0 }
+    dispatchWindowsSelectionMessage({ type: 'mouse-up', x: 1, y: 2, button: 'left' }, handlers, probe, new Set(), state)
+    // The user clicks elsewhere while that PowerShell read is still running.
+    dispatchWindowsSelectionMessage({ type: 'mouse-down', x: 9, y: 9, button: 'left' }, handlers, probe, new Set(), state)
+    resolveSlow({ text: 'stale', pid: 5, x: 1, y: 2 })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    dispatchWindowsSelectionMessage({ type: 'mouse-up', x: 9, y: 9, button: 'left' }, handlers, probe, new Set(), state)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // Only the newest read may show the toolbar; the earlier one would put it back after a click.
+    assert.deepEqual(events.filter((event) => event.type === 'selection').map((event) => event.text), ['fresh'])
   })
 })
 

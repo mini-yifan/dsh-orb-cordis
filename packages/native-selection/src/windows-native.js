@@ -17,11 +17,12 @@ if ($ranges.Length -lt 1) { return }
 $text = $ranges[0].GetText(4000)
 if ([string]::IsNullOrWhiteSpace($text)) { return }
 $rects = @($ranges[0].GetBoundingRectangles())
-$x = 0; $y = 0; $width = 0; $height = 0
-if ($rects.Length -ge 4) { $x = $rects[0]; $y = $rects[1]; $width = $rects[2]; $height = $rects[3] }
-[pscustomobject]@{
-  text = $text; x = $x; y = $y; width = $width; height = $height; pid = $focused.Current.ProcessId
-} | ConvertTo-Json -Compress
+$out = @{ text = $text; pid = $focused.Current.ProcessId }
+# No usable rectangle means no coordinates at all: 0 is a real screen position, not "missing".
+if ($rects.Length -ge 4) {
+  $out.x = $rects[0]; $out.y = $rects[1]; $out.width = $rects[2]; $out.height = $rects[3]
+}
+$out | ConvertTo-Json -Compress
 `
 
 function koffi() {
@@ -61,6 +62,39 @@ function windowsActivationApi() {
   return activationApi
 }
 
+/**
+ * Display scale of the monitor containing a physical point. The mouse hook reports DIP, so a
+ * UIA rectangle (physical pixels) must go through the same probe before the two are compared.
+ */
+function monitorScale(x, y) {
+  const lib = prepareKoffi()
+  const monitor = lib.load('user32.dll')
+    .func('void * __stdcall MonitorFromPoint(DSH_ORB_SEL_POINT pt, uint32 dwFlags)')({ x, y }, 2)
+  const dpiX = [0]
+  const dpiY = [0]
+  const status = lib.load('shcore.dll')
+    .func('int __stdcall GetDpiForMonitor(void *hmonitor, int dpiType, _Out_ uint32 *dpiX, _Out_ uint32 *dpiY)')(
+      monitor,
+      0,
+      dpiX,
+      dpiY,
+    )
+  if (status !== 0) return 1
+  const scale = (dpiX[0] ?? 96) / 96
+  return Number.isFinite(scale) && scale > 0 ? scale : 1
+}
+
+/** A physical-pixel rectangle in the DIP space the mouse hook uses. */
+function dipRect(x, y, width, height) {
+  const scale = monitorScale(x, y)
+  return {
+    x: x / scale,
+    y: y / scale,
+    ...typeof width === 'number' ? { width: width / scale } : {},
+    ...typeof height === 'number' ? { height: height / scale } : {},
+  }
+}
+
 export function readWindowsSelection() {
   return new Promise((resolve) => {
     execFile('powershell.exe', ['-NoProfile', '-STA', '-Command', SELECTION_SCRIPT], {
@@ -77,13 +111,13 @@ export function readWindowsSelection() {
           resolve(undefined)
           return
         }
+        const rect = typeof parsed.x === 'number' && typeof parsed.y === 'number'
+          ? dipRect(parsed.x, parsed.y, parsed.width, parsed.height)
+          : {}
         resolve({
           text: parsed.text,
           ...typeof parsed.pid === 'number' ? { pid: parsed.pid } : {},
-          ...typeof parsed.x === 'number' ? { x: parsed.x } : {},
-          ...typeof parsed.y === 'number' ? { y: parsed.y } : {},
-          ...typeof parsed.width === 'number' ? { width: parsed.width } : {},
-          ...typeof parsed.height === 'number' ? { height: parsed.height } : {},
+          ...rect,
         })
       } catch {
         resolve(undefined)

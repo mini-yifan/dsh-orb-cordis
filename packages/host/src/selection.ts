@@ -194,7 +194,12 @@ export class SelectionController {
     this.lastDedupe = { key, at: now }
     this.lastText = event.text
     this.lastPid = event.pid
-    if (event.x !== undefined && event.y !== undefined) this.lastAnchor = { x: event.x, y: event.y }
+    // A selection without usable coordinates keeps the mouse-up anchor: a missing field
+    // must not read as the screen origin.
+    if (typeof event.x === 'number' && typeof event.y === 'number'
+      && Number.isFinite(event.x) && Number.isFinite(event.y)) {
+      this.lastAnchor = { x: event.x, y: event.y }
+    }
     this.host.show({
       text: event.text,
       x: this.lastAnchor.x,
