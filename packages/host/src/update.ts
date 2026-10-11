@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { scheduleInstallAfterExit, takeDeferredOutcome, type DeferredInstall } from './deferred-install.ts'
+import { deferredInstallInProgress, scheduleInstallAfterExit, takeDeferredOutcome, type DeferredInstall } from './deferred-install.ts'
 import { mappedImages, ownPackageRoot } from './native-images.ts'
 import type { ProfileStore } from './preferences.ts'
 
@@ -167,6 +167,8 @@ export class UpdateChecker {
   private restartRequired = false
   /** Version handed to the after-exit install; offering it again would only queue it twice. */
   private deferred: string | null = null
+  /** The after-exit script is running right now (its status file says so). */
+  private installing = false
   private timer: ReturnType<typeof setTimeout> | undefined
   private interval: ReturnType<typeof setInterval> | undefined
   /** The registry base that answered the last check; GitHub is the fallback when none did. */
@@ -178,7 +180,17 @@ export class UpdateChecker {
     this.own = 'own' in deps ? deps.own : ownPackage()
     this.installed = this.own?.version ?? ''
     this.latest = this.store.updateRecord().latestVersion || null
+    this.installing = deferredInstallInProgress(this.store.dir)
+    this.adoptDeferredOutcome()
+  }
+
+  /**
+   * Read the outcome an after-exit install left, and refresh whether one is still running.
+   * Called once at construction and again by a start that waited for the install to finish.
+   */
+  adoptDeferredOutcome(): void {
     const outcome = takeDeferredOutcome(this.store.dir)
+    this.installing = deferredInstallInProgress(this.store.dir)
     if (outcome !== undefined && !outcome.ok) this.error = outcome.detail === '' ? 'deferred-install-failed' : outcome.detail
   }
 
@@ -196,7 +208,7 @@ export class UpdateChecker {
       autoCheck: this.store.updateRecord().autoCheck,
       checkedAt: this.store.updateRecord().checkedAt || null,
       restartRequired: this.restartRequired,
-      deferred: this.deferred !== null,
+      deferred: this.deferred !== null || this.installing,
       error: this.error,
       pendingBuilds: [...this.pendingBuilds],
     }
@@ -285,7 +297,7 @@ export class UpdateChecker {
       const spec = installSpec(version, this.own.name)
       const registry = installRegistry(this.source)
       if (this.lockedImages().length > 0) {
-        this.deferUntilExit(version, spec, registry)
+        this.deferUntilExit(version, spec, registry, approvedBuilds ?? [])
         return
       }
       const result = await manager.installBundle(spec, {
@@ -294,7 +306,7 @@ export class UpdateChecker {
         ...approvedBuilds === undefined ? {} : { approvedBuilds },
       })
       if (result.application === 'failed' && isLockedFileFailure(result.error)) {
-        this.deferUntilExit(version, spec, registry)
+        this.deferUntilExit(version, spec, registry, approvedBuilds ?? [])
         return
       }
       if (result.application === 'failed') {
@@ -320,6 +332,7 @@ export class UpdateChecker {
 
   private available(): boolean {
     return this.own !== undefined && this.latest !== null && this.latest !== this.deferred
+      && !this.installing
       && compareVersions(this.latest, this.installed) > 0
   }
 
@@ -335,8 +348,8 @@ export class UpdateChecker {
     }
   }
 
-  private deferUntilExit(version: string, spec: string, registry: string): void {
-    const job: DeferredInstall = { profileDir: this.store.dir, spec, registry, parentPid: process.pid }
+  private deferUntilExit(version: string, spec: string, registry: string, approvedBuilds: readonly string[]): void {
+    const job: DeferredInstall = { profileDir: this.store.dir, spec, registry, parentPid: process.pid, approvedBuilds }
     try {
       (this.deps.deferInstall ?? scheduleInstallAfterExit)(job)
     } catch (error) {
@@ -357,14 +370,16 @@ export class UpdateChecker {
     let answered = false
     for (const base of registryBases()) {
       const body = await curlText(`${base}/${own.name}/latest`)
-      if (body === undefined) continue
+      // `undefined` is a transfer failure, `''` is this source's 404: neither says anything
+      // about whether the package exists, so the next source decides.
+      if (body === undefined || body === '') continue
       answered = true
       const version = versionFromRegistry(body)
       if (version !== undefined) {
         this.source = base
         return version
       }
-      // A 404 (not synced yet) or a malformed answer: try the next source.
+      // A 2xx body without a version: try the next source.
     }
     const body = await curlText(`${apiBase()}/releases/latest`)
     if (body === undefined) return answered ? null : undefined

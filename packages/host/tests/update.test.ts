@@ -354,8 +354,47 @@ describe('update checker', () => {
     assert.equal(update.state().error, null)
   })
 
-  it('records a network failure without dropping the version it already knew', async () => {
+  it('reports a network failure when every mirror 404s and GitHub is unreachable', async () => {
+    // A mirror that has not synced yet answers 404: that is not an answer about the
+    // version, so a transfer failure on the remaining source stays a network error.
+    const registry = await mockServer({ '/dsh-orb/latest': [404, '{"error":"not found"}'] })
+    try {
+      await withEnv({ DSH_ORB_UPDATE_REGISTRIES: registry.base, DSH_ORB_UPDATE_API: DEAD_SOURCE }, async () => {
+        const profile = store()
+        const fake = manager()
+        const update = new UpdateChecker({
+          store: profile,
+          manager: () => fake.service,
+          notify: () => {},
+          own: { name: 'dsh-orb', version: '0.1.0' },
+        })
+        await update.check(true)
+        const state = update.state()
+        assert.equal(state.error, 'network')
+        assert.equal(state.checkedAt, null, 'a failed check does not start the quiet period')
+      })
+    } finally {
+      registry.close()
+    }
+  })
+
+  it('reports an install in progress instead of offering the version again', () => {
     const profile = store()
+    const dir = deferredDir(profile.dir)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'status.json'), JSON.stringify({
+      phase: 'installing',
+      spec: 'dsh-orb@0.2.0',
+      pid: process.pid,
+      startedAt: Date.now(),
+    }))
+    const { update } = checker({ store: profile, latest: '0.2.0' })
+    const state = update.state()
+    assert.equal(state.deferred, true, 'the settings page shows the running install')
+    assert.equal(state.available, false, 'the update button does not queue it a second time')
+  })
+
+  it('records a network failure without dropping the version it already knew', async () => {    const profile = store()
     const first = checker({ store: profile, latest: '0.2.0' })
     await first.update.check()
     const offline = checker({ store: profile, latest: undefined })
@@ -538,13 +577,14 @@ describe('update checker', () => {
     const profile = store()
     const { update, specs, deferred } = checker({ store: profile, latest: '0.2.0', mapped: ['node_modules/koffi/build/koffi.node'] })
     await update.check()
-    await update.install()
+    await update.install(['koffi'])
     assert.deepEqual(specs, [], 'pnpm never sees a package it cannot replace')
     assert.deepEqual(deferred, [{
       profileDir: profile.dir,
       spec: 'dsh-orb@0.2.0',
       registry: 'https://registry.npmmirror.com',
       parentPid: process.pid,
+      approvedBuilds: ['koffi'],
     }])
     const state = update.state()
     assert.equal(state.error, null)

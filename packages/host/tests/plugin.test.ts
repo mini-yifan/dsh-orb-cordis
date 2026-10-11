@@ -94,4 +94,35 @@ describe('orb-host plugin', () => {
     assert.equal(errors.some((line) => line.includes('helper socket')), false)
     started.stop()
   })
+
+  it('keeps the helper down while an after-exit install is still running', async () => {
+    const profile = join(root, 'installing')
+    mkdirSync(join(profile, '.dsh-orb-update'), { recursive: true })
+    writeFileSync(join(profile, '.dsh-orb-update', 'status.json'), JSON.stringify({
+      phase: 'installing',
+      spec: 'dsh-orb@0.2.0',
+      pid: process.pid,
+      startedAt: Date.now(),
+    }))
+    const started = host(profile)
+    const errors: string[] = []
+    const original = console.error
+    // Point the runtime at a path that does not exist: if the gate ever regresses, the test
+    // fails on its assertions instead of launching a real Electron helper.
+    const previousRuntime = process.env.DSH_ORB_ELECTRON_PATH
+    process.env.DSH_ORB_ELECTRON_PATH = join(root, 'no-electron-here')
+    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')) }
+    try {
+      apply(started.ctx as never)
+    } finally {
+      console.error = original
+      if (previousRuntime === undefined) delete process.env.DSH_ORB_ELECTRON_PATH
+      else process.env.DSH_ORB_ELECTRON_PATH = previousRuntime
+    }
+    assert.equal(errors.some((line) => line.includes('an update install is running')), true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Nothing may load the package (koffi staging) or start the helper while pnpm replaces it.
+    assert.equal(errors.some((line) => line.includes('helper socket')), false)
+    started.stop()
+  })
 })

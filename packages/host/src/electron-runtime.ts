@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { access, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
@@ -90,17 +90,27 @@ async function downloadRuntime(
   })
 }
 
-/** `mkdir` is the lock. A dead owner, or a lock older than 20 minutes, can be taken over. */
-async function withDownloadLock(parent: string, task: () => Promise<void>): Promise<void> {
+/**
+ * Take the download lock. The owner file is written in a staging directory first, and the
+ * directory is renamed into place: the lock only ever appears with its owner already inside,
+ * so a second process can never read a half-made lock. A dead owner, or one past the
+ * 20-minute ceiling, can be taken over.
+ */
+export async function withDownloadLock(parent: string, task: () => Promise<void>): Promise<void> {
   const lock = join(parent, 'electron-runtime.download.lock')
   const deadline = Date.now() + 10 * 60 * 1000
   for (;;) {
+    const staging = `${lock}.${randomBytes(6).toString('hex')}.tmp`
     try {
-      await mkdir(lock)
-      await writeFile(join(lock, 'owner'), `${process.pid}\n${Date.now()}\n`)
+      await mkdir(staging)
+      await writeFile(join(staging, 'owner'), `${process.pid}\n${Date.now()}\n`)
+      // Atomic on one volume. A non-empty destination fails with EEXIST or ENOTEMPTY,
+      // depending on the platform: both mean somebody else holds the lock.
+      await rename(staging, lock)
       break
     } catch (error) {
-      if (!isEexist(error)) throw error
+      await rm(staging, { recursive: true, force: true })
+      if (!isLockTaken(error)) throw error
       if (await lockExpired(lock)) {
         await rm(lock, { recursive: true, force: true })
         continue
@@ -116,22 +126,39 @@ async function withDownloadLock(parent: string, task: () => Promise<void>): Prom
   }
 }
 
-async function lockExpired(lock: string): Promise<boolean> {
+/** The rename above loses to a directory that is already there. */
+function isLockTaken(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code
+  return code === 'EEXIST' || code === 'ENOTEMPTY'
+}
+
+export async function lockExpired(lock: string): Promise<boolean> {
+  let text: string
   try {
-    const text = await readFile(join(lock, 'owner'), 'utf8')
-    const [pidText, startedText] = text.split('\n')
-    const pid = Number(pidText)
-    const started = Number(startedText)
-    if (!Number.isInteger(pid) || pid <= 0) return true
-    if (Number.isFinite(started) && Date.now() - started > 20 * 60 * 1000) return true
+    text = await readFile(join(lock, 'owner'), 'utf8')
+  } catch (error) {
+    if ((error as { code?: unknown } | undefined)?.code !== 'ENOENT') return false
+    // An owner-less lock directory is what a crashed build left behind: it cannot belong to
+    // a live acquisition (that one appears with its owner inside), so it is only swept once
+    // the directory itself has been sitting there for a while.
     try {
-      process.kill(pid, 0)
-      return false
+      const info = await stat(lock)
+      return Date.now() - info.mtimeMs > 30_000
     } catch {
       return true
     }
-  } catch {
-    return true
+  }
+  const [pidText, startedText] = text.split('\n')
+  const pid = Number(pidText)
+  const started = Number(startedText)
+  if (!Number.isInteger(pid) || pid <= 0) return true
+  if (Number.isFinite(started) && Date.now() - started > 20 * 60 * 1000) return true
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    // EPERM means the process is alive under another user; anything else (ESRCH) is gone.
+    return (error as { code?: unknown } | undefined)?.code !== 'EPERM'
   }
 }
 
@@ -149,10 +176,6 @@ async function replaceDirectory(staging: string, dest: string): Promise<void> {
     throw error
   }
   if (moved) await rm(retired, { recursive: true, force: true }).catch(() => undefined)
-}
-
-function isEexist(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'EEXIST'
 }
 
 function assetName(): string {

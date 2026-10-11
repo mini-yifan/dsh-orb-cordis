@@ -99,8 +99,27 @@ describe('dsh-orb install layout', () => {
     assert.equal(host.name, 'orb-host')
   })
 
-  it('resolves every patch row when the tarball is unpacked into the profile', () => {
-    const { version } = JSON.parse(readFileSync(join(bundle, 'package.json'), 'utf8'))
+  it('keeps the repository client.js in step with the settings source', () => {
+    // A `link:` install reads this copy directly; assemble only rewrites it during a build.
+    // A fresh clone has none until then, and the assembled copy is checked below, so an
+    // absent file is not a failure here.
+    const linked = join(bundle, 'client.js')
+    if (!existsSync(linked)) return
+    const source = readFileSync(join(repo, 'packages/client-settings/client.js'), 'utf8')
+    const text = readFileSync(linked, 'utf8')
+    assert.match(text, /update\.deferred/, 'the deferred-install banner is missing')
+    assert.match(text, /updateDeferred/)
+    // Only the module id differs from the source it is assembled from.
+    assert.equal(text, source.replace("id: '@dsh-orb/client-ui-settings-orb'", "id: 'dsh-orb'"))
+  })
+
+  it('carries the deferred-install banner in the assembled settings page', () => {
+    const text = readFileSync(join(assembled, 'client.js'), 'utf8')
+    assert.match(text, /update\.deferred/)
+    assert.match(text, /updateDeferred/)
+  })
+
+  it('resolves every patch row when the tarball is unpacked into the profile', () => {    const { version } = JSON.parse(readFileSync(join(bundle, 'package.json'), 'utf8'))
     const packed = spawnSync(process.execPath, [join(bundle, 'scripts/pack.mjs')], { cwd: repo, stdio: 'pipe', encoding: 'utf8' })
     assert.equal(packed.status, 0, packed.stderr)
     const tarball = join(repo, `dsh-orb-${version}.tgz`)

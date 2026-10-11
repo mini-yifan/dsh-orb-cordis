@@ -10,6 +10,7 @@ import { installOrbServices, watchOrbPermissions } from './services.ts'
 import { watchAppearance } from './appearance.ts'
 import { OrbRuntime, type OrbContext } from './orb.ts'
 import { exemptReleaseAge, ownPackage, UpdateChecker } from './update.ts'
+import { DEFERRED_INSTALL_CEILING_MS, deferredInstallInProgress } from './deferred-install.ts'
 import { KOFFI_DIR_ENV, ownPackageRoot, removeStaleStages, stageKoffi } from './native-images.ts'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 
@@ -37,10 +38,18 @@ export type { OrbContext }
 export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): void {
   logWebPort(ctx)
   const own = ownPackage()
-  // Before anything loads koffi: a loaded addon inside the package locks it against
-  // the next update on Windows (see native-images.ts).
-  if (process.platform === 'win32' && own !== undefined) stageNativeImages()
-  const store = new ProfileStore(profileDirectory(ctx))
+  const profile = profileDirectory(ctx)
+  const installing = deferredInstallInProgress(profile)
+  if (installing) {
+    // The after-exit script is replacing this package right now. Staging koffi, loading it,
+    // or starting the helper would fight the running pnpm, so the ball waits for the outcome.
+    console.error('dsh-orb: an update install is running; the ball waits for it to finish')
+  } else if (process.platform === 'win32' && own !== undefined) {
+    // Before anything loads koffi: a loaded addon inside the package locks it against
+    // the next update on Windows (see native-images.ts).
+    stageNativeImages()
+  }
+  const store = new ProfileStore(profile)
   // pnpm appends a `name@version` rule for every young release it installs and reads
   // only the first rule per package name, so a profile that installed this plugin
   // through the market or `dsh plugin install` holds an exemption that shadows the
@@ -70,12 +79,24 @@ export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): vo
     const detachAppearance = watchAppearance(ctx, (appearance) => { runtime.setAppearance(appearance) })
     const detachUpdates = updater.start()
     const start = process.platform !== 'linux' && config.autoStart !== false && store.ballEnabled()
-    if (start) {
+    let cancelled = false
+    if (installing) {
+      void waitForInstall(store.dir, () => cancelled).then(() => {
+        if (cancelled) return
+        // The outcome (and a stalled status) is collected the way every start collects it.
+        updater.adoptDeferredOutcome()
+        if (!start) return
+        return runtime.start().catch((error: unknown) => {
+          console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      })
+    } else if (start) {
       void runtime.start().catch((error: unknown) => {
         console.error(`dsh-orb: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
     return () => {
+      cancelled = true
       detachQuestions()
       detachPermissions()
       detachRoutes()
@@ -84,6 +105,20 @@ export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): vo
       runtime.halt()
     }
   })
+}
+
+/**
+ * Wait for the after-exit install to write its outcome, at most as long as the script itself
+ * can run. A status file past that ceiling is collected as a failed outcome by
+ * {@link deferredInstallInProgress}, so the wait always ends.
+ * @param profileDir - profile that scheduled the install.
+ * @param cancelled - true once the plugin was disposed; the wait then stops without starting.
+ */
+async function waitForInstall(profileDir: string, cancelled: () => boolean): Promise<void> {
+  const deadline = Date.now() + DEFERRED_INSTALL_CEILING_MS
+  while (!cancelled() && Date.now() < deadline && deferredInstallInProgress(profileDir)) {
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
 }
 
 /** Point every koffi loader at a copy outside the package and clear what failed updates left. */
