@@ -260,16 +260,12 @@ function insideBallOrigin(
   ballY: number,
   display: DisplayPair,
 ): { x: number; y: number } {
-  return {
+  return clampedBallOrigin({
     x: side === 'left'
       ? display.bounds.x + DOCK_IN_PAD
       : display.bounds.x + display.bounds.width - BALL_SIZE - DOCK_IN_PAD,
-    y: clamp(
-      Math.round(ballY),
-      display.workArea.y,
-      display.workArea.y + display.workArea.height - BALL_SIZE,
-    ),
-  }
+    y: Math.round(ballY),
+  }, display.workArea)
 }
 
 function staysDocked(side: DockSide, cursorX: number, bounds: Rect): boolean {
@@ -347,7 +343,7 @@ export class FloatingPlacement {
       return { expanded: true, ...this.direction, docked: undefined, strip: this.stripWidth }
     }
     if (this.docked) {
-      this.applyTab(this.docked.side, this.docked.y, display.bounds)
+      this.applyTab(this.docked.side, this.docked.y, display.workArea)
       return { expanded: false, ...this.direction, docked: this.docked.side, strip: this.stripWidth }
     }
     const origin = clampedBallOrigin(this.currentBallOrigin(), display.workArea)
@@ -398,7 +394,7 @@ export class FloatingPlacement {
     }
     const display = this.displayAt(origin)
     if (this.docked && staysDocked(this.docked.side, origin.x, display.bounds)) {
-      this.applyTab(this.docked.side, this.docked.y, display.bounds)
+      this.applyTab(this.docked.side, this.docked.y, display.workArea)
       return { docked: this.docked.side }
     }
     this.docked = undefined
@@ -459,14 +455,14 @@ export class FloatingPlacement {
     const bounds = this.window.getBounds()
     const display = this.displayAt(center(bounds))
     if (this.docked) {
-      this.applyTab(this.docked.side, this.docked.y, display.bounds)
+      this.applyTab(this.docked.side, this.docked.y, display.workArea)
       return this.expandState()
     }
     if (isCollapsed(bounds)) {
       const origin = this.placedOrigin ?? this.collapsedBallOrigin()
       if (canDock) {
         const side = dockSideForBallOrigin(origin, display.bounds, this.displayBounds())
-        if (side) return this.snap(side, origin.y, display.bounds)
+        if (side) return this.snap(side, origin.y, display)
       }
       this.window.setBounds(collapsedWindowBounds(clampedBallOrigin(origin, display.workArea)))
       return this.expandState()
@@ -486,6 +482,51 @@ export class FloatingPlacement {
     this.window.setBounds(collapsedWindowBounds(start))
     await this.animate(collapsedWindowBounds(end), DOCK_SLIDE_IN_MS, easeOutCubic)
     return { docked: undefined }
+  }
+
+  /** Recover after a display change without expanding, docking, or showing a hidden window. */
+  recoverDisplays(displays: readonly DisplayPair[]): void {
+    this.anim += 1
+    // The gesture and its requested position belong to the old DIP layout.
+    // Late move/end signals must not undo recovery; a fresh press can drag again.
+    this.grab = undefined
+    this.dragging = false
+    this.placedOrigin = undefined
+    const bounds = this.window.getBounds()
+    const origin = this.docked
+      ? center(bounds)
+      : isCollapsed(bounds)
+        ? { x: bounds.x + CHROME_INSET, y: bounds.y + CHROME_INSET }
+        : ballOriginFromWindow(bounds, this.direction)
+    // Use distance to the usable area, not to display centers. All coordinates are DIP.
+    let target: DisplayPair | undefined
+    let distance = Number.POSITIVE_INFINITY
+    for (const display of displays) {
+      const work = display.workArea
+      if (![work.x, work.y, work.width, work.height].every(Number.isFinite)
+        || work.width < BALL_SIZE || work.height < BALL_SIZE) continue
+      const ball = clampedBallOrigin(origin, work)
+      const next = (ball.x - origin.x) ** 2 + (ball.y - origin.y) ** 2
+      if (next < distance) {
+        target = display
+        distance = next
+      }
+    }
+    if (!target) return
+    const work = target.workArea
+    if (this.docked) {
+      this.applyTab(this.docked.side, this.docked.y, work)
+    } else if (isCollapsed(bounds)) {
+      this.window.setBounds(collapsedWindowBounds(clampedBallOrigin(origin, work)))
+    } else {
+      // Keep the renderer's growth direction; only translate the existing panel.
+      const next = overlayBoundsFromBall(clampedBallOrigin(origin, work), this.direction, this.stripWidth)
+      this.window.setBounds({
+        ...next,
+        x: work.width >= PANEL_SIZE.width + this.stripWidth ? clampWindowOrigin(next.x, work.x, work.width, next.width) : next.x,
+        y: work.height >= PANEL_SIZE.height ? clampWindowOrigin(next.y, work.y, work.height, next.height) : next.y,
+      })
+    }
   }
 
   /** Stop a slide-off that still draws the ball window; the ball stays free where it is. */
@@ -512,16 +553,18 @@ export class FloatingPlacement {
     this.window.setBounds(dockedTabBounds(side, y, bounds))
   }
 
-  private async snap(side: DockSide, ballY: number, bounds: Rect): Promise<ExpandState> {
-    const y = clampBallY(ballY, bounds)
+  private async snap(side: DockSide, ballY: number, display: DisplayPair): Promise<ExpandState> {
+    const bounds = display.bounds
+    const y = clampBallY(ballY, display.workArea)
     this.docked = { side, y }
+    const generation = this.anim + 1
     await this.animate(
       collapsedWindowBounds(offScreenBallOrigin(side, y, bounds)),
       DOCK_SLIDE_OFF_MS,
       easeInOutCubic,
     )
-    if (!this.docked || this.docked.side !== side) return this.expandState()
-    this.window.setBounds(dockedTabBounds(side, y, bounds))
+    if (generation !== this.anim || !this.docked || this.docked.side !== side) return this.expandState()
+    this.applyTab(side, y, display.workArea)
     return this.expandState()
   }
 
