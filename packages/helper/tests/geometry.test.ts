@@ -4,11 +4,38 @@ import {
   AGENT_STRIP_WIDTH,
   BALL_WINDOW_SIZE,
   CHROME_INSET,
+  DOCK_HIT_WIDTH,
+  DOCK_IN_PAD,
   FloatingPlacement,
   PANEL_WINDOW_SIZE,
   ballOriginFromWindow,
   type Rect,
 } from '../src/geometry.ts'
+
+describe('docking beside a side taskbar', () => {
+  it('keeps the tab and the slide-in inside the work area, not on the display bounds', async () => {
+    // A 48px taskbar on the left: it is inside the display bounds and outside the work area.
+    const displays = [{
+      bounds: { x: 0, y: 0, width: 1440, height: 900 },
+      workArea: { x: 48, y: 0, width: 1392, height: 900 },
+    }]
+    const placed = placement(displays, 10, 400)
+    placed.press({ x: 60, y: 430 })
+    placed.beginDrag()
+    placed.dragTo({ x: 0, y: 430 })
+    const state = await placed.endDrag({ x: 0, y: 430 })
+    assert.equal(state.docked, 'left')
+    const tab = lastBounds.get(placed)
+    assert.ok(tab)
+    assert.equal(tab.x, 48, 'the tab sits against the work area, not under the taskbar')
+    assert.equal(tab.width, DOCK_HIT_WIDTH)
+
+    await placed.unsnap()
+    const ball = lastBounds.get(placed)
+    assert.ok(ball)
+    assert.equal(ball.x + CHROME_INSET, 48 + DOCK_IN_PAD, 'the slide-in stops clear of the taskbar')
+  })
+})
 
 describe('docking on more than one display', () => {
   it('does not dock on the seam between two displays', async () => {

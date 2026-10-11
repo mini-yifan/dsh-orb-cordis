@@ -153,11 +153,14 @@ function sameRect(left: Rect, right: Rect): boolean {
   return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
 }
 
-/** Hittable strip for a docked tab, flush with a display edge. */
-export function dockedTabBounds(side: DockSide, ballY: number, bounds: Rect): Rect {
-  const y = clamp(Math.round(ballY - DOCK_GLOW), bounds.y, bounds.y + bounds.height - DOCK_HIT_HEIGHT)
+/**
+ * Hittable strip for a docked tab, flush with a work-area edge: a side taskbar lives outside
+ * the work area, so a tab on the display bounds would sit under it.
+ */
+export function dockedTabBounds(side: DockSide, ballY: number, workArea: Rect): Rect {
+  const y = clamp(Math.round(ballY - DOCK_GLOW), workArea.y, workArea.y + workArea.height - DOCK_HIT_HEIGHT)
   return {
-    x: side === 'left' ? bounds.x : bounds.x + bounds.width - DOCK_HIT_WIDTH,
+    x: side === 'left' ? workArea.x : workArea.x + workArea.width - DOCK_HIT_WIDTH,
     y,
     width: DOCK_HIT_WIDTH,
     height: DOCK_HIT_HEIGHT,
@@ -255,6 +258,7 @@ function offScreenBallOrigin(side: DockSide, ballY: number, bounds: Rect): { x: 
   }
 }
 
+/** Ball origin of a slide-in, inside the work area: side taskbars live outside it. */
 function insideBallOrigin(
   side: DockSide,
   ballY: number,
@@ -262,8 +266,8 @@ function insideBallOrigin(
 ): { x: number; y: number } {
   return {
     x: side === 'left'
-      ? display.bounds.x + DOCK_IN_PAD
-      : display.bounds.x + display.bounds.width - BALL_SIZE - DOCK_IN_PAD,
+      ? display.workArea.x + DOCK_IN_PAD
+      : display.workArea.x + display.workArea.width - BALL_SIZE - DOCK_IN_PAD,
     y: clamp(
       Math.round(ballY),
       display.workArea.y,
@@ -347,7 +351,7 @@ export class FloatingPlacement {
       return { expanded: true, ...this.direction, docked: undefined, strip: this.stripWidth }
     }
     if (this.docked) {
-      this.applyTab(this.docked.side, this.docked.y, display.bounds)
+      this.applyTab(this.docked.side, this.docked.y, display.workArea)
       return { expanded: false, ...this.direction, docked: this.docked.side, strip: this.stripWidth }
     }
     const origin = clampedBallOrigin(this.currentBallOrigin(), display.workArea)
@@ -398,7 +402,7 @@ export class FloatingPlacement {
     }
     const display = this.displayAt(origin)
     if (this.docked && staysDocked(this.docked.side, origin.x, display.bounds)) {
-      this.applyTab(this.docked.side, this.docked.y, display.bounds)
+      this.applyTab(this.docked.side, this.docked.y, display.workArea)
       return { docked: this.docked.side }
     }
     this.docked = undefined
@@ -459,14 +463,14 @@ export class FloatingPlacement {
     const bounds = this.window.getBounds()
     const display = this.displayAt(center(bounds))
     if (this.docked) {
-      this.applyTab(this.docked.side, this.docked.y, display.bounds)
+      this.applyTab(this.docked.side, this.docked.y, display.workArea)
       return this.expandState()
     }
     if (isCollapsed(bounds)) {
       const origin = this.placedOrigin ?? this.collapsedBallOrigin()
       if (canDock) {
         const side = dockSideForBallOrigin(origin, display.bounds, this.displayBounds())
-        if (side) return this.snap(side, origin.y, display.bounds)
+        if (side) return this.snap(side, origin.y, display)
       }
       this.window.setBounds(collapsedWindowBounds(clampedBallOrigin(origin, display.workArea)))
       return this.expandState()
@@ -505,23 +509,25 @@ export class FloatingPlacement {
     return ballOriginFromWindow(bounds, this.direction)
   }
 
-  private applyTab(side: DockSide, ballY: number, bounds: Rect): void {
-    const y = clampBallY(ballY, bounds)
+  private applyTab(side: DockSide, ballY: number, workArea: Rect): void {
+    const y = clampBallY(ballY, workArea)
     this.docked = { side, y }
     this.anim += 1
-    this.window.setBounds(dockedTabBounds(side, y, bounds))
+    this.window.setBounds(dockedTabBounds(side, y, workArea))
   }
 
-  private async snap(side: DockSide, ballY: number, bounds: Rect): Promise<ExpandState> {
-    const y = clampBallY(ballY, bounds)
+  private async snap(side: DockSide, ballY: number, display: DisplayPair): Promise<ExpandState> {
+    const y = clampBallY(ballY, display.workArea)
     this.docked = { side, y }
+    // The slide-off leaves the screen, so it uses the display bounds; the tab it lands on
+    // is flush with the work area, where a side taskbar is not in the way.
     await this.animate(
-      collapsedWindowBounds(offScreenBallOrigin(side, y, bounds)),
+      collapsedWindowBounds(offScreenBallOrigin(side, y, display.bounds)),
       DOCK_SLIDE_OFF_MS,
       easeInOutCubic,
     )
     if (!this.docked || this.docked.side !== side) return this.expandState()
-    this.window.setBounds(dockedTabBounds(side, y, bounds))
+    this.window.setBounds(dockedTabBounds(side, y, display.workArea))
     return this.expandState()
   }
 
