@@ -61,6 +61,9 @@ export interface ExpandState {
 
 export interface DockState {
   readonly docked: DockSide | undefined
+  readonly horizontal?: HorizontalExpand
+  readonly vertical?: VerticalExpand
+  readonly strip?: number
 }
 
 export interface DisplayPair {
@@ -302,12 +305,16 @@ export function initialWindowBounds(workArea: Rect): Rect {
 /**
  * Owns expand direction and dock state for one overlay window.
  * Dock is committed on pointer-up, not while the ball is still moving.
+ * Every display decision keys off the ball origin ({@link anchor}), never the
+ * panel center: an expanded panel can span a display seam, and clamping the
+ * ball against the panel's display would fling it onto the wrong screen.
  */
 export class FloatingPlacement {
   private direction: Direction = { horizontal: 'left', vertical: 'up' }
   private docked: { side: DockSide; y: number } | undefined
   private stripWidth = 0
   private anim = 0
+  private anchor: { x: number; y: number } | undefined
   /** Cursor offset inside the ball, recorded at press and kept for the whole gesture. */
   private grab: Point | undefined
   /** Set once the renderer reports that the gesture passed the drag threshold. */
@@ -337,20 +344,25 @@ export class FloatingPlacement {
     // overwrite the window this call just set.
     this.anim += 1
     const bounds = this.window.getBounds()
-    const display = this.displayAt(center(bounds))
     if (expanded) {
       const origin = this.currentBallOrigin()
+      this.anchor = origin
       this.docked = undefined
+      const display = this.displayAt(origin)
       const next = expandedOverlayBounds(origin, display.workArea, this.stripWidth)
       this.direction = { horizontal: next.horizontal, vertical: next.vertical }
       this.window.setBounds({ x: next.x, y: next.y, width: next.width, height: next.height })
       return { expanded: true, ...this.direction, docked: undefined, strip: this.stripWidth }
     }
     if (this.docked) {
+      const display = this.displayAt(center(bounds))
       this.applyTab(this.docked.side, this.docked.y, display.bounds)
       return { expanded: false, ...this.direction, docked: this.docked.side, strip: this.stripWidth }
     }
-    const origin = clampedBallOrigin(this.currentBallOrigin(), display.workArea)
+    const raw = this.anchor ?? this.currentBallOrigin()
+    this.anchor = undefined
+    const display = this.displayAt(raw)
+    const origin = clampedBallOrigin(raw, display.workArea)
     this.window.setBounds(collapsedWindowBounds(origin))
     return { expanded: false, ...this.direction, docked: undefined, strip: this.stripWidth }
   }
@@ -368,8 +380,8 @@ export class FloatingPlacement {
     this.stripWidth = next
     const bounds = this.window.getBounds()
     if (!isCollapsed(bounds) && !this.docked) {
-      const display = this.displayAt(center(bounds))
       const origin = this.currentBallOrigin()
+      const display = this.displayAt(origin)
       const nextBounds = expandedOverlayBounds(origin, display.workArea, this.stripWidth)
       this.direction = { horizontal: nextBounds.horizontal, vertical: nextBounds.vertical }
       this.window.setBounds({ x: nextBounds.x, y: nextBounds.y, width: nextBounds.width, height: nextBounds.height })
@@ -386,10 +398,18 @@ export class FloatingPlacement {
     this.placedOrigin = origin
     const bounds = this.window.getBounds()
     if (!isCollapsed(bounds) && this.docked === undefined) {
-      const direction = this.direction
-      this.window.setBounds(overlayBoundsFromBall(origin, direction, this.stripWidth))
-      return { docked: undefined }
+      this.anchor = origin
+      // Re-derive the growth side from the ball's display on every step: a stale
+      // direction flings the panel to the other side of the ball (and off-screen,
+      // it was never clamped here) the moment the drag crosses a seam, and the
+      // release re-expand then flips it back — the reported "teleport".
+      const display = this.displayAt(origin)
+      const next = expandedOverlayBounds(origin, display.workArea, this.stripWidth)
+      this.direction = { horizontal: next.horizontal, vertical: next.vertical }
+      this.window.setBounds({ x: next.x, y: next.y, width: next.width, height: next.height })
+      return { docked: undefined, ...this.direction, strip: this.stripWidth }
     }
+    this.anchor = undefined
     if (!canDock) {
       this.docked = undefined
       this.anim += 1
@@ -416,7 +436,12 @@ export class FloatingPlacement {
     // A slide-off still in flight is taken over: the ball stops where it is drawn and
     // is free, so the grab and the drag both read the place the ball is actually at.
     this.stopSlideOff()
-    const origin = this.currentBallOrigin()
+    // Expansion may have clamped the panel away from its saved collapse anchor.
+    // A new cursor gesture grabs the ball where the window actually draws it.
+    const bounds = this.window.getBounds()
+    const origin = !isCollapsed(bounds) && !this.docked
+      ? ballOriginFromWindow(bounds, this.direction)
+      : this.currentBallOrigin()
     this.grab = { x: cursor.x - origin.x, y: cursor.y - origin.y }
     this.dragging = false
   }
@@ -457,13 +482,14 @@ export class FloatingPlacement {
    */
   async clamp(canDock = true): Promise<ExpandState> {
     const bounds = this.window.getBounds()
-    const display = this.displayAt(center(bounds))
     if (this.docked) {
+      const display = this.displayAt(center(bounds))
       this.applyTab(this.docked.side, this.docked.y, display.bounds)
       return this.expandState()
     }
     if (isCollapsed(bounds)) {
       const origin = this.placedOrigin ?? this.collapsedBallOrigin()
+      const display = this.displayAt(origin)
       if (canDock) {
         const side = dockSideForBallOrigin(origin, display.bounds, this.displayBounds())
         if (side) return this.snap(side, origin.y, display.bounds)
@@ -483,6 +509,7 @@ export class FloatingPlacement {
     const start = offScreenBallOrigin(this.docked.side, this.docked.y, display.bounds)
     const end = insideBallOrigin(this.docked.side, this.docked.y, display)
     this.docked = undefined
+    this.anchor = undefined
     this.window.setBounds(collapsedWindowBounds(start))
     await this.animate(collapsedWindowBounds(end), DOCK_SLIDE_IN_MS, easeOutCubic)
     return { docked: undefined }
@@ -497,6 +524,7 @@ export class FloatingPlacement {
   }
 
   private currentBallOrigin(): Point {
+    if (this.anchor) return this.anchor
     const bounds = this.window.getBounds()
     // A docked window at rest is the thin tab. While the slide-off still draws the
     // full ball window, the ball is wherever that window is, not at its docked pose.
