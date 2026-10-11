@@ -990,13 +990,14 @@ function main() {
   /**
    * Wire a card's own copy button (terminal, read, search) to the text it owns.
    * Cards are rebuilt on every update, so the binding happens at construction;
-   * the wired flag keeps the markdown pass from re-binding the button.
+   * the wired flag keeps the markdown pass from re-binding the button. The
+   * reader runs at click time, so the clipboard follows the rows on screen.
    */
-  function copyText(button, text) {
+  function copyText(button, read) {
     button.dataset.wired = 'true'
     button.addEventListener('click', (event) => {
       event.stopPropagation()
-      copyToClipboard(text, button)
+      copyToClipboard(read(), button)
     })
   }
 
@@ -1096,7 +1097,10 @@ function main() {
       }
       card.append(output)
     }
-    copyText(copy, terminalCopyText(model))
+    copyText(copy, () => terminalCopyText(
+      card.querySelector('.term-command')?.textContent ?? '',
+      [...card.querySelectorAll('.term-line')].map((line) => line.textContent ?? ''),
+    ))
     return card
   }
 
@@ -1164,7 +1168,9 @@ function main() {
     cappedRows(code, rows, CHAT_READ_MAX_LINES)
     pre.append(code)
     card.append(pre)
-    copyText(copy, readCopyText(model))
+    copyText(copy, () => readCopyText(
+      [...card.querySelectorAll('.read-content')].map((content) => content.textContent ?? ''),
+    ))
     return card
   }
 
@@ -1227,7 +1233,10 @@ function main() {
       cappedRows(body, rows, CHAT_SEARCH_MAX_LINES)
       card.append(body)
     }
-    copyText(copy, searchCopyText(cardModel, summary.textContent))
+    copyText(copy, () => searchCopyText(
+      summary.textContent,
+      [...card.querySelectorAll('.search-file-path, .search-line')].map((row) => row.textContent ?? ''),
+    ))
     return card
   }
 

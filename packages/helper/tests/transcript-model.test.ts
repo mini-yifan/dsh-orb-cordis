@@ -175,20 +175,18 @@ describe('turn usage pill', () => {
 })
 
 describe('tool card copy text', () => {
-  it('copies only the command when a terminal card has no output', () => {
-    assert.equal(terminalCopyText({ command: 'pnpm test', output: '' }), 'pnpm test')
-    assert.equal(terminalCopyText({ command: 'ls', output: 'a\nb' }), 'ls\na\nb')
+  it('copies only the command when a terminal card shows no output', () => {
+    assert.equal(terminalCopyText('pnpm test', []), 'pnpm test')
+    assert.equal(terminalCopyText('ls', ['a', 'b']), 'ls\na\nb')
   })
 
-  it('keeps the read body lines but drops the gutter numbers', () => {
-    const text = readCopyText({ lines: [{ number: 4, text: 'alpha' }, { number: 5, text: 'beta' }] })
-    assert.equal(text, 'alpha\nbeta')
+  it('joins the read body lines without the gutter numbers', () => {
+    assert.equal(readCopyText(['alpha', 'beta']), 'alpha\nbeta')
   })
 
-  it('leads the search copy with the summary and every match', () => {
-    const card = { kind: 'matches', truncated: false, total: 2, files: [{ path: 'src/a.ts', matches: [{ lineNumber: 7, line: 'const a = 1' }] }] }
-    assert.equal(searchCopyText(card, '2 处匹配'), '2 处匹配\nsrc/a.ts\n7  const a = 1')
-    assert.equal(searchCopyText({ kind: 'paths', truncated: false, total: 1, paths: ['src/b.ts'] }, '1 个路径'), '1 个路径\nsrc/b.ts')
+  it('leads the search copy with the summary and every shown row', () => {
+    assert.equal(searchCopyText('2 处匹配', ['src/a.ts', '7  const a = 1']), '2 处匹配\nsrc/a.ts\n7  const a = 1')
+    assert.equal(searchCopyText('1 个路径', ['src/b.ts']), '1 个路径\nsrc/b.ts')
   })
 })
 

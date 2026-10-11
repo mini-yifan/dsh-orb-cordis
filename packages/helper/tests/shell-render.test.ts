@@ -36,6 +36,16 @@ describe('ball page render guards', () => {
     assert.match(code, /expand\.textContent = open \? chatLabels\.collapse/)
   })
 
+  it('copies the rows the tool cards show, read at click time', () => {
+    // The reader runs on click, so the clipboard follows the cap and the expander.
+    assert.match(code, /copyText\(copy, \(\) => terminalCopyText\(/)
+    assert.match(code, /querySelectorAll\('\.term-line'\)/)
+    assert.match(code, /copyText\(copy, \(\) => readCopyText\(/)
+    assert.match(code, /querySelectorAll\('\.read-content'\)/)
+    assert.match(code, /copyText\(copy, \(\) => searchCopyText\(/)
+    assert.match(code, /querySelectorAll\('\.search-file-path, \.search-line'\)/)
+  })
+
   it('re-upgrades tracked roots once a lazy grammar lands', () => {
     assert.match(highlight, /const root = ref\.deref\(\)/)
     assert.match(highlight, /upgradeCodeBlocks\(root, \{ track: false \}\)/)
