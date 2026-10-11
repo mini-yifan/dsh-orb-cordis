@@ -390,11 +390,38 @@ describe('update checker', () => {
     }))
     const { update } = checker({ store: profile, latest: '0.2.0' })
     const state = update.state()
-    assert.equal(state.deferred, true, 'the settings page shows the running install')
+    assert.equal(state.installing, true, 'the settings page shows the running install')
+    assert.equal(state.deferred, false, 'installing is its own state, not the quit-and-reopen one')
     assert.equal(state.available, false, 'the update button does not queue it a second time')
   })
 
-  it('records a network failure without dropping the version it already knew', async () => {    const profile = store()
+  it('keeps a 2xx mirror without a version from reading as "no release"', async () => {
+    // The mirror answers 200 but the body carries no version. That says nothing about
+    // whether a release exists, so GitHub's transfer failure stays a network error instead
+    // of clearing it and refreshing the quiet period.
+    const registry = await mockServer({ '/dsh-orb/latest': [200, '<html>gateway error</html>'] })
+    try {
+      await withEnv({ DSH_ORB_UPDATE_REGISTRIES: registry.base, DSH_ORB_UPDATE_API: DEAD_SOURCE }, async () => {
+        const profile = store()
+        const fake = manager()
+        const update = new UpdateChecker({
+          store: profile,
+          manager: () => fake.service,
+          notify: () => {},
+          own: { name: 'dsh-orb', version: '0.1.0' },
+        })
+        await update.check(true)
+        const state = update.state()
+        assert.equal(state.error, 'network')
+        assert.equal(state.checkedAt, null, 'a failed check does not start the quiet period')
+      })
+    } finally {
+      registry.close()
+    }
+  })
+
+  it('records a network failure without dropping the version it already knew', async () => {
+    const profile = store()
     const first = checker({ store: profile, latest: '0.2.0' })
     await first.update.check()
     const offline = checker({ store: profile, latest: undefined })

@@ -70,6 +70,7 @@ window.__ModuleLoader__.load({
       updating: '正在更新到 {version}…',
       updateDone: '已更新到 {version}，重启 {name} 后生效。',
       updateDeferred: '{version} 将在退出 {name} 后自动安装，请完全退出后稍等片刻再重新打开。',
+      updateInstalling: '更新正在安装中，安装完成前请不要退出 {name}。',
       updateFailed: '更新失败：',
       updateOffline: '无法连接镜像或 npm，请检查网络后重试。',
       updateBuildBlocked: '新版本依赖的安装脚本未获授权，安装已停止。',
@@ -144,6 +145,7 @@ window.__ModuleLoader__.load({
       updating: 'Updating to {version}…',
       updateDone: 'Updated to {version}. Restart {name} to apply it.',
       updateDeferred: '{version} installs once {name} quits. Quit it fully, wait a moment, then reopen it.',
+      updateInstalling: 'The update is installing now. Do not quit {name} until it finishes.',
       updateFailed: 'Update failed: ',
       updateOffline: 'no registry could be reached. Check the network and try again.',
       updateBuildBlocked: 'A dependency of the new version needs install-script approval, so the install stopped.',
@@ -571,6 +573,11 @@ window.__ModuleLoader__.load({
             ? text.updateBuildBlocked
             : update.error
         return h('p', { className: 'dsh-orb-set-error', role: 'alert' }, `${text.updateFailed}${detail}`)
+      }
+      if (update.installing) {
+        const app = snap.tcc && snap.tcc.appName ? snap.tcc.appName : 'DeepSeek Harness'
+        return h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.updateInstalling
+          .replaceAll('{name}', app))
       }
       if (update.deferred) {
         const app = snap.tcc && snap.tcc.appName ? snap.tcc.appName : 'DeepSeek Harness'

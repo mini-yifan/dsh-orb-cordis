@@ -119,7 +119,8 @@ describe('dsh-orb install layout', () => {
     assert.match(text, /updateDeferred/)
   })
 
-  it('resolves every patch row when the tarball is unpacked into the profile', () => {    const { version } = JSON.parse(readFileSync(join(bundle, 'package.json'), 'utf8'))
+  it('resolves every patch row when the tarball is unpacked into the profile', () => {
+    const { version } = JSON.parse(readFileSync(join(bundle, 'package.json'), 'utf8'))
     const packed = spawnSync(process.execPath, [join(bundle, 'scripts/pack.mjs')], { cwd: repo, stdio: 'pipe', encoding: 'utf8' })
     assert.equal(packed.status, 0, packed.stderr)
     const tarball = join(repo, `dsh-orb-${version}.tgz`)

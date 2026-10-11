@@ -44,6 +44,7 @@ function loadSection(hooks = {}) {
       autoCheck: true,
       checkedAt: null,
       restartRequired: false,
+      installing: false,
       error: null,
       pendingBuilds: [],
     },
@@ -452,6 +453,16 @@ describe('settings section', () => {
     await page.flush()
     view = page.render()
     assert.match(texts(), /已更新到 0\.2\.0，重启 DeepSeek Harness 后生效。/)
+    assert.equal(find(view, (node) => node.type === 'button' && text(node) === '更新').length, 0)
+
+    // The host reopened while the after-exit script runs: the card shows the install in
+    // progress instead of the quit-and-reopen notice.
+    page.setUpdate({ updating: false, available: false, error: null, restartRequired: false, deferred: false, installing: true })
+    page.reset()
+    view = page.render()
+    await page.flush()
+    view = page.render()
+    assert.match(texts(), /更新正在安装中，安装完成前请不要退出 DeepSeek Harness。/)
     assert.equal(find(view, (node) => node.type === 'button' && text(node) === '更新').length, 0)
 
     const toggle = find(view, (node) => node.props?.['aria-label'] === '自动检查更新')[0]

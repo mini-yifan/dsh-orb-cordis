@@ -42,6 +42,7 @@ export const EMPTY_UPDATE_STATE: UpdateState = {
   checkedAt: null,
   restartRequired: false,
   deferred: false,
+  installing: false,
   error: null,
   pendingBuilds: [],
 }
@@ -61,6 +62,8 @@ export interface UpdateState {
   restartRequired: boolean
   /** The update waits for the app to quit: a loaded native file blocks replacing the package now. */
   deferred: boolean
+  /** The after-exit script is installing right now; the page says to wait, not to reopen. */
+  installing: boolean
   error: string | null
   pendingBuilds: string[]
 }
@@ -208,7 +211,8 @@ export class UpdateChecker {
       autoCheck: this.store.updateRecord().autoCheck,
       checkedAt: this.store.updateRecord().checkedAt || null,
       restartRequired: this.restartRequired,
-      deferred: this.deferred !== null || this.installing,
+      deferred: this.deferred !== null,
+      installing: this.installing,
       error: this.error,
       pendingBuilds: [...this.pendingBuilds],
     }
@@ -367,23 +371,22 @@ export class UpdateChecker {
     const forced = process.env.DSH_ORB_UPDATE_LATEST?.trim()
     if (forced !== undefined && forced !== '') return forced
     this.source = undefined
-    let answered = false
     for (const base of registryBases()) {
       const body = await curlText(`${base}/${own.name}/latest`)
       // `undefined` is a transfer failure, `''` is this source's 404: neither says anything
       // about whether the package exists, so the next source decides.
       if (body === undefined || body === '') continue
-      answered = true
       const version = versionFromRegistry(body)
-      if (version !== undefined) {
-        this.source = base
-        return version
-      }
-      // A 2xx body without a version: try the next source.
+      // A 2xx without a parseable version is not an answer either. Only a version ends the
+      // scan: an unreadable mirror must never stand in for "no release published", or a
+      // broken answer would clear the network error and restart the quiet period.
+      if (version === undefined) continue
+      this.source = base
+      return version
     }
     const body = await curlText(`${apiBase()}/releases/latest`)
-    if (body === undefined) return answered ? null : undefined
-    // An empty body is the repository's 404: no release published yet, not a failure.
+    // GitHub unreachable stays a network failure; its own 404 is a real "no release".
+    if (body === undefined) return undefined
     return versionFromRelease(body) ?? null
   }
 }
