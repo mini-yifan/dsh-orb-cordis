@@ -158,9 +158,13 @@ export function createCodeAgentRegistry(): CodeAgentBookmarkRegistry {
 function evaluate(record: BookmarkRecord): void {
   try {
     evaluateRecord(record)
-  } catch {
+  } catch (error) {
     // A session whose snapshot cannot be derived must not throw into the agent's event
-    // dispatch — other listeners share it — so the bookmark simply keeps its last state.
+    // dispatch — other listeners share it — so the bookmark keeps what it had. The log
+    // keeps the failure visible instead of leaving only the "running" state behind.
+    console.error(
+      `dsh-orb: bookmark ${record.sessionId} could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
 }
 

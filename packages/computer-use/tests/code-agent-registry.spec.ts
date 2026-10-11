@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -276,5 +276,34 @@ describe('code agent bookmark registry', () => {
     const [bookmark] = registry.list()
     expect(bookmark.state).toBe('completed')
     expect(bookmark.outcome).toBe('parent cancelled')
+  })
+
+  it('survives a session snapshot that throws between refreshes, and logs it', () => {
+    const registry = createCodeAgentRegistry()
+    const agent = fakeAgent()
+    recordQueued(registry, agent)
+    agent.inbox.nextTurn = []
+    agent.reply('迟到的回答')
+    const derive = agent.session.deriveMessages
+    let broken = true
+    agent.session.deriveMessages = () => {
+      if (broken) throw new Error('session gone')
+      return derive()
+    }
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      // The failure must not escape into the agent's event dispatch; the bookmark keeps
+      // whatever it had derived so far.
+      const [bookmark] = registry.list()
+      expect(bookmark.state).toBe('completed')
+      expect(bookmark.outcome).toBeUndefined()
+      // Assert before restore: mockRestore resets the recorded calls too.
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('could not be refreshed'))
+    } finally {
+      spy.mockRestore()
+    }
+    // Once the session answers again, the next pass repairs the outcome.
+    broken = false
+    expect(registry.list()[0]?.outcome).toBe('迟到的回答')
   })
 })
