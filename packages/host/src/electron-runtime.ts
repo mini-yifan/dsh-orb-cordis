@@ -104,8 +104,16 @@ export async function withDownloadLock(parent: string, task: () => Promise<void>
     try {
       await mkdir(staging)
       await writeFile(join(staging, 'owner'), `${process.pid}\n${Date.now()}\n`)
-      // Atomic on one volume. A non-empty destination fails with EEXIST or ENOTEMPTY,
-      // depending on the platform: both mean somebody else holds the lock.
+    } catch (error) {
+      // The staging folder could not even be made: a permissions problem on the parent,
+      // not a held lock, so it must surface instead of waiting the deadline out.
+      await rm(staging, { recursive: true, force: true })
+      throw error
+    }
+    try {
+      // Atomic on one volume. The destination is a directory that already holds its owner,
+      // and replacing one is refused: EEXIST/ENOTEMPTY on POSIX, EPERM or EACCES on
+      // Windows, where MoveFileEx cannot swap a directory in place. All mean held.
       await rename(staging, lock)
       break
     } catch (error) {
@@ -126,10 +134,10 @@ export async function withDownloadLock(parent: string, task: () => Promise<void>
   }
 }
 
-/** The rename above loses to a directory that is already there. */
-function isLockTaken(error: unknown): boolean {
+/** Codes a failed rename of the staging directory onto the lock directory answers with when the lock is held. */
+export function isLockTaken(error: unknown): boolean {
   const code = (error as { code?: unknown } | undefined)?.code
-  return code === 'EEXIST' || code === 'ENOTEMPTY'
+  return code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'EPERM' || code === 'EACCES'
 }
 
 export async function lockExpired(lock: string): Promise<boolean> {

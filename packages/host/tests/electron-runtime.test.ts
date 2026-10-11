@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { expectedHash, lockExpired, PINNED_SHA256, withDownloadLock } from '../src/electron-runtime.ts'
+import { expectedHash, isLockTaken, lockExpired, PINNED_SHA256, withDownloadLock } from '../src/electron-runtime.ts'
 
 const fileName = 'electron-v44.0.0-darwin-arm64.zip'
 
@@ -132,5 +132,18 @@ describe('Electron download lock', () => {
     } finally {
       probe.mock.restore()
     }
+  })
+
+  it('reads every rename refusal as a held lock, and a real failure as an error', () => {
+    // Windows refuses a directory-over-directory rename with EPERM or EACCES rather than
+    // the POSIX EEXIST/ENOTEMPTY; all four mean someone else holds the lock.
+    for (const code of ['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES']) {
+      assert.equal(isLockTaken(Object.assign(new Error('taken'), { code })), true, code)
+    }
+    for (const code of ['ENOSPC', 'EISDIR', 'ENOENT']) {
+      assert.equal(isLockTaken(Object.assign(new Error('real failure'), { code })), false, code)
+    }
+    assert.equal(isLockTaken(new Error('no code')), false)
+    assert.equal(isLockTaken(undefined), false)
   })
 })
