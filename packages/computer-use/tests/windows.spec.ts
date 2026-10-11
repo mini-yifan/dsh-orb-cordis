@@ -14,7 +14,8 @@ vi.mock('../src/windows-native.ts', () => ({
       mouseButton: () => undefined,
       scrollWheel: () => undefined,
       key: () => undefined,
-      readClipboardText: () => '',
+      saveClipboard: () => ({ entries: [] }),
+      restoreClipboard: () => undefined,
       setClipboardText: () => undefined,
       copyImageFile: () => undefined,
       listWindowApps: () => [],
@@ -80,7 +81,13 @@ function ops(overrides: Partial<WindowsDesktopOps> = {}): WindowsDesktopOps & {
     key: (virtualKey, down, extended) => {
       calls.push(`key:${String(virtualKey)}:${down ? 'down' : 'up'}:${extended ? '1' : '0'}`)
     },
-    readClipboardText: () => 'previous',
+    saveClipboard: () => {
+      calls.push('clip-save')
+      return { entries: [{ format: 13, bytes: Buffer.from('previous\0', 'utf16le') }] }
+    },
+    restoreClipboard: (snapshot) => {
+      calls.push(`clip-restore:${snapshot.entries.map(entry => String(entry.format)).join(',')}`)
+    },
     setClipboardText: (text) => { calls.push(`clip:${text}`) },
     copyImageFile: (path) => { calls.push(`image:${path}`) },
     listWindowApps: () => ['notepad', 'explorer'],
@@ -174,18 +181,42 @@ describe('windows desktop backend', () => {
     host.calls.length = 0
     await backend.typeText({ screen, position: [500, 1000], text: 'hi', replace: true, submit: true })
     const pasteUp = host.calls.indexOf('key:86:up:0')
-    const restore = host.calls.indexOf('clip:previous')
+    const restore = host.calls.indexOf('clip-restore:13')
     expect(host.calls).toContain('clip:hi')
     expect(host.calls.indexOf('clip:hi')).toBeLessThan(host.calls.indexOf('key:86:down:0'))
     expect(pasteUp).toBeGreaterThan(-1)
     expect(restore).toBeGreaterThan(pasteUp)
-    expect(host.calls.at(-1)).toBe('clip:previous')
+    expect(host.calls.at(-1)).toBe('clip-restore:13')
     expect(host.calls).toContain('key:13:down:0')
     host.calls.length = 0
     await backend.typeText({ screen, position: [0, 0], text: 'x', replace: false, submit: false })
     expect(host.calls).not.toContain('key:65:down:0')
     expect(host.calls).not.toContain('key:13:down:0')
-    expect(host.calls.at(-1)).toBe('clip:previous')
+    expect(host.calls.at(-1)).toBe('clip-restore:13')
+  })
+
+  it('puts every saved clipboard format back after a paste', async () => {
+    // CF_UNICODETEXT, CF_DIB, and CF_HDROP: a copied image or file list survives input_text.
+    const saved = {
+      entries: [
+        { format: 13, bytes: Buffer.from('previous\0', 'utf16le') },
+        { format: 8, bytes: Buffer.from([1, 2, 3]) },
+        { format: 15, bytes: Buffer.from([4, 5]) },
+      ],
+    }
+    const host = ops({
+      saveClipboard: () => {
+        host.calls.push('clip-save')
+        return saved
+      },
+    })
+    const backend = createWindowsDesktopBackend(host)
+    const screen = { index: 0, bounds, scale: 1 }
+    await backend.typeText({ screen, position: [0, 0], text: 'typed', replace: false, submit: false })
+    // The save happens before the paste overwrites the clipboard, and every format returns.
+    expect(host.calls).toContain('clip-save')
+    expect(host.calls.indexOf('clip-save')).toBeLessThan(host.calls.indexOf('clip:typed'))
+    expect(host.calls.at(-1)).toBe('clip-restore:13,8,15')
   })
 
   it('holds click modifiers only for that click', async () => {

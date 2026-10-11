@@ -157,6 +157,26 @@ describe('code agent bookmark registry', () => {
     expect(registry.list()[0]?.state).toBe('stopped')
   })
 
+  it('aborts the previous watch when the same session is recorded again', () => {
+    const registry = createCodeAgentRegistry()
+    const agent = fakeAgent()
+    const first = new AbortController()
+    const second = new AbortController()
+    recordQueued(registry, agent, 'code-agent-req-1', { watch: first })
+    recordQueued(registry, agent, 'code-agent-req-2', { watch: second })
+    expect(first.signal.aborted).toBe(true)
+    expect(second.signal.aborted).toBe(false)
+  })
+
+  it('keeps a watch that the replacement record itself carries', () => {
+    const registry = createCodeAgentRegistry()
+    const agent = fakeAgent()
+    const shared = new AbortController()
+    recordQueued(registry, agent, 'code-agent-req-1', { watch: shared })
+    recordQueued(registry, agent, 'code-agent-req-2', { watch: shared })
+    expect(shared.signal.aborted).toBe(false)
+  })
+
   it('marks a disposed background session completed', () => {
     const registry = createCodeAgentRegistry()
     const agent = fakeAgent()

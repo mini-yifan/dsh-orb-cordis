@@ -26,7 +26,8 @@ interface ScreenLockState {
 
 const SCREEN_LOCK = Symbol.for('dsh-orb.gui-lock')
 
-function screenLockState(): ScreenLockState {
+/** Current lock state; exported so tests can observe the hold around a clipboard write. */
+export function screenLockState(): ScreenLockState {
   const holder = globalThis as { [SCREEN_LOCK]?: ScreenLockState }
   holder[SCREEN_LOCK] ??= { held: false, owner: undefined }
   return holder[SCREEN_LOCK]!

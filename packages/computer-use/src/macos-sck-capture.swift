@@ -274,9 +274,12 @@ private func compositeCursor(_ image: CGImage, bounds: CGRect) -> CGImage {
     y: (snapshot.location.y - bounds.minY) * scale,
   )
   let radius = 7 * scale
+  // CGImage drawing uses a bottom-left origin and `point.y` counts from the top, so the ring
+  // center flips exactly like the sprite anchor does; unflipped it marks the wrong row.
+  let ringCenterY = CGFloat(image.height) - point.y
   let ringRect = CGRect(
     x: point.x - radius,
-    y: point.y - radius,
+    y: ringCenterY - radius,
     width: radius * 2,
     height: radius * 2,
   )

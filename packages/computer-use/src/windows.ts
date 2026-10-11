@@ -42,6 +42,17 @@ export interface WindowsRect {
   readonly height: number
 }
 
+/** One clipboard format and a copy of its global-memory bytes. */
+export interface ClipboardEntry {
+  readonly format: number
+  readonly bytes: Buffer
+}
+
+/** Clipboard contents saved before a paste; {@link WindowsDesktopOps.restoreClipboard} puts the formats back. */
+export interface ClipboardSnapshot {
+  readonly entries: readonly ClipboardEntry[]
+}
+
 /**
  * Host operations behind the Windows backend.
  * Production uses Win32. Tests supply fakes.
@@ -75,7 +86,13 @@ export interface WindowsDesktopOps {
    * @param extended - true for the extended navigation keys (`KEYEVENTF_EXTENDEDKEY`).
    */
   key(virtualKey: number, down: boolean, extended?: boolean): void
-  readClipboardText(): string
+  /**
+   * Copy every clipboard format and its bytes, so the paste path can put the clipboard back.
+   * Formats whose handle cannot be locked (GDI handles, owner-display) are skipped.
+   */
+  saveClipboard(): ClipboardSnapshot
+  /** Replace the clipboard with a saved snapshot, format by format. */
+  restoreClipboard(snapshot: ClipboardSnapshot): void
   setClipboardText(text: string): void
   copyImageFile(path: string): void
   listWindowApps(): readonly string[]
@@ -490,7 +507,7 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
       const abort = liveSignal(signal)
       await clickAt(host, 'left', 1, pointOf(input.position, input.screen), abort)
       if (input.replace) await chord(host, [postedVk(0x11), postedVk(0x41)], abort)
-      const previous = host.readClipboardText()
+      const previous = host.saveClipboard()
       try {
         host.setClipboardText(input.text)
         await delay(CLIPBOARD_SETTLE_MS, abort)
@@ -501,7 +518,9 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
           await chord(host, [postedVk(0x0D)], abort)
         }
       } finally {
-        host.setClipboardText(previous)
+        // Every saved format goes back, not just the text: an image or file list the user
+        // copied must survive the paste.
+        host.restoreClipboard(previous)
       }
     },
 

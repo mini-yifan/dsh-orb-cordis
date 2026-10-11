@@ -18,6 +18,7 @@ import { apply, Config, inject, name } from '../src/index.ts'
 import * as ComputerUse from '../src/index.ts'
 import { POLICY, policyFor } from '../src/policy.ts'
 import { formatScreenEnvelope } from '../src/observe.ts'
+import { screenLockState } from '../src/gui-lock.ts'
 import { UNSUPPORTED_DESKTOP_MESSAGE } from '../src/unsupported.ts'
 import * as waitModule from '../src/wait.ts'
 import * as screenshotModule from '../src/screenshot.ts'
@@ -402,6 +403,31 @@ describe('computer-use tools', () => {
       const textRoute = await execute(ctx, 'screenshot', {}, 'text-model')
       expect(textRoute.isError).toBe(true)
       expect(text(textRoute)).toContain('does not declare image input')
+    } finally {
+      write.mockRestore()
+    }
+  })
+
+  it('holds the screen lock while the screenshot writes the clipboard', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'dsh-cu-shot-lock-'))
+    homes.push(home)
+    const originalWrite = screenshotModule.writeDesktopScreenshots
+    const write = vi.spyOn(screenshotModule, 'writeDesktopScreenshots').mockImplementation(
+      (files, options) => originalWrite(files, {
+        ...options,
+        home,
+        now: new Date(2026, 8, 15, 20, 10, 0),
+      }),
+    )
+    try {
+      const { ctx, backend } = await setup({ png: FAKE_WINDOW_PNG })
+      const held: boolean[] = []
+      backend.copyImageToClipboard = async () => { held.push(screenLockState().held) }
+      const result = await execute(ctx, 'screenshot', {})
+      expect(result.isError).toBe(false)
+      // The clipboard write runs under the lock; nothing holds it afterwards.
+      expect(held).toEqual([true])
+      expect(screenLockState().held).toBe(false)
     } finally {
       write.mockRestore()
     }

@@ -717,10 +717,13 @@ export function applyComputerUse(
       if (first === undefined || firstPath === undefined) {
         throw new Error('computer-use: screenshot produced no files')
       }
-      await backend.copyImageToClipboard(
+      // The clipboard write holds the screen lock: another session's paste (Ctrl+V plus its
+      // restore) could otherwise land between this write and the user's paste. The
+      // observation and the file write stay outside the lock — they touch no shared state.
+      await withScreenLock(exec.agent?.id, () => backend.copyImageToClipboard(
         { path: firstPath, mediaType: first.mediaType },
         exec.signal,
-      )
+      ))
       return {
         paths: [...paths],
         clipboard: true,

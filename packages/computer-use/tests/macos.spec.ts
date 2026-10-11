@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { FAKE_DESKTOP_PNG } from '../src/fake.ts'
 import {
@@ -101,6 +102,53 @@ function runner(options: {
     }
     throw new Error(`unexpected command ${file}`)
   }
+}
+
+interface PostedEvent {
+  kind: 'key' | 'mouse' | 'wheel'
+  flags: number
+  code?: number
+  down?: boolean
+  type?: number
+  x?: number
+  y?: number
+}
+
+/**
+ * Run one generated JXA HID script against stubbed CGEvent calls and record what it posted,
+ * so the flags each key transition carries can be asserted without real Accessibility input.
+ */
+function runHid(script: string): {
+  readonly keys: { code: number; down: boolean; flags: number }[]
+  readonly mouse: { type: number; flags: number; x: number; y: number }[]
+} {
+  const keys: { code: number; down: boolean; flags: number }[] = []
+  const mouse: { type: number; flags: number; x: number; y: number }[] = []
+  const sandbox = {
+    ObjC: { import: () => undefined },
+    $: {
+      CGEventSourceCreate: () => ({}),
+      CGPointMake: (x: number, y: number) => ({ x, y }),
+      CGEventCreateMouseEvent: (_source: unknown, type: number, point: { x: number; y: number }): PostedEvent =>
+        ({ kind: 'mouse', type, x: point.x, y: point.y, flags: 0 }),
+      CGEventCreateKeyboardEvent: (_source: unknown, code: number, down: boolean): PostedEvent =>
+        ({ kind: 'key', code, down, flags: 0 }),
+      CGEventCreateScrollWheelEvent2: (): PostedEvent => ({ kind: 'wheel', flags: 0 }),
+      CGEventSetIntegerValueField: () => undefined,
+      CGEventSetFlags: (event: PostedEvent, flags: number) => { event.flags = flags },
+      CGEventSetLocation: (event: PostedEvent, point: { x: number; y: number }) => {
+        event.x = point.x
+        event.y = point.y
+      },
+      CGEventPost: (_hid: unknown, event: PostedEvent) => {
+        if (event.kind === 'key') keys.push({ code: event.code ?? 0, down: event.down === true, flags: event.flags })
+        if (event.kind === 'mouse') mouse.push({ type: event.type ?? 0, flags: event.flags, x: event.x ?? 0, y: event.y ?? 0 })
+      },
+      NSThread: { sleepForTimeInterval: () => undefined },
+    },
+  }
+  runInNewContext(script, sandbox)
+  return { keys, mouse }
 }
 
 describe('runCommand', () => {
@@ -722,6 +770,11 @@ describe('macOS backend with an injected runner', () => {
     expect(scripts[0]).toContain('var discarded = pb.clearContents')
     expect(scripts[0]).not.toContain('pb.clearContents()')
     expect(scripts[0]).not.toContain('KeyboardSetUnicodeString')
+    // Every pasteboard type is snapshotted and restored, not just the text.
+    expect(scripts[0]).toContain('clipboardSnapshot(pb)')
+    expect(scripts[0]).toContain('dataForType')
+    expect(scripts[0]).toContain('restoreClipboard(pb, previous)')
+    expect(scripts[0]).not.toContain('stringWithString(previous)')
     scripts.length = 0
     await backend.typeText({
       screen: screen!, position: [0, 0], text: '', replace: false, submit: false,
@@ -763,11 +816,112 @@ describe('macOS backend with an injected runner', () => {
     expect(scripts[0]).toContain('clickWithModifiers(0, 0, 0, 1, [55,56])')
     expect(scripts[0]).toContain('if (flags) $.CGEventSetFlags(event, flags)')
     expect(scripts[0]).toContain('postKey(mods[m], true, flags)')
-    expect(scripts[0]).toContain('postKey(mods[r], false, 0)')
+    expect(scripts[0]).toContain('postKey(mods[r], false, heldFlags(mods, r))')
     scripts.length = 0
     await backend.click({ screen: screen!, position: [0, 0], button: 'left', count: 1 })
     expect(scripts[0]).toContain('clickAt(0, 0, 0, 1)')
     expect(scripts[0]).not.toContain('clickWithModifiers(0, 0, 0, 1')
+  })
+
+  it('flags the Fn key and releases modifiers with the flags that remain held', async () => {
+    const scripts: string[] = []
+    const backend = createMacosDesktopBackend(runner({ scripts }))
+    scripts.length = 0
+    await backend.hotkey({ keys: ['fn', 'c'] })
+    const fn = runHid(scripts[0]!)
+    // kCGEventFlagMaskSecondaryFn is 0x00800000; 0x8000 is not a Fn flag.
+    expect(fn.keys[0]).toEqual({ code: 63, down: true, flags: 0x00800000 })
+    expect(fn.keys.at(-1)).toEqual({ code: 63, down: false, flags: 0 })
+
+    scripts.length = 0
+    await backend.hotkey({ keys: ['cmd', 'shift'] })
+    const chord = runHid(scripts[0]!)
+    // Shift comes up with Cmd still reported as held; only the last release reports 0.
+    expect(chord.keys).toEqual([
+      { code: 55, down: true, flags: 0x00100000 | 0x00020000 },
+      { code: 56, down: true, flags: 0x00100000 | 0x00020000 },
+      { code: 56, down: false, flags: 0x00100000 },
+      { code: 55, down: false, flags: 0 },
+    ])
+
+    scripts.length = 0
+    await backend.click({
+      screen: (await backend.listScreens())[0]!, position: [0, 0], button: 'left', count: 1, modifiers: ['cmd', 'shift'],
+    })
+    const click = runHid(scripts.at(-1)!)
+    expect(click.keys.map(key => key.flags)).toEqual([0x00100000 | 0x00020000, 0x00100000 | 0x00020000, 0x00100000, 0])
+  })
+
+  it('maps f4 and forwards delete on macOS', async () => {
+    const scripts: string[] = []
+    const backend = createMacosDesktopBackend(runner({ scripts }))
+    scripts.length = 0
+    await backend.hotkey({ keys: ['f4'] })
+    expect(scripts[0]).toContain('chord([118])')
+    scripts.length = 0
+    await backend.hotkey({ keys: ['delete'] })
+    expect(scripts[0]).toContain('chord([117])')
+    scripts.length = 0
+    await backend.hotkey({ keys: ['backspace'] })
+    expect(scripts[0]).toContain('chord([51])')
+  })
+
+  it('captures and clicks the same rounded rectangle for fractional window bounds', async () => {
+    const scripts: string[] = []
+    const args: string[][] = []
+    const backend = createMacosDesktopBackend(runner({
+      scripts,
+      args,
+      capture: Buffer.from([0xff, 0xd8, 0xff]),
+      inspect: inspectJson({ x: 100.4, y: 0, width: 200.4, height: 10, scale: 1, windowTitle: 'Fractional' }),
+    }))
+    const [screen] = await backend.listScreens()
+    expect(screen?.bounds).toEqual({ x: 100, y: 0, width: 200, height: 10 })
+    const numberedArgs = args.length
+    await backend.capture(screen!)
+    expect(args[numberedArgs]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '100,0,200,10'])
+    scripts.length = 0
+    await backend.click({ screen: screen!, position: [250, 0], button: 'left', count: 1 })
+    // 25% of the captured raster is 100 + 0.25 * 200 = 150; the unrounded frame would say 151.
+    expect(scripts.join('\n')).toContain('clickAt(150, 0, 0, 1)')
+  })
+
+  it('releases every key and mouse button when a HID script is cancelled', async () => {
+    const releases: string[] = []
+    const signals: (AbortSignal | undefined)[] = []
+    const hids: string[] = []
+    const controller = new AbortController()
+    const base = runner({})
+    const backend = createMacosDesktopBackend(async (file, args, options) => {
+      const flag = args.indexOf('-e')
+      const inline = flag >= 0 ? args[flag + 1] ?? '' : ''
+      if (file === '/usr/bin/osascript' && inline.includes('postMouseUp(LEFT_UP')) {
+        releases.push(inline)
+        signals.push(options?.signal)
+        return { stdout: '', stderr: '' }
+      }
+      if (file === '/usr/bin/osascript' && flag < 0) {
+        // The HID script runs from a temp file; cancellation kills osascript mid-script.
+        hids.push(await readFile(String(args.at(-1)), 'utf8'))
+        controller.abort()
+        const abort = new Error('killed')
+        abort.name = 'AbortError'
+        throw abort
+      }
+      return base(file, args, options)
+    })
+    const [screen] = await backend.listScreens()
+    await expect(backend.click(
+      { screen: screen!, position: [0, 0], button: 'left', count: 1 },
+      controller.signal,
+    )).rejects.toThrow(/pointer input failed/u)
+    expect(hids).toHaveLength(1)
+    expect(releases).toHaveLength(1)
+    expect(releases[0]).toContain('postMouseUp(RIGHT_UP')
+    expect(releases[0]).toContain('postKeyUp(KEY_CMD)')
+    expect(releases[0]).toContain('postKeyUp(KEY_FN)')
+    // The release never carries the aborted signal, or it would be killed by the same cancel.
+    expect(signals).toEqual([undefined])
   })
 
   it('opens URLs, the default browser, Desktop files, and Finder reveals', async () => {

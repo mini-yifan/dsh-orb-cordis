@@ -96,7 +96,12 @@ export function createCodeAgentRegistry(): CodeAgentBookmarkRegistry {
   return {
     record(entry) {
       const previous = records.get(entry.sessionId)
-      if (previous !== undefined) detachRecord(previous)
+      if (previous !== undefined) {
+        detachRecord(previous)
+        // This record replaces the previous stretch's bookmark; a watch left running could
+        // only fire a notice for a stretch nobody tracks any more.
+        if (previous.watch !== undefined && previous.watch !== entry.watch) previous.watch.abort()
+      }
       const record: BookmarkRecord = {
         sessionId: entry.sessionId,
         callerId: entry.callerId,
@@ -151,6 +156,15 @@ export function createCodeAgentRegistry(): CodeAgentBookmarkRegistry {
 
 /** Fold one live status into the record's state. Queued prompts are still running. */
 function evaluate(record: BookmarkRecord): void {
+  try {
+    evaluateRecord(record)
+  } catch {
+    // A session whose snapshot cannot be derived must not throw into the agent's event
+    // dispatch — other listeners share it — so the bookmark simply keeps its last state.
+  }
+}
+
+function evaluateRecord(record: BookmarkRecord): void {
   if (record.state === 'stopped') return
   if (record.watch?.signal.aborted === true) {
     stopRecord(record)

@@ -83,6 +83,8 @@ interface FakeAgent {
   setRunning(): void
   resolveIdle(): void
   emitStatus(): void
+  /** The driver picked every queued prompt up, as the real agent loop does when a stretch starts. */
+  claimPrompt(): void
   dispose(): void
 }
 
@@ -235,6 +237,10 @@ function createFakeAgent(id: SessionId, options: {
     },
     emitStatus() {
       for (const listener of statusListeners) listener({ status })
+    },
+    claimPrompt() {
+      inbox.nextTurn.length = 0
+      inbox.nextStep.length = 0
     },
     dispose() {
       for (const dispose of effects.splice(0)) dispose()
@@ -689,6 +695,7 @@ describe('code_agent plugin', () => {
     const result = await execute(ctx, { task: 'Write a Word document' })
     expect(result.isError).toBe(false)
     expect(caller.followups).toEqual([])
+    code.claimPrompt()
     code.resolveIdle()
     await expect.poll(() => caller.followups.length).toBe(1)
     expect(caller.followups[0]?.source).toMatchObject({
@@ -705,6 +712,7 @@ describe('code_agent plugin', () => {
     const code = createFakeAgent(STANDARD, { status: 'running', assistant: 'Wrote the Word document.' })
     const { ctx } = await setup({ live: new Map([[CALLER, caller], [STANDARD, code]]) })
     await execute(ctx, { task: 'Write a Word document' })
+    code.claimPrompt()
     code.resolveIdle()
     await expect.poll(() => caller.whenIdleCalls).toBeGreaterThan(0)
     expect(caller.followups).toEqual([])
@@ -719,6 +727,7 @@ describe('code_agent plugin', () => {
     const other = createFakeAgent(CALLER_B, { status: 'running', preset: 'computer-use' })
     const { ctx } = await setup({ live: new Map([[CALLER, caller], [STANDARD, code], [CALLER_B, other]]) })
     await execute(ctx, { task: 'Write a Word document' })
+    code.claimPrompt()
     code.resolveIdle()
     await expect.poll(() => caller.followups.length).toBe(1)
     const notice = text({ content: caller.followups[0]!.content })
@@ -733,6 +742,7 @@ describe('code_agent plugin', () => {
     const other = createFakeAgent(SessionId('session-other'), { status: 'running', preset: 'standard' })
     const { ctx } = await setup({ live: new Map([[CALLER, caller], [STANDARD, code], [SessionId('session-other'), other]]) })
     await execute(ctx, { task: 'Write a Word document' })
+    code.claimPrompt()
     code.resolveIdle()
     await expect.poll(() => caller.followups.length).toBe(1)
     const notice = text({ content: caller.followups[0]!.content })
@@ -756,9 +766,47 @@ describe('code_agent plugin', () => {
     code.inbox.nextStep.push(...queued)
     code.emitStatus()
     expect(caller.followups).toEqual([])
+    code.claimPrompt()
     code.setRunning()
     code.resolveIdle()
     await expect.poll(() => caller.followups.length).toBe(1)
+  })
+
+  it('waits for a queued follow-up to be claimed before watching for idle', async () => {
+    const caller = createFakeAgent(CALLER, { status: 'idle' })
+    // The previous stretch is still running and this follow-up sits in the inbox.
+    const code = createFakeAgent(STANDARD, { status: 'running', assistant: 'First stretch done.' })
+    const { ctx } = await setup({ live: new Map([[CALLER, caller], [STANDARD, code]]) })
+    await execute(ctx, { task: 'Make the font green' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Running status is not the signal: this request's prompt has not been picked up yet.
+    expect(code.whenIdleCalls).toBe(0)
+    code.claimPrompt()
+    code.emitStatus()
+    await expect.poll(() => code.whenIdleCalls).toBeGreaterThan(0)
+    code.resolveIdle()
+    await expect.poll(() => caller.followups.length).toBe(1)
+    expect(text({ content: caller.followups[0]!.content })).toContain('First stretch done.')
+  })
+
+  it('aborts the previous watch when the same session is delegated again', async () => {
+    const caller = createFakeAgent(CALLER, { status: 'idle' })
+    const code = createFakeAgent(STANDARD, { status: 'running', assistant: 'Second stretch done.' })
+    const { ctx } = await setup({ live: new Map([[CALLER, caller], [STANDARD, code]]) })
+    await execute(ctx, { task: 'First task' })
+    code.claimPrompt()
+    code.emitStatus()
+    await expect.poll(() => code.whenIdleCalls).toBeGreaterThan(0)
+    // The user continues the same session while the first stretch still runs: the first
+    // watch must not fire its notice for the second stretch.
+    await execute(ctx, { task: 'Second task', session_id: STANDARD })
+    code.claimPrompt()
+    code.emitStatus()
+    code.resolveIdle()
+    await expect.poll(() => caller.followups.length).toBe(1)
+    const notice = text({ content: caller.followups[0]!.content })
+    expect(notice).toContain('Second task')
+    expect(notice).toContain('Second stretch done.')
   })
 
   it('drops the notice when the Computer Use caller is disposed', async () => {
@@ -767,6 +815,8 @@ describe('code_agent plugin', () => {
     const harness = await setup({ live: new Map([[CALLER, caller], [STANDARD, code]]) })
     const result = await execute(harness.ctx, { task: 'Write a Word document' })
     expect(result.isError).toBe(false)
+    code.claimPrompt()
+    code.emitStatus()
     await expect.poll(() => code.whenIdleCalls).toBeGreaterThan(0)
     const gets = harness.agentsGetCalls
     caller.dispose()
@@ -780,6 +830,7 @@ describe('code_agent plugin', () => {
     const running = createFakeAgent(STANDARD, { status: 'running', assistant: 'Wrote the Word document.' })
     const second = await setup({ live: new Map([[CALLER, parked], [STANDARD, running]]) })
     await execute(second.ctx, { task: 'Write a Word document' })
+    running.claimPrompt()
     running.resolveIdle()
     await expect.poll(() => parked.whenIdleCalls).toBeGreaterThan(0)
     parked.dispose()
@@ -802,6 +853,7 @@ describe('code_agent plugin', () => {
     const queued = await execute(second.ctx, { task: 'Write a Word document' })
     expect(queued.isError).toBe(false)
     live.set(CALLER, replacement)
+    code.claimPrompt()
     code.resolveIdle()
     await expect.poll(() => original.whenIdleCalls).toBeGreaterThan(0)
     const gets = second.agentsGetCalls
@@ -822,6 +874,7 @@ describe('code_agent plugin', () => {
     })
     const first = await setup({ live: new Map([[CALLER, caller], [STANDARD, silent]]) })
     await execute(first.ctx, { task: 'Write a Word document' })
+    silent.claimPrompt()
     silent.resolveIdle()
     await expect.poll(() => caller.followups.length).toBe(1)
     expect(text({ content: caller.followups[0]!.content })).toContain(
@@ -835,6 +888,7 @@ describe('code_agent plugin', () => {
     })
     const second = await setup({ live: new Map([[CALLER, longCaller], [STANDARD, longCode]]) })
     await execute(second.ctx, { task: 'Write a Word document' })
+    longCode.claimPrompt()
     longCode.resolveIdle()
     await expect.poll(() => longCaller.followups.length).toBe(1)
     const body = text({ content: longCaller.followups[0]!.content })
@@ -851,6 +905,7 @@ describe('code_agent plugin', () => {
     })
     const first = await setup({ live: new Map([[CALLER, caller], [STANDARD, code]]) })
     await execute(first.ctx, { task: 'Write a Word document' })
+    code.claimPrompt()
     code.resolveIdle()
     await expect.poll(() => caller.followups.length).toBe(1)
     const body = text({ content: caller.followups[0]!.content })
@@ -867,6 +922,7 @@ describe('code_agent plugin', () => {
     })
     const second = await setup({ live: new Map([[CALLER, doneCaller], [STANDARD, doneCode]]) })
     await execute(second.ctx, { task: 'Write a Word document' })
+    doneCode.claimPrompt()
     doneCode.resolveIdle()
     await expect.poll(() => doneCaller.followups.length).toBe(1)
     const done = text({ content: doneCaller.followups[0]!.content })
@@ -906,6 +962,7 @@ describe('code_agent plugin', () => {
     const failing = await setup({ live: new Map([[CALLER, failingCaller], [STANDARD, failingCode]]) })
     const delivered = await execute(failing.ctx, { task: 'Write a Word document' })
     expect(delivered.isError).toBe(false)
+    failingCode.claimPrompt()
     failingCode.resolveIdle()
     await expect.poll(() => failingCaller.warnings.length).toBeGreaterThan(0)
     expect(failingCaller.followups).toEqual([])
@@ -917,6 +974,7 @@ describe('code_agent plugin', () => {
     })
     const snapshot = await setup({ live: new Map([[CALLER, snapshotCaller], [STANDARD, snapshotCode]]) })
     await execute(snapshot.ctx, { task: 'Write a Word document' })
+    snapshotCode.claimPrompt()
     snapshotCode.resolveIdle()
     await expect.poll(() => snapshotCaller.warnings.length).toBeGreaterThan(0)
 
@@ -932,6 +990,7 @@ describe('code_agent plugin', () => {
     })
     const aborting = await setup({ live: new Map([[CALLER, abortingCaller], [STANDARD, abortingCode]]) })
     await execute(aborting.ctx, { task: 'Write a Word document' })
+    abortingCode.claimPrompt()
     abortingCode.resolveIdle()
     await expect.poll(() => abortedDerive).toBe(true)
     expect(abortingCaller.warnings).toEqual([])
@@ -942,6 +1001,7 @@ describe('code_agent plugin', () => {
     const disposed = await setup({ live: new Map([[CALLER, disposedCaller], [STANDARD, disposedCode]]) })
     const skipped = await execute(disposed.ctx, { task: 'Write a Word document' })
     expect(skipped.isError).toBe(false)
+    disposedCode.claimPrompt()
     disposedCode.resolveIdle()
     expect(disposedCaller.followups).toEqual([])
 
@@ -953,6 +1013,7 @@ describe('code_agent plugin', () => {
     // Nobody owns a listener: the watch was never owned, and the registry
     // detached again because the aborted watch marks the bookmark stopped.
     expect(abortedCode.statusSubscriptions).toBe(0)
+    abortedCode.claimPrompt()
     abortedCode.setRunning()
     abortedCode.resolveIdle()
     expect(abortedCaller.followups).toEqual([])
@@ -1060,6 +1121,8 @@ describe('code_agent plugin', () => {
     const code = createFakeAgent(STANDARD, { status: 'running', assistant: 'Wrote the Word document.' })
     const { ctx } = await setup({ live: new Map([[CALLER, caller], [STANDARD, code]]) })
     await execute(ctx, { task: 'Write a Word document' })
+    code.claimPrompt()
+    code.emitStatus()
     await expect.poll(() => code.whenIdleCalls).toBeGreaterThan(0)
     await execute(ctx, { session_id: STANDARD }, callerAgent(), STOP_TOOL_NAME)
     expect(caller.followups).toEqual([])

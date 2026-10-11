@@ -119,11 +119,12 @@ async function runWatch(watch: CodeAgentCompletionWatch, signal: AbortSignal): P
 }
 
 /**
- * The Code interval has started when the driver is running, or when the
- * accepted prompt is no longer queued (already claimed or already finished).
+ * The Code interval has started once this request's prompt is no longer queued. A running
+ * status is not enough: a follow-up prompt can sit in the inbox while the previous stretch
+ * still runs, and watching for idle then would end in the gap before it starts.
  */
 function intervalHasStarted(code: Agent, requestId: SessionRequestId): boolean {
-  return code.status === 'running' || !holdsPrompt(code, requestId)
+  return !holdsPrompt(code, requestId)
 }
 
 /** Whether the accepted prompt is still parked in the inbox (queued, not started or finished). */

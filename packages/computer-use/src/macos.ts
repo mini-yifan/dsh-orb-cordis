@@ -415,12 +415,12 @@ const KEY_CODES: Readonly<Record<string, number>> = {
   minus: 27, '-': 27, '8': 28, '0': 29, ']': 30, o: 31, u: 32, '[': 33,
   i: 34, p: 35, enter: 36, return: 36, l: 37, j: 38, quote: 39, "'": 39,
   k: 40, ';': 41, '\\': 42, ',': 43, '/': 44, n: 45, m: 46, '.': 47,
-  tab: 48, space: 49, '`': 50, backspace: 51, delete: 51, escape: 53, esc: 53,
+  tab: 48, space: 49, '`': 50, backspace: 51, delete: 117, escape: 53, esc: 53,
   cmd: 55, command: 55, meta: 55, win: 55, windows: 55, super: 55,
   shift: 56, capslock: 57, option: 58, alt: 58, control: 59, ctrl: 59,
   fn: 63, f17: 64, f18: 79, f19: 80, f20: 90, f5: 96, f6: 97, f7: 98,
   f3: 99, f8: 100, f9: 101, f11: 103, f13: 105, f16: 106, f14: 107,
-  f10: 109, f12: 111, f15: 113, home: 115, pageup: 116, end: 119,
+  f10: 109, f12: 111, f15: 113, home: 115, pageup: 116, f4: 118, end: 119,
   f2: 120, pagedown: 121, f1: 122, left: 123, right: 124, down: 125, up: 126,
 }
 
@@ -563,11 +563,13 @@ function screenFromFrontmost(parsed: ParsedFrontmost): ScreenInfo | undefined {
   if (parsed.windowId === undefined || parsed.bounds === undefined || parsed.scale === undefined) {
     return undefined
   }
-  const bounds = clipToDisplay(parsed.bounds, parsed.displayBounds)
-  if (bounds === undefined) return undefined
+  const clipped = clipToDisplay(parsed.bounds, parsed.displayBounds)
+  if (clipped === undefined) return undefined
+  // The capture rectangle and the click mapping both divide by the raster this rounded
+  // rectangle produces; they must describe the same pixels.
   return {
     index: 0,
-    bounds,
+    bounds: roundedRegion(clipped),
     scale: parsed.scale,
     windowId: parsed.windowId,
     ...parsed.transientWindowIds === undefined ? {} : { transientWindowIds: parsed.transientWindowIds },
@@ -659,12 +661,21 @@ function parseOpenAppDecision(stdout: string): { kind: 'activated' | 'launch'; n
  * @param bounds - observed rectangle, already clipped to its owning display.
  * @returns `x,y,width,height`.
  */
+/**
+ * The physical rectangle a surface is captured and clicked in. Rounding happens once here,
+ * so the `screencapture` rectangle, the raster it produces, and `roundedPoint` all agree.
+ */
+function roundedRegion(bounds: ScreenInfo['bounds']): ScreenInfo['bounds'] {
+  return {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.max(1, Math.round(bounds.width)),
+    height: Math.max(1, Math.round(bounds.height)),
+  }
+}
+
 function regionCaptureSpec(bounds: ScreenInfo['bounds']): string {
-  const x = Math.round(bounds.x)
-  const y = Math.round(bounds.y)
-  const width = Math.max(1, Math.round(bounds.width))
-  const height = Math.max(1, Math.round(bounds.height))
-  return `${String(x)},${String(y)},${String(width)},${String(height)}`
+  return `${String(bounds.x)},${String(bounds.y)},${String(bounds.width)},${String(bounds.height)}`
 }
 
 function keyCode(token: string): number {
@@ -705,7 +716,8 @@ const FLAG_SHIFT = 0x00020000
 const FLAG_CTRL = 0x00040000
 const FLAG_ALT = 0x00080000
 const FLAG_CMD = 0x00100000
-const FLAG_FN = 0x00008000
+// kCGEventFlagMaskSecondaryFn; 0x8000 is not an AppKit Fn flag.
+const FLAG_FN = 0x00800000
 const KEY_CMD = 55
 const KEY_SHIFT = 56
 const KEY_OPTION = 58
@@ -749,13 +761,28 @@ function clickWithModifiers(x, y, button, count, codes) {
   for (var m = 0; m < mods.length; m++) postKey(mods[m], true, flags)
   sleep(20)
   clickAt(x, y, button, count, flags)
-  for (var r = mods.length - 1; r >= 0; r--) postKey(mods[r], false, 0)
+  for (var r = mods.length - 1; r >= 0; r--) postKey(mods[r], false, heldFlags(mods, r))
   sleep(20)
 }
 function postKey(code, down, flags) {
   const event = $.CGEventCreateKeyboardEvent(SRC, code, down)
   $.CGEventSetFlags(event, flags)
   $.CGEventPost(HID, event)
+}
+function modifierFlag(code) {
+  if (code === KEY_CMD) return FLAG_CMD
+  if (code === KEY_SHIFT) return FLAG_SHIFT
+  if (code === KEY_OPTION) return FLAG_ALT
+  if (code === KEY_CONTROL) return FLAG_CTRL
+  if (code === KEY_FN) return FLAG_FN
+  return 0
+}
+// Flags that remain held once the modifiers above index upto are released: the last
+// modifier to come up must report 0, an earlier one must keep reporting the rest.
+function heldFlags(mods, upto) {
+  var flags = 0
+  for (var i = 0; i < upto; i++) flags |= modifierFlag(mods[i])
+  return flags
 }
 function tapKey(code, flags) {
   postKey(code, true, flags)
@@ -779,38 +806,53 @@ function chord(codes) {
   for (var m = 0; m < mods.length; m++) postKey(mods[m], true, flags)
   sleep(20)
   if (keys.length === 0) {
-    for (var t = mods.length - 1; t >= 0; t--) postKey(mods[t], false, 0)
+    for (var t = mods.length - 1; t >= 0; t--) postKey(mods[t], false, heldFlags(mods, t))
     return
   }
   for (var k = 0; k < keys.length; k++) tapKey(keys[k], flags)
-  for (var r = mods.length - 1; r >= 0; r--) postKey(mods[r], false, 0)
+  for (var r = mods.length - 1; r >= 0; r--) postKey(mods[r], false, heldFlags(mods, r))
   sleep(20)
-}
-function clipboardString() {
-  var value = $.NSPasteboard.generalPasteboard.stringForType($.NSPasteboardTypeString)
-  if (!value) return ''
-  try {
-    var unwrapped = ObjC.unwrap(value)
-    return typeof unwrapped === 'string' ? unwrapped : ''
-  } catch (error) {
-    // Nil NSPasteboard string unwraps by throwing in JXA; treat as empty.
-    return ''
-  }
 }
 function clearPasteboard(pb) {
   // JXA invokes no-arg ObjC methods on property access; calling this as a JS
   // function would invoke the NSInteger return value.
   var discarded = pb.clearContents
 }
+// Every type of every pasteboard item, kept as NSData in this process: saving only the
+// string drops a copied image or file list, and the paste then destroys it.
+function clipboardSnapshot(pb) {
+  var items = []
+  var entries = pb.pasteboardItems
+  if (!entries) return items
+  for (var i = 0; i < entries.count; i++) {
+    var source = entries.objectAtIndex(i)
+    var types = source.types
+    var item = []
+    for (var t = 0; t < types.count; t++) {
+      var type = types.objectAtIndex(t)
+      var data = source.dataForType(type)
+      if (data) item.push({ type: type, data: data })
+    }
+    if (item.length > 0) items.push(item)
+  }
+  return items
+}
+function restoreClipboard(pb, items) {
+  clearPasteboard(pb)
+  for (var i = 0; i < items.length; i++) {
+    var item = $.NSPasteboardItem.alloc.init
+    for (var t = 0; t < items[i].length; t++) item.setDataForType(items[i][t].data, items[i][t].type)
+    pb.writeObjects($([item]))
+  }
+}
 function pasteText(text) {
   var pb = $.NSPasteboard.generalPasteboard
-  var previous = clipboardString()
+  var previous = clipboardSnapshot(pb)
   clearPasteboard(pb)
   pb.setStringForType($.NSString.stringWithString(text), $.NSPasteboardTypeString)
   chord([KEY_CMD, KEY_V])
   sleep(80)
-  clearPasteboard(pb)
-  pb.setStringForType($.NSString.stringWithString(previous), $.NSPasteboardTypeString)
+  restoreClipboard(pb, previous)
 }
 function selectAll() {
   chord([KEY_CMD, KEY_A])
@@ -851,6 +893,43 @@ function dragFromTo(x1, y1, x2, y2) {
   }
   postMouse(LEFT_UP, x2, y2, LEFT, 1)
 }
+`.trim()
+
+/**
+ * Posted after a cancelled HID script: a killed osascript can stop between a press and its
+ * release. Raises both mouse buttons at the current pointer position and every modifier;
+ * an extra up on an already-raised key or button is a no-op.
+ */
+const HID_RELEASE_SCRIPT = `
+ObjC.import('Cocoa')
+const HID = 0
+const SRC = $.CGEventSourceCreate(1)
+const LEFT = 0
+const RIGHT = 1
+const LEFT_UP = 2
+const RIGHT_UP = 4
+const KEY_CMD = 55
+const KEY_SHIFT = 56
+const KEY_OPTION = 58
+const KEY_CONTROL = 59
+const KEY_FN = 63
+function postMouseUp(type, point, button) {
+  const event = $.CGEventCreateMouseEvent(SRC, type, point, button)
+  $.CGEventPost(HID, event)
+}
+function postKeyUp(code) {
+  const event = $.CGEventCreateKeyboardEvent(SRC, code, false)
+  $.CGEventPost(HID, event)
+}
+const cursor = $.CGEventGetLocation($.CGEventCreate(SRC))
+const here = $.CGPointMake(cursor.x, cursor.y)
+postMouseUp(LEFT_UP, here, LEFT)
+postMouseUp(RIGHT_UP, here, RIGHT)
+postKeyUp(KEY_CMD)
+postKeyUp(KEY_SHIFT)
+postKeyUp(KEY_OPTION)
+postKeyUp(KEY_CONTROL)
+postKeyUp(KEY_FN)
 `.trim()
 
 function hidScript(body: string): string {
@@ -905,7 +984,22 @@ export function createMacosDesktopBackend(
   excludedRegionCapture?: OverlayExcludedRegionCapture,
 ): DesktopBackend {
   const hid = async (body: string, signal?: AbortSignal): Promise<void> => {
-    await runHidScript(run, hidScript(body), signal)
+    try {
+      await runHidScript(run, hidScript(body), signal)
+    } catch (error: unknown) {
+      // A cancelled script dies between a press and its release. The release runs without
+      // the aborted signal so it cannot be killed by the same cancellation.
+      if (isAbortError(error, signal)) await releaseHidInput()
+      throw error
+    }
+  }
+
+  async function releaseHidInput(): Promise<void> {
+    try {
+      await run(OSASCRIPT, jxa(HID_RELEASE_SCRIPT), {})
+    } catch (error: unknown) {
+      console.error(`computer-use: HID release failed: ${errorDetail(error)}`)
+    }
   }
 
   return {

@@ -57,6 +57,16 @@ describe('finder paths', () => {
     expect(isForbiddenOpenPath('/Users/test/Desktop')).toBe(false)
   })
 
+  it('blacklists Windows system directories without catching lookalike user folders', () => {
+    expect(isForbiddenOpenPath('C:\\Windows\\System32\\notepad.exe')).toBe(true)
+    expect(isForbiddenOpenPath('c:/windows/system32')).toBe(true)
+    expect(isForbiddenOpenPath('C:\\Program Files\\App\\app.exe')).toBe(true)
+    expect(isForbiddenOpenPath('C:\\Program Files (x86)\\App')).toBe(true)
+    // Only a whole path segment matches: the user's own folder is not the system directory.
+    expect(isForbiddenOpenPath('C:\\Users\\me\\Windows')).toBe(false)
+    expect(isForbiddenOpenPath('C:\\Users\\me\\notes')).toBe(false)
+  })
+
   it('resolves omitted path to Desktop and expands ~', async () => {
     const home = await mkdtemp(join(homedir(), 'dsh-cu-open-home-'))
     homes.push(home)
@@ -77,5 +87,13 @@ describe('finder paths', () => {
   it('rejects missing and blacklisted paths', async () => {
     await expect(resolveFinderOpen('/no/such/computer-use-path', false)).rejects.toThrow(/does not exist/u)
     await expect(resolveFinderOpen('/etc', false)).rejects.toThrow(/system path is forbidden/u)
+  })
+
+  it('refuses a Windows system path before it touches the filesystem', async () => {
+    await expect(resolveFinderOpen('C:\\Windows\\System32\\notepad.exe', false))
+      .rejects.toThrow(/system path is forbidden/u)
+    // A user path passes the blacklist; only the missing file stops it there.
+    await expect(resolveFinderOpen('C:\\Users\\me\\notes', false))
+      .rejects.toThrow(/does not exist/u)
   })
 })

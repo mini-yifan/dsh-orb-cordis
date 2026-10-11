@@ -13,7 +13,7 @@ import { selectAppWindow } from './app-match.ts'
 import koffi from './koffi.ts'
 import { compositeCursor, cursorDrawPlacement, flipRows, resolveCursorAlpha } from './cursor.ts'
 import type { WindowsDesktopSnapshot, WindowsWindowFact } from './windows-foreground.ts'
-import { encodeBgraPng, type WindowsDesktopOps, type WindowsRect } from './windows.ts'
+import { encodeBgraPng, type ClipboardSnapshot, type WindowsDesktopOps, type WindowsRect } from './windows.ts'
 
 const SRCCOPY = 0x00CC0020
 const MOUSEEVENTF_MOVE = 0x0001
@@ -240,6 +240,7 @@ function bind(libraries: NativeBindings): {
   SetClipboardData: (format: number, memory: unknown) => unknown
   CloseClipboard: () => number
   GetClipboardData: (format: number) => unknown
+  EnumClipboardFormats: (format: number) => number
   GlobalAlloc: (flags: number, bytes: number) => unknown
   GlobalLock: (memory: unknown) => unknown
   GlobalUnlock: (memory: unknown) => number
@@ -324,6 +325,7 @@ function bind(libraries: NativeBindings): {
     SetClipboardData: user32.func('void * __stdcall SetClipboardData(uint32 uFormat, void *hMem)'),
     CloseClipboard: user32.func('int __stdcall CloseClipboard()'),
     GetClipboardData: user32.func('void * __stdcall GetClipboardData(uint32 uFormat)'),
+    EnumClipboardFormats: user32.func('uint32 __stdcall EnumClipboardFormats(uint32 format)'),
     GlobalAlloc: kernel32.func('void * __stdcall GlobalAlloc(uint32 uFlags, uintptr dwBytes)'),
     GlobalLock: kernel32.func('void * __stdcall GlobalLock(void *hMem)'),
     GlobalUnlock: kernel32.func('int __stdcall GlobalUnlock(void *hMem)'),
@@ -900,24 +902,46 @@ export function createProductionWindowsOps(): WindowsDesktopOps {
     key(virtualKey, down, extended = false) {
       postKey(api, virtualKey, down, extended)
     },
-    readClipboardText() {
-      let text = ''
+    saveClipboard() {
+      const entries: { format: number; bytes: Buffer }[] = []
       withClipboard(api, () => {
-        const handle = api.GetClipboardData(CF_UNICODETEXT)
-        if (isNull(handle)) return
-        const locked = api.GlobalLock(handle)
-        if (isNull(locked)) return
-        try {
-          const size = Number(api.GlobalSize(handle))
-          if (!Number.isFinite(size) || size < 2) return
-          const bytes = Buffer.alloc(size)
-          api.RtlMoveMemory(bytes, locked, size)
-          text = bytes.toString('utf16le').replace(/\0[\s\S]*$/u, '')
-        } finally {
-          api.GlobalUnlock(handle)
+        let format = 0
+        for (;;) {
+          format = api.EnumClipboardFormats(format)
+          if (format === 0) break
+          const handle = api.GetClipboardData(format)
+          if (isNull(handle)) continue
+          // GDI and owner-display formats are handles, not global memory; GlobalLock fails
+          // on them and the format is skipped rather than copied as garbage.
+          const locked = api.GlobalLock(handle)
+          if (isNull(locked)) continue
+          try {
+            const size = Number(api.GlobalSize(handle))
+            if (!Number.isFinite(size) || size <= 0) continue
+            const bytes = Buffer.alloc(size)
+            api.RtlMoveMemory(bytes, locked, size)
+            entries.push({ format, bytes })
+          } finally {
+            api.GlobalUnlock(handle)
+          }
         }
       })
-      return text
+      return { entries }
+    },
+    restoreClipboard(snapshot) {
+      withClipboard(api, () => {
+        api.EmptyClipboard()
+        for (const entry of snapshot.entries) {
+          const memory = api.GlobalAlloc(GMEM_MOVEABLE, entry.bytes.length)
+          if (isNull(memory)) continue
+          const locked = api.GlobalLock(memory)
+          if (isNull(locked)) continue
+          api.RtlMoveMemory(locked, entry.bytes, entry.bytes.length)
+          api.GlobalUnlock(memory)
+          // The system owns the memory once SetClipboardData accepts it.
+          api.SetClipboardData(entry.format, memory)
+        }
+      })
     },
     setClipboardText(text) {
       const bytes = Buffer.from(`${text}\0`, 'utf16le')
