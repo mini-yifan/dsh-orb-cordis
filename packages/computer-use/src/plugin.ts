@@ -59,6 +59,8 @@ import { withScreenLock } from './gui-lock.ts'
 import { BALL_PRESET, presetOf, screenOwnerId } from './screen-owner.ts'
 import { isDesktopSelectionTurn } from './selection-turn.ts'
 import { pairScreenshotFiles, writeDesktopScreenshots } from './screenshot.ts'
+import { applyImageHistoryPolicy, imageOffloadReady, rememberGuiCall } from './image-history.ts'
+import type { ImageHistoryPolicy } from './image-history.ts'
 import { delay } from './wait.ts'
 import { LONG_WAIT_SECONDS, WAIT_SECONDS, requireLongWaitSeconds } from './wait-args.ts'
 
@@ -205,6 +207,7 @@ async function recapture(
 }> {
   const session = sessionOf(exec)
   const mode = coordinateModeOf(session)
+  rememberGuiCall(session, exec.callId)
   const observation = await observeDesktop(ctx, backend, exec.signal, {
     settleMs,
     coordinateMode: mode,
@@ -262,6 +265,10 @@ export function applyComputerUse(
   config: ResolvedComputerUseConfig,
 ): void {
   installCoordinateMode(ctx)
+  const imageHistoryPolicy: ImageHistoryPolicy = {
+    window: config.imageWindow,
+    keepLastStepScreenshot: config.keepLastStepScreenshot,
+  }
   ctx.systemPrompt.section({
     name: 'tool:computer-use',
     order: POLICY_SECTION_ORDER,
@@ -284,8 +291,9 @@ export function applyComputerUse(
     if (mode === 'millifraction') return nextAssembly
     return { ...nextAssembly, tools: toolsForCoordinateMode(nextAssembly.tools, mode) }
   })
-  ctx.on('session/event', (_session, event) => {
+  ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/end') return
+    if (imageOffloadReady(ctx)) applyImageHistoryPolicy(session, imageHistoryPolicy)
     const guard = ctx.get('computerUseOverlayGuard')
     if (guard === undefined) return
     void guard.setObservationFrame(null).catch(() => {
@@ -708,6 +716,7 @@ export function applyComputerUse(
     async execute(_args, exec) {
       await assertImageCapableRoute(ctx, exec)
       const session = sessionOf(exec)
+      rememberGuiCall(session, exec.callId)
       const observation = await observeDesktop(ctx, backend, exec.signal, {
         coordinateMode: coordinateModeOf(session),
         persistCapture: captured => isUsableObservationRaster(captured.data),
@@ -1109,6 +1118,17 @@ export function applyComputerUse(
       })
     },
   }))
+
+  ctx.on('agent/pre-step', async (
+    { agent },
+    next,
+  ): Promise<PreStepDecision> => {
+    const decision = await next()
+    // Bounded history runs after the first-frame notice is staged, so the
+    // notice's own screenshot is counted like any other input image.
+    if (imageOffloadReady(ctx)) applyImageHistoryPolicy(agent?.session, imageHistoryPolicy)
+    return decision
+  })
 
   ctx.on('agent/pre-step', async (
     { agent, messages, signal },

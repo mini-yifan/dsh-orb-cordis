@@ -50,11 +50,15 @@ A custom Loader composition that can resolve the package name may instead mount:
   name: '@dsh-orb/computer-use'
   config:
     postActionWaitMs: 600
+    imageWindow: 25
+    keepLastStepScreenshot: true
 ```
 
 | Field | Default | Meaning |
 |---|---|---|
 | `postActionWaitMs` | `600` | Milliseconds to wait after a GUI action before inspect and pixel capture |
+| `imageWindow` | `25` | Input screenshots the model still sees per Computer Use session; older ones leave the request as placeholder text (see [Bounded screenshot history](#bounded-screenshot-history)) |
+| `keepLastStepScreenshot` | `true` | Whether one assistant step keeps only its last image-bearing GUI result |
 
 The table above is the list of accepted config fields.
 
@@ -210,11 +214,20 @@ Keyboard focus is on another window. hotkey brings this window forward first; cl
 
 #### Token effect
 
-Fixed policy cost on every request while the plugin is mounted. First-frame screens and each GUI tool result add image tokens that remain until compaction.
+Fixed policy cost on every request while the plugin is mounted. First-frame screens and each GUI tool result add image tokens that remain until compaction — the bounded-history policy below caps how many of them the model still sees.
 
 #### KV Cache effect
 
 Prefix-stable while the policy text and tool schemas remain unchanged. First-frame notices and tool-result images append after the reusable request prefix. Plugin HMR replaces the section and schemas.
+
+### Bounded screenshot history
+
+Two tunables on the `tool-computer-use` row (`imageWindow`, `keepLastStepScreenshot`) cap how much screen history the model carries:
+
+- **Window** — at most `imageWindow` (default 25) input screenshots stay visible to the model. Once a session exceeds it, the oldest occurrences are recorded as durable `image/offload` decisions, and every later request receives deterministic placeholder text in their place. Selection is oldest-first and never reverses.
+- **Per-step retention** — sibling GUI calls in one assistant step each capture, but only the step's last image-bearing result reaches the model; the step's earlier captures are offloaded when the step closes.
+
+Both selections run before each request and at turn end, are idempotent, and reuse the contract owned by `@deepseek-ai/dsh-compaction-image-offload`: the session log, the UI, and replay keep the original image blocks — only the request projection changes. A deployment without that projection registered records nothing, and a route whose budgets reject a request still offloads through the upstream error path. A dropped screen is recovered by re-capturing it with another GUI call.
 
 ### Tool schemas
 
