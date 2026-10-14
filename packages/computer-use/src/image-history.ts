@@ -262,9 +262,13 @@ export function applyImageHistoryPolicy(
  * derived or restored. Deployments without the offload plugin select nothing
  * instead of writing unreadable events; they still call
  * {@link applyImageHistoryPolicy} so its step bookkeeping stays bounded.
+ *
+ * The store is read through `ctx.get`, not `ctx.sessions`: this plugin does not
+ * inject the session store — the GUI tools must register even where none exists
+ * — and an undeclared property read throws inside a loader-mounted fiber.
  * @param ctx - plugin context whose session store is inspected.
  * @returns true when the offload projection is registered.
  */
 export function imageOffloadReady(ctx: Context): boolean {
-  return ctx.sessions?.messageProjections.some(projection => projection.type === 'image/offload') === true
+  return ctx.get('sessions')?.messageProjections.some(projection => projection.type === 'image/offload') === true
 }

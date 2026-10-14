@@ -16,6 +16,7 @@ import { MockAdapter, textResponse, toolCallResponse } from './fixtures/mock-ada
 import { resolveComputerUseConfig } from '../src/config.ts'
 import { FAKE_WINDOW_PNG, createFakeDesktopBackend } from '../src/fake.ts'
 import { SCREEN_IMAGE_TOOLS } from '../src/image-history.ts'
+import { inject as COMPUTER_USE_INJECT } from '../src/index.ts'
 import { applyComputerUse } from '../src/plugin.ts'
 
 class VisionAdapter extends MockAdapter {
@@ -88,6 +89,11 @@ interface HarnessConfig {
   readonly keepLastStepScreenshot?: boolean
   /** Capture bytes for the fake desktop; the default 1×1 PNG is not persistable by `screenshot`. */
   readonly png?: Uint8Array
+  /**
+   * Mount the plugin the way the Loader does — as a child fiber carrying the module's own `inject`
+   * list — instead of applying it straight to the root context.
+   */
+  readonly loaderMounted?: boolean
 }
 
 async function harness(adapter: LlmAdapter, config: HarnessConfig = {}) {
@@ -100,11 +106,23 @@ async function harness(adapter: LlmAdapter, config: HarnessConfig = {}) {
   await ctx.plugin(AgentLoop, { agents: [] })
   ctx.sessions.registerMessageProjection(imageOffloadProjection)
   const backend = createFakeDesktopBackend(config.png === undefined ? {} : { png: config.png })
-  applyComputerUse(ctx, backend, resolveComputerUseConfig({
+  const resolved = resolveComputerUseConfig({
     postActionWaitMs: 0,
     imageWindow: config.imageWindow,
     keepLastStepScreenshot: config.keepLastStepScreenshot,
-  }))
+  })
+  if (config.loaderMounted === true) {
+    // A child fiber with the declared inject list: an undeclared `ctx.<service>` read throws here,
+    // which is the shape the ball actually runs in.
+    await ctx.plugin({
+      inject: [...COMPUTER_USE_INJECT],
+      apply: (scope: Context) => {
+        applyComputerUse(scope, backend, resolved)
+      },
+    })
+  } else {
+    applyComputerUse(ctx, backend, resolved)
+  }
   ctx.llm.registerAdapter(['mock'], adapter)
   const agent = await ctx.agentLoop.create(SessionId('computer-use-image-history'), { provider: 'mock', model: 'mock' })
   return { ctx, agent, backend, adapter }
@@ -257,6 +275,18 @@ describe('computer-use image history policy', () => {
     expect(flags.get('drag-a')).toEqual([false])
     expect(flags.get('drag-b')).toEqual([false])
     expect(offloadSelections(agent.session)).toHaveLength(0)
+  }, 30_000)
+
+  it('runs from a Loader-mounted fiber that does not inject the session store', async () => {
+    const adapter = new VisionAdapter(stepsWithClose([click('m1'), click('m2'), click('m3')]))
+    const { ctx, agent } = await harness(adapter, { imageWindow: 2, loaderMounted: true })
+    const idle = waitForIdle(ctx, agent)
+    send(agent, 'three clicks')
+    await idle
+
+    // Reading the store as `ctx.sessions` here throws `cannot get property "sessions" without
+    // inject`, which fails the step instead of recording anything.
+    expect(imageTally(agent.session.deriveMessages())).toEqual({ retained: 2, offloaded: 2 })
   }, 30_000)
 
   it('never spends the window on an image the user supplied', async () => {
