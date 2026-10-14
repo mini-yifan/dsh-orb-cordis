@@ -61,6 +61,11 @@
             name: 'dsh-orb/computer-use'
             config:
               postActionWaitMs: 600
+              # Bounded screenshot history: the model sees at most `imageWindow` Computer Use
+              # screenshots (older ones leave the request as placeholder text), and one assistant
+              # step keeps only its last image-bearing GUI result.
+              imageWindow: 25
+              keepLastStepScreenshot: true
           - id: tool-code-agent
             name: 'dsh-orb/computer-use/code-agent'
     - id: orb-code-agent-registry

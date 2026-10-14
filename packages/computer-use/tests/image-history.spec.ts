@@ -6,7 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -15,6 +15,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { MockAdapter, textResponse, toolCallResponse } from './fixtures/mock-adapter.ts'
 import { resolveComputerUseConfig } from '../src/config.ts'
 import { FAKE_WINDOW_PNG, createFakeDesktopBackend } from '../src/fake.ts'
+import { SCREEN_IMAGE_TOOLS } from '../src/image-history.ts'
 import { applyComputerUse } from '../src/plugin.ts'
 
 class VisionAdapter extends MockAdapter {
@@ -156,6 +157,28 @@ function offloadSelections(session: { snapshotEvents(): readonly SessionEvent[] 
   return keys
 }
 
+/** Offloaded flags of every block referencing one attachment, in request order. */
+function attachmentFlags(
+  messages: readonly {
+    readonly content: readonly {
+      readonly type: string
+      readonly offloaded?: true
+      readonly attachment?: { readonly attachmentId: string }
+    }[]
+  }[],
+  attachmentId: string,
+): boolean[] {
+  const flags: boolean[] = []
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === 'image' && block.attachment?.attachmentId === attachmentId) {
+        flags.push(block.offloaded === true)
+      }
+    }
+  }
+  return flags
+}
+
 describe('computer-use image history policy', () => {
   it('retains only the newest screenshots within the configured window', async () => {
     const adapter = new VisionAdapter(stepsWithClose([click('c1'), click('c2'), click('c3'), click('c4'), click('c5')]))
@@ -236,6 +259,90 @@ describe('computer-use image history policy', () => {
     expect(offloadSelections(agent.session)).toHaveLength(0)
   }, 30_000)
 
+  it('never spends the window on an image the user supplied', async () => {
+    const adapter = new VisionAdapter(stepsWithClose([click('u1'), click('u2')]))
+    const { ctx, agent } = await harness(adapter, { imageWindow: 1 })
+    const reference = await ctx.attachments.saveImage({
+      data: FAKE_WINDOW_PNG,
+      mediaType: 'image/png',
+      name: 'user-reference',
+    })
+    const idle = waitForIdle(ctx, agent)
+    agent.followup(createUserMessage({
+      content: [
+        { type: 'text', text: 'match this reference' },
+        { type: 'image', attachment: reference },
+      ],
+      source: { kind: 'user' },
+    }))
+    await idle
+
+    // The user's picture survives while the notice and the older screenshot are evicted.
+    const last = adapter.requests[adapter.requests.length - 1]
+    expect(attachmentFlags(last?.messages ?? [], reference.attachmentId)).toEqual([false])
+    expect(imageTally(last?.messages ?? [])).toEqual({ retained: 2, offloaded: 2 })
+  }, 30_000)
+
+  it('records its decisions when a turn is aborted before the next request', async () => {
+    const adapter = new VisionAdapter(stepsWithClose([
+      click('c1'),
+      multiCall([
+        { id: 'click-a', name: 'click', args: { screen_index: 0, position: [100, 100] } },
+        { id: 'click-b', name: 'click', args: { screen_index: 0, position: [200, 200] } },
+      ]),
+    ]))
+    const { ctx, agent } = await harness(adapter, { imageWindow: 2 })
+    let cancelled = false
+    // The human stops the run right after the step's second screenshot commits. No later pre-step
+    // arrives, so only the settle-time pass can close the step and trim the window.
+    ctx.on('session/event', (session, event) => {
+      if (cancelled || session !== agent.session) return
+      if (event.type !== 'tool/result') return
+      if (event.data.message.toolCallId !== ToolCallId('click-b')) return
+      cancelled = true
+      agent.cancel({ kind: 'user' }, { keepInbox: true })
+    })
+    const idle = waitForIdle(ctx, agent)
+    send(agent, 'click twice then stop')
+    await idle
+
+    const ends = agent.session.snapshotEvents().filter(event => event.type === 'turn/end')
+    expect(ends.map(event => event.data.reason.kind)).toEqual(['aborted'])
+    expect(offloadSelections(agent.session)).toHaveLength(2)
+    expect(imageTally(agent.session.deriveMessages())).toEqual({ retained: 2, offloaded: 2 })
+  }, 30_000)
+
+  it('restores the same request projection from the log', async () => {
+    const adapter = new VisionAdapter(stepsWithClose([click('r1'), click('r2'), click('r3')]))
+    const { ctx, agent } = await harness(adapter, { imageWindow: 2 })
+    const idle = waitForIdle(ctx, agent)
+    send(agent, 'three clicks')
+    await idle
+
+    const live = imageTally(agent.session.deriveMessages())
+    expect(live).toEqual({ retained: 2, offloaded: 2 })
+    const seed = agent.session.snapshotEvents()
+    const restored = Session.fromRestore(
+      SessionId(String(agent.session.id)),
+      seed,
+      agent.session.header,
+      SessionLogOffset(0),
+      'shared-frozen',
+      [imageOffloadProjection],
+    )
+    expect(imageTally(restored.deriveMessages())).toEqual(live)
+
+    // Without its interpreter the log cannot be derived at all — the reason the policy refuses to
+    // record a decision when the projection is not registered.
+    expect(() => Session.fromRestore(
+      SessionId(String(agent.session.id)),
+      seed,
+      agent.session.header,
+      SessionLogOffset(0),
+      'shared-frozen',
+    )).toThrow(/requires a message projection/u)
+  }, 30_000)
+
   it('stays idempotent across a second turn and never re-selects an image', async () => {
     const adapter = new VisionAdapter([
       ...stepsWithClose([click('t1a'), click('t1b'), click('t1c'), click('t1d')]),
@@ -271,4 +378,12 @@ describe('computer-use config', () => {
     expect(() => resolveComputerUseConfig({ imageWindow: -3 })).toThrow(/imageWindow/)
     expect(() => resolveComputerUseConfig({ imageWindow: 1.5 })).toThrow(/imageWindow/)
   })
+})
+
+describe('computer-use screen ownership', () => {
+  it('claims exactly the GUI tools the plugin registers', async () => {
+    const { ctx } = await harness(new VisionAdapter([]))
+    const registered = ctx.tools.schemas().map(schema => schema.name).sort()
+    expect(registered).toEqual([...SCREEN_IMAGE_TOOLS].sort())
+  }, 30_000)
 })

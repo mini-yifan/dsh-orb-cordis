@@ -57,7 +57,7 @@ pnpm dsh web --patch packages/experimental/tool-computer-use/cordis.source.patch
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `postActionWaitMs` | `600` | GUI 动作之后、inspect 与截取像素之前等待的毫秒数 |
-| `imageWindow` | `25` | 每个 Computer Use 会话中模型仍能看到的输入截图数；更老的以占位文本离开请求（见[有界截图历史](#有界截图历史)） |
+| `imageWindow` | `25` | 每个会话中模型仍能看到的 Computer Use 截图数（GUI 工具结果与首帧通知）；更老的以占位文本离开请求（见[有界截图历史](#有界截图历史)） |
 | `keepLastStepScreenshot` | `true` | 一个 assistant 步是否只保留最后一个带图的 GUI 结果 |
 
 上表是受支持的配置字段。
@@ -224,10 +224,10 @@ Keyboard focus is on another window. hotkey brings this window forward first; cl
 
 `tool-computer-use` 行上的两个配置（`imageWindow`、`keepLastStepScreenshot`）封顶模型携带的屏幕历史：
 
-- **窗口** —— 最多 `imageWindow`（默认 25）张输入截图对模型可见。会话超出后，最老的出现位置被记为持久 `image/offload` 决策，之后每次请求在这些位置收到确定性的占位文本。淘汰始终最老优先，且不回退。
+- **窗口** —— 最多 `imageWindow`（默认 25）张 Computer Use 截图对模型可见：该 preset 的 GUI 工具结果与首帧通知。会话超出后，最老的出现位置被记为持久 `image/offload` 决策，之后每次请求在这些位置收到确定性的占位文本。淘汰始终最老优先，且不回退。用户自己贴的图或其它工具产出的图永不被选中——这个上限不会拿用户自己的视觉上下文去换截图。
 - **按步保留** —— 一个 assistant 步内的多个 GUI 兄弟调用各自截图，但只有该步最后一个带图的结果会到模型；该步更早的截图在步关闭时被淘汰。
 
-两类选择都在每次请求前与回合结束时执行，幂等，并复用 `@deepseek-ai/dsh-compaction-image-offload` 持有的契约：会话日志、界面与回放都保留原始 image block——只有请求投影改变。未注册该投影的部署不会记录任何决策；路由预算拒绝请求时仍走上游的报错淘汰路径。被淘汰的画面需要用一次 GUI 调用重新截取。
+两类选择都在每次请求前与 agent 变为空闲时执行——空闲那一次负责收尾那些回合结束后不再有新请求的步骤，包括被中断或失败的回合——重复执行不会再选中任何东西。二者复用 `@deepseek-ai/dsh-compaction-image-offload` 持有的契约：会话日志、界面与回放都保留原始 image block，只有请求投影改变。未注册该投影的部署不会记录任何决策（但按步记账仍会被消费，不会累积）；路由预算拒绝请求时仍走上游的报错淘汰路径。被淘汰的画面需要用一次 GUI 调用重新截取。
 
 ### 工具 schema
 

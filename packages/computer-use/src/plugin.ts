@@ -293,12 +293,19 @@ export function applyComputerUse(
   })
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/end') return
-    if (imageOffloadReady(ctx)) applyImageHistoryPolicy(session, imageHistoryPolicy)
     const guard = ctx.get('computerUseOverlayGuard')
     if (guard === undefined) return
     void guard.setObservationFrame(null).catch(() => {
       // Host IPC already gone or observation-frame ack timed out; hide is best-effort after turn/end.
     })
+  })
+  // Bounded history runs when the agent settles, NOT from the `session/event` feed: an append
+  // listener runs inside the append boundary, where `session.append` rejects reentry, so a
+  // decision recorded there would be dropped. `idle` covers every way a turn ends — including an
+  // aborted or failed one, where no later pre-step ever arrives to do the work.
+  ctx.on('agent/status', ({ agent, status }) => {
+    if (status !== 'idle') return
+    applyImageHistoryPolicy(agent.session, imageHistoryPolicy, imageOffloadReady(ctx))
   })
 
   ctx.tools.register(defineTool({
@@ -1124,9 +1131,12 @@ export function applyComputerUse(
     next,
   ): Promise<PreStepDecision> => {
     const decision = await next()
-    // Bounded history runs after the first-frame notice is staged, so the
-    // notice's own screenshot is counted like any other input image.
-    if (imageOffloadReady(ctx)) applyImageHistoryPolicy(agent?.session, imageHistoryPolicy)
+    // Bounded history runs after the first-frame notice is staged, but a staged message is not on
+    // the surface until the step commits, so this run still sees the previous boundary's images:
+    // the notice is counted from the next one, and one request may carry the window plus whatever
+    // this step adds. Runs whenever the projection is registered; the bookkeeping is consumed
+    // either way.
+    applyImageHistoryPolicy(agent?.session, imageHistoryPolicy, imageOffloadReady(ctx))
     return decision
   })
 

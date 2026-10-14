@@ -13,9 +13,10 @@ export interface Config {
    */
   readonly postActionWaitMs?: number
   /**
-   * Input screenshots retained for the model in one Computer Use session.
-   * Older occurrences leave the request as deterministic placeholder text
-   * (session log and UI keep them). Default: 25.
+   * Screens Computer Use captured (GUI tool results and first-frame notices) that stay
+   * visible to the model in one session. Older occurrences leave the request as
+   * deterministic placeholder text while the session log and UI keep them; images the
+   * user attached or another tool produced are never selected. Default: 25.
    */
   readonly imageWindow?: number
   /**

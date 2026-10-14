@@ -78,6 +78,14 @@ describe('computer-use overlay and extra root', () => {
     expect(built).not.toContain('computer-use-preset-root')
   })
 
+  it('pins the bounded-history tunables in every preset declaration', async () => {
+    for (const path of [SOURCE_OVERLAY, BUILT_OVERLAY, COMPOSITION]) {
+      const yaml = await readFile(path, 'utf8')
+      expect(yaml).toContain('imageWindow: 25')
+      expect(yaml).toContain('keepLastStepScreenshot: true')
+    }
+  })
+
   it('keeps the slim Computer Use composition beside the preset patch', async () => {
     const composition = await readFile(COMPOSITION, 'utf8')
     expect(composition).toContain('name: \'../../src/index.ts\'')
