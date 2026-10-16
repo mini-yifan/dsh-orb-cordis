@@ -795,6 +795,11 @@ describe('computer-use tools', () => {
     expect(POLICY).toContain('today\'s weather')
     expect(POLICY).toContain('code_agent_status')
     expect(POLICY).toContain('code_agent_stop')
+    expect(POLICY).toContain('User-facing text follows the language of the user\'s latest message')
+    expect(POLICY).toContain('A Chinese message gets Chinese sentences')
+    expect(POLICY).toContain('say one short sentence of intent before or between tool calls')
+    expect(POLICY).toContain('Any mid-task sentence to the user stays one short sentence')
+    expect(POLICY).toContain('tell the user the result in one to three short sentences')
     expect(POLICY).toContain(
       'When a user message starts with "Desktop selection. Answer in this chat only. Do not call GUI tools or code_agent."',
     )
