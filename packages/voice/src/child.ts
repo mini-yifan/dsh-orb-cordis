@@ -16,6 +16,7 @@ import { contextFromFiles, keywordLines } from './keywords.ts'
 import { LevelMeter } from './level.ts'
 import { needsMicrophone, transcribing, type ListenMode } from './listen.ts'
 import { isEcho, type SpokenLine } from './echo.ts'
+import { EchoCanceller } from './aec.ts'
 import { speakQwen as startQwenSpeech, type QwenSpeech } from './qwen-tts.ts'
 import { DEFAULT_QWEN_SPEED, DEFAULT_QWEN_VOICE } from './qwen.ts'
 import { isRecoverableSpeakerError } from './speaker.ts'
@@ -264,6 +265,30 @@ class Engine {
   private qwen: QwenSpeech | undefined
   /** Smoothed microphone level for the input meter. Commands only; never wake or playback. */
   private readonly meter = new LevelMeter()
+  /**
+   * The native VPIO helper ducks every other application while it is open, and
+   * macOS 26.4 ignores the ducking-level property and the private unduck call.
+   * Production therefore uses node-cpal and the software AEC in aec-worker.ts.
+   * The native helper is still available for the capture tests and for
+   * DSH_ORB_VOICE_AEC=native; DSH_ORB_VOICE_AEC=off falls back to text echo
+   * filtering only.
+   */
+  private readonly nativeCapture = process.env.DSH_ORB_CAPTURE_BIN !== undefined
+    || process.env.DSH_ORB_VOICE_AEC === 'native'
+  private readonly softwareAec = process.env.DSH_ORB_CAPTURE_BIN === undefined
+    && process.env.DSH_ORB_VOICE_AEC !== 'native'
+    && process.env.DSH_ORB_VOICE_AEC !== 'off'
+  private readonly aec = new EchoCanceller({ filterLength: 256, stepSize: 0.02 })
+  /** Raw microphone blocks waiting for the AEC, so the audio callback never runs the filter. */
+  private readonly aecQueue: { samples: Float32Array, startFrame: number }[] = []
+  private aecScheduled = false
+  /** Samples captured so far, including blocks still waiting in aecQueue. */
+  private micFrame = 0
+  private aecWorker: Worker | undefined
+  private aecWorkerFailed = false
+  private readonly aecReference: EchoReference = {
+    pushReference: (block) => this.forwardReference(block),
+  }
 
   constructor(private readonly native: Native) {}
 
@@ -338,7 +363,10 @@ class Engine {
       try {
         const line = { text, startedAt: Date.now(), endedAt: undefined as number | undefined }
         this.noteSpoken(line)
-        this.player = playPcm(this.native.cpal, this.ensureHost(), samples, sampleRate, volume, (stopped) => {
+        this.flushAec()
+        if (this.softwareAec) this.aecSetActive(true)
+        this.player = playPcm(this.native.cpal, this.ensureHost(), samples, sampleRate, volume, this.softwareAec ? this.aecReference : undefined, (stopped) => {
+          this.aecSetActive(false)
           this.player = undefined
           line.endedAt = Date.now()
           // The command that follows must not seed the recognizer with the speaker's own tail.
@@ -347,6 +375,7 @@ class Engine {
           emit({ type: 'playback', id, phase: 'end', ...(stopped ? { stopped: true } : {}) })
         })
       } catch (error) {
+        this.aecSetActive(false)
         fail(error)
         this.ring.clear()
         emit({ type: 'playback', id, phase: 'end' })
@@ -377,6 +406,7 @@ class Engine {
 
     const finish = (stopped: boolean): void => {
       settled = true
+      this.aecSetActive(false)
       debug(`qwen id=${id} finish stopped=${stopped} player=${player !== undefined}`)
       if (player && this.player === player) this.player = undefined
       if (this.qwen === job) this.qwen = undefined
@@ -396,7 +426,9 @@ class Engine {
         if (!player) {
           this.armed = undefined
           try {
-            player = createStreamPlayer(this.native.cpal, this.ensureHost(), sampleRate, volume, (stopped) => finish(stopped))
+            this.flushAec()
+            if (this.softwareAec) this.aecSetActive(true)
+            player = createStreamPlayer(this.native.cpal, this.ensureHost(), sampleRate, volume, this.softwareAec ? this.aecReference : undefined, (stopped) => finish(stopped))
           } catch (error) {
             fail(error)
             this.armed = undefined
@@ -451,6 +483,7 @@ class Engine {
 
   stopSpeak(): void {
     debug(`stop-speak armed=${this.armed?.id ?? 'none'} player=${this.player !== undefined}`)
+    this.aecSetActive(false)
     this.speakToken += 1
     this.cancelQwen()
     const armed = this.armed
@@ -495,15 +528,21 @@ class Engine {
     this.capture = undefined
     this.sawReady = false
     this.ring.clear()
+    this.aecQueue.length = 0
+    this.aecScheduled = false
+    this.micFrame = 0
+    this.aecWorker?.postMessage({ type: 'reset' })
+    this.aec.reset()
     try { capture?.close() } catch (error) { fail(error) }
   }
 
   startMic(): void {
     if (this.capture) return
-    const binary = this.useCpal ? undefined : captureBinary()
+    if (this.softwareAec) this.ensureAecWorker()
+    const binary = this.nativeCapture && !this.useCpal ? captureBinary() : undefined
     if (!binary) {
       this.useCpal = true
-      debug('capture helper missing; node-cpal has no echo cancellation')
+      if (this.nativeCapture && !this.softwareAec) debug('capture helper missing; node-cpal has no echo cancellation')
       this.openCpal()
       return
     }
@@ -531,8 +570,11 @@ class Engine {
       onPcm: (samples) => this.onAudio(samples),
       onReady: ({ aec }) => {
         this.sawReady = true
-        debug(`mic open source=cpal aec=${aec}`)
-        emit({ type: 'mic', open: true, aec })
+        // The software canceller runs in this process, so the host may keep
+        // listening for an interjection while our own TTS is playing.
+        const active = this.softwareAec || aec
+        debug(`mic open source=cpal software-aec=${this.softwareAec} aec=${active}`)
+        emit({ type: 'mic', open: true, aec: active })
       },
       onFailure: (reason, detail) => this.onCaptureFailure(reason, detail),
     })
@@ -571,6 +613,8 @@ class Engine {
     this.stopMic()
     this.stopAsr()
     void this.ttsWorker?.terminate()
+    void this.aecWorker?.terminate()
+    this.aecWorker = undefined
   }
 
   private ensureHost(): any {
@@ -610,6 +654,92 @@ class Engine {
 
   /** 16 kHz mono PCM from the capture source. */
   private onAudio(samples: Float32Array): void {
+    if (!this.softwareAec) {
+      this.handleAudio(samples)
+      return
+    }
+    if (!this.aecWorker && !this.aecWorkerFailed) this.ensureAecWorker()
+    const startFrame = this.micFrame
+    this.micFrame += samples.length
+    const worker = this.aecWorker
+    if (worker && !this.aecWorkerFailed) {
+      // The worker owns the filter. Transfer the block so the audio callback
+      // only copies a reference to it and returns.
+      const buffer = samples.buffer as ArrayBuffer
+      worker.postMessage({
+        type: 'process',
+        samples: buffer,
+        offset: samples.byteOffset,
+        length: samples.length,
+        startFrame,
+      }, [buffer])
+      return
+    }
+    // Worker unavailable: keep the old in-process fallback. It is heavier, but
+    // the text echo filter still covers the case where it cannot keep up.
+    this.aecQueue.push({ samples, startFrame })
+    if (this.aecQueue.length > 50) this.aecQueue.shift()
+    if (this.aecScheduled) return
+    this.aecScheduled = true
+    setImmediate(() => this.drainAec())
+  }
+
+  private ensureAecWorker(): void {
+    if (!this.softwareAec || this.aecWorker || this.aecWorkerFailed) return
+    const beside = new URL('./aec-worker.js', import.meta.url)
+    const source = new URL('./aec-worker.ts', import.meta.url)
+    let url = beside
+    try {
+      if (!existsSync(fileURLToPath(beside))) url = source
+    } catch {
+      url = source
+    }
+    try {
+      const worker = new Worker(url)
+      worker.on('message', (message: unknown) => this.onAecMessage(message))
+      worker.on('error', (error) => {
+        debug(`aec-worker failed: ${String(error)}`)
+        this.aecWorkerFailed = true
+        this.aecWorker = undefined
+      })
+      worker.unref()
+      this.aecWorker = worker
+      debug('aec-worker started')
+    } catch (error) {
+      debug(`aec-worker unavailable: ${String(error)}`)
+      this.aecWorkerFailed = true
+    }
+  }
+
+  private onAecMessage(message: unknown): void {
+    if (!message || typeof message !== 'object') return
+    const item = message as { type?: string, samples?: ArrayBuffer }
+    if (item.type !== 'cleaned' || !(item.samples instanceof ArrayBuffer)) return
+    this.handleAudio(new Float32Array(item.samples))
+  }
+
+  private forwardReference(block: Float32Array): void {
+    const worker = this.aecWorker
+    if (worker && !this.aecWorkerFailed) {
+      const copy = block.slice()
+      const buffer = copy.buffer as ArrayBuffer
+      worker.postMessage({ type: 'reference', samples: buffer }, [buffer])
+      return
+    }
+    this.aec.pushReference(block)
+  }
+
+  private aecSetActive(active: boolean): void {
+    const worker = this.aecWorker
+    if (worker && !this.aecWorkerFailed) {
+      worker.postMessage({ type: 'active', active, anchor: this.micFrame })
+      return
+    }
+    this.aec.setActive(active, this.micFrame)
+  }
+
+  /** Feed one cleaned block to the ring, wake spotter, or VAD. */
+  private handleAudio(samples: Float32Array): void {
     this.ring.push(samples)
     if (this.mode === 'wake') {
       this.feedWake(samples)
@@ -619,6 +749,33 @@ class Engine {
     const level = this.meter.push(samples, Date.now())
     if (level !== undefined) emit({ type: 'level', value: level })
     this.vad?.push(samples)
+  }
+
+  private drainAec(): void {
+    this.aecScheduled = false
+    this.processAecChunk(256)
+    if (this.aecQueue.length > 0) {
+      this.aecScheduled = true
+      setImmediate(() => this.drainAec())
+    }
+  }
+
+  /** Process at most `budget` samples, so one turn stays short. */
+  private processAecChunk(budget: number): void {
+    const entry = this.aecQueue[0]
+    if (!entry) return
+    const take = Math.min(budget, entry.samples.length)
+    const chunk = entry.samples.subarray(0, take)
+    this.handleAudio(this.aec.process(chunk, entry.startFrame))
+    entry.startFrame += take
+    entry.samples = entry.samples.subarray(take)
+    if (entry.samples.length === 0) this.aecQueue.shift()
+  }
+
+  /** Start a sentence on an up-to-date microphone frame. */
+  private flushAec(): void {
+    this.aecScheduled = false
+    while (this.aecQueue.length > 0) this.processAecChunk(256)
   }
 
   private feedWake(samples: Float32Array): void {
@@ -836,6 +993,39 @@ interface StreamPlayer {
   stop(): void
 }
 
+interface EchoReference {
+  pushReference(block: Float32Array): void
+}
+
+/**
+ * The output callback already knows the exact samples that reach the speaker.
+ * Downsample them to the canceller's 16 kHz reference and stamp them with the
+ * callback clock. The phase carries across callbacks so the reference does not
+ * drift when the device rate is not a multiple of 16 kHz.
+ */
+class ReferenceFeed {
+  private phase = 0
+  private count = 0
+  private readonly scratch = new Float32Array(65_536)
+
+  constructor(private readonly target: EchoReference) {}
+
+  push(sample: number, rate: number): void {
+    this.phase += TARGET_RATE / rate
+    if (this.phase < 1) return
+    this.phase -= 1
+    if (this.count >= this.scratch.length) this.flush()
+    this.scratch[this.count] = sample
+    this.count += 1
+  }
+
+  flush(): void {
+    if (this.count === 0) return
+    this.target.pushReference(this.scratch.subarray(0, this.count))
+    this.count = 0
+  }
+}
+
 /**
  * The speaker end of a cloud sentence. Chunks arrive while the stream is already
  * running; the callback pulls across them and writes silence when the network is
@@ -846,6 +1036,7 @@ function createStreamPlayer(
   host: any,
   sampleRate: number,
   volume: number,
+  reference: EchoReference | undefined,
   onEnded: (stopped: boolean) => void,
 ): StreamPlayer {
   const chunks: Float32Array[] = []
@@ -902,6 +1093,7 @@ function createStreamPlayer(
     const chosen = pickOutput(cpal, device, sampleRate)
     rate = chosen.rate
     const config = chosen.config
+    const feed = reference ? new ReferenceFeed(reference) : undefined
     const output = device.buildOutputStream(
       config,
       cpal.SampleFormat.F32,
@@ -913,7 +1105,9 @@ function createStreamPlayer(
           for (let channel = 0; channel < channels; channel += 1) {
             data[frame * channels + channel] = sample ?? 0
           }
+          feed?.push(sample ?? 0, rate)
         }
+        feed?.flush()
         if (ended && head >= chunks.length) finish(false, true)
       },
       (error: unknown) => {
@@ -953,6 +1147,7 @@ function playPcm(
   samples: Float32Array,
   sampleRate: number,
   volume: number,
+  reference: EchoReference | undefined,
   onEnded: (stopped: boolean) => void,
 ): { stop(): void } {
   const device = host.defaultOutputDevice()
@@ -963,6 +1158,7 @@ function playPcm(
   const chosen = pickOutput(cpal, device, sampleRate)
   const config = chosen.config
   const pcm = chosen.rate === sampleRate ? samples : resampleLinear(samples, sampleRate, chosen.rate)
+  const feed = reference ? new ReferenceFeed(reference) : undefined
   let cursor = 0
   let ended = false
   let stream: { close(): void, play(): void }
@@ -981,8 +1177,10 @@ function playPcm(
       for (let frame = 0; frame < frames; frame += 1) {
         const sample = scaledSample(cursor < pcm.length ? pcm[cursor] ?? 0 : 0, volume)
         for (let channel = 0; channel < channels; channel += 1) data[frame * channels + channel] = sample
+        feed?.push(sample, chosen.rate)
         cursor += 1
       }
+      feed?.flush()
       if (cursor >= pcm.length) setImmediate(() => finish(false))
     },
     (error: unknown) => {

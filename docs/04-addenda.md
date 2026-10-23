@@ -368,3 +368,16 @@ Windows 上的实测反馈:在浏览器里点球、输入、回车提交后,**Ag
   回复/停止这类短暂的 `off` 不单独开洞:当前固定状态下还有可达列就保持,没有就释放,避免反复开关采集设备。Host 的 `pushListen()` 和 `microphone()` 共用新的 `deviceWanted()`,所以主动释放时 `microphone()` 返回 `null`(不误报“麦克风不可用”),只有设备该开却没开时才返回 `false`。
 - **测试:** `listen.test.ts` 新增可达列/插话两组断言;`voice.test.ts` 新增两个完整场景(关唤醒收起、关语音输入固定)并修正提问卡用例里旧的“固定+仅唤醒仍占麦”断言。`pnpm typecheck` / `pnpm test`(511 例,509 过 2 跳过;computer-use 322 过)/ `pnpm build` 全绿。
 - **装机:** 改的是 Host 判断,只重启语音子进程不够,必须重启 DeepSeek Harness 才生效;`dist/host` 与 `dist/voice` 已同步进 desktop profile。
+
+## 28. VPIO 压低系统音量:改普通采集 + 软件 AEC(2026-10-23)
+
+现象:打开悬浮球/语音后,整个电脑的扬声器音量明显变小;悬浮球关掉语音才恢复。
+
+- **根因:VPIO 的 other-audio ducking。** `dsh-orb-voice-capture` 使用 `kAudioUnitSubType_VoiceProcessingIO`。代码已经把 `kAUVoiceIOProperty_OtherAudioDuckingConfiguration` 设成 `mEnableAdvancedDucking: false, mDuckingLevel: .min`,属性读回也确实是 `min (10)`,但 macOS 26.4 实测仍然压低系统输出约 16 dB(BlackHole 回采 0.0353 → 0.0056),麦克风侧约 22 dB。私有 `AudioDeviceDuck` 在当前系统上不是恢复:参数越大压得越狠;启动后重设 ducking 属性、关掉 output element 只留 input 都不起作用(后者直接启动失败)。这是 VPIO 的系统行为,不是 TTS 音量设置。
+- **修法:** 生产环境不再拉起原生采集程序,改用 `node-cpal` 普通输入。TTS 播放路径把实际送喇叭的 PCM 作为参考,`packages/voice/src/aec.ts` 做 NLMS 回声消除;`listenMode()` 在 `agentBusy || bodyBusy` 时返回 `interject`,`holdsDevice()` 也不再因为 `bodyBusy && !echoCancel` 释放设备。原生采集保留为 `DSH_ORB_VOICE_AEC=native` 的实验开关;`DSH_ORB_VOICE_AEC=off` 可退回纯文字过滤。
+- **软件 AEC 的落点:** 麦克风和参考都按 16 kHz 的**采样帧号**对齐,不再用 `performance.now()`(JS 音频回调的抖动会让延迟搜索锁错)。每句开始时把参考锚在当前采集帧;500 ms 窗口做归一化互相关,第一次置信度 ≥0.3 就锁住 bulk delay,避免用户插话把延迟带偏。128/256 抽头的 NLMS 用 0.02 步长;输出限制在麦克风幅度的 1.2 倍,防止未收敛时突然放大。滤波器放在 `aec-worker.ts` 独立线程,采集/播放回调只投递数据,不跑 DSP。
+- **真机验收:** 用 `node-cpal` 默认麦克风/扬声器 + 4.4 s 中文语音回采,软件 AEC 把回声段 RMS 从 0.082 降到 0.043(约 5.7 dB),静音段不变;无 XRUN。合成单测 `aec.test.ts` 的人声相关性和 >6 dB 降噪也通过。
+- **插话验收:** 用部署后的 `dist/voice/child.js` 播报「今天天气不错，我们来测试一下回声消除。」,1 s 后在同一扬声器上叠加用户语音「大肥鱼，帮我查一下天气。」;子进程转写为「今天天气不错，我的大肥鱼帮我查一下天气。」,`isEcho()` 返回 `false`(保留),插话关键词「大肥鱼」和「天气」都在。
+- **测试:** `pnpm typecheck`;`pnpm test`(513 例,511 过 2 跳过;computer-use 322 过);`pnpm build`。
+- **装机:** 改到 Host 的听法和子进程的采集源,必须重启 DeepSeek Harness;`dist/host`、`dist/voice` 同步进 desktop profile。
+- **对第 26 节的修订:** 第 26 节里“没有采集程序时正文播报期间不听”的降级已经不再适用;现在没有原生 AEC 也继续听,软件 AEC 之后还有文字过滤兜底。

@@ -75,8 +75,8 @@ export function listenMode(input: ListenInput): ListenMode {
   if (input.questionOpen || input.localBusy || input.stopping || !input.micOpen) return 'off'
   if (input.agentBusy || input.bodyBusy) {
     if (!input.interjectEnabled) return 'off'
-    // 没有回声消除时，自己的播报会被转写进去。降级成正文播报期间不听。
-    if (input.bodyBusy && !input.echoCancel) return 'off'
+    // VPIO is gone: listening during body audio now relies on the text echo
+    // filter in echo.ts. Keeping the ear open is what lets the user barge in.
     return 'interject'
   }
   if (!input.pinned && input.wakeEnabled) return 'wake'
@@ -117,8 +117,6 @@ export function holdsDevice(input: DeviceInput): boolean {
   if (!wakeReady && !commandReady) return false
   if (input.agentBusy || input.bodyBusy) {
     if (!commandReady || !input.interjectEnabled) return false
-    // 没有回声消除时，正文播报期间不听，设备也不必占着。
-    if (input.bodyBusy && !input.echoCancel) return false
     return true
   }
   // 收起时只有唤醒可达，固定时只有语音输入可达。

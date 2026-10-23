@@ -790,7 +790,7 @@ describe('utterance judging', () => {
       quiet.noteAssistant('b:5:0:0', '今天晴。')
       quiet.endTurn()
       await until(() => speaks(quietTrace).some((item) => item.text === '今天晴。'), () => readFileSync(quietTrace, 'utf8'))
-      assert.equal(quiet.listenMode(), 'off')
+      assert.equal(quiet.listenMode(), 'interject', 'body audio keeps listening without VPIO; echo.ts filters our own voice')
     } finally {
       quiet.close()
       quietChild.kill()

@@ -5,6 +5,8 @@
 > 做完一节再做下一节。每一节的验收没过，不要开始下一节。第 1–8 节不需要麦克风，用脚本子进程和单测就能走通；第 9–11 节才碰真设备。
 >
 > **2026-10-21 修订：插话改为「硬停旧轮 + 另起新任务」。** 命中插话时不再使用官方 `steer`，而是 `sessionController.cancel` 旧轮，等官方 `turn/end` 后把原话作为 `mode: 'queue'` 的新消息发送。0.1 节保留为官方的历史行为参考；第 1 节第 2 条、4.4、4.5、4.6、4.7、5、13、14、15 已按修订更新。
+>
+> **2026-10-23 修订：VPIO 采集默认下线。** macOS 上 VPIO 会压低整个系统输出，且 macOS 26.4 无法通过公开属性或私有 unduck 关掉。生产改用 `node-cpal` 普通采集 + 基于 TTS PCM 的软件 AEC；`bodyBusy` 期间仍返回 `interject`，`echo.ts` 的文字回声过滤继续兜底。第 9、10 节的 VPIO 方案只作为历史/实验记录，见 [04-addenda.md](04-addenda.md) 第 28 节。
 
 ## 0. 已经定下来的做法
 
@@ -206,8 +208,7 @@ export function listenMode(input: ListenInput): ListenMode {
   if (input.questionOpen || input.localBusy || input.stopping || !input.micOpen) return 'off'
   if (input.agentBusy || input.bodyBusy) {
     if (!input.interjectEnabled) return 'off'
-    // 没有回声消除时，自己的播报会被转写进去。降级成正文播报期间不听。
-    if (input.bodyBusy && !input.echoCancel) return 'off'
+    // 没有 VPIO 也继续听；自己的播报由 echo.ts 的文字回声过滤丢掉。
     return 'interject'
   }
   if (!input.pinned && input.wakeEnabled) return 'wake'
@@ -232,7 +233,6 @@ export function holdsDevice(input: DeviceInput): boolean {
   if (!wakeReady && !commandReady) return false
   if (input.agentBusy || input.bodyBusy) {
     if (!commandReady || !input.interjectEnabled) return false
-    if (input.bodyBusy && !input.echoCancel) return false
     return true
   }
   // 收起时只有唤醒可达，固定时只有语音输入可达。
@@ -268,7 +268,7 @@ export function holdsDevice(input: DeviceInput): boolean {
 | 空闲，收尾在播，或收尾还在队列里 | `interject` |
 | 执行中，插话关键词为空 | `off` |
 | 执行中，语音输入关掉 | `off` |
-| 空闲，收尾在播，`echoCancel: false` | `off` |
+| 空闲，收尾在播，`echoCancel: false` | `interject` |
 | 执行中，没有播报，`echoCancel: false` | `interject` |
 | 只开唤醒、固定 | `off`，`holdsDevice` 为假 |
 | 只开语音输入、收起 | `off`，`holdsDevice` 为假 |
