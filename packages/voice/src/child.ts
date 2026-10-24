@@ -243,6 +243,13 @@ class Engine {
   /** Raw microphone blocks for the streaming spotter; the AEC output can lag. */
   private readonly bargeQueue: Float32Array[] = []
   private bargeScheduled = false
+  /** Raw blocks from just before a barge; they seed the VAD with the command start. */
+  private readonly bargePreroll: Float32Array[] = []
+  private bargePrerollSamples = 0
+  /** True while the level/VAD feed is held back during our own playback. */
+  private ttsMuted = false
+  /** Keep the AEC queue's tail from opening a VAD segment after the last sentence. */
+  private ttsQuietUntil = 0
   private vad: VadEar | undefined
   private worker: Worker | undefined
   private workerReady = false
@@ -377,7 +384,7 @@ class Engine {
         this.speaking = true
         this.player = playPcm(this.native.cpal, this.ensureHost(), samples, sampleRate, volume, this.softwareAec ? this.aecReference : undefined, (stopped) => {
           this.aecSetActive(false)
-          this.speaking = false
+          this.endSpeaking()
           this.player = undefined
           line.endedAt = Date.now()
           // The command that follows must not seed the recognizer with the speaker's own tail.
@@ -387,7 +394,7 @@ class Engine {
         })
       } catch (error) {
         this.aecSetActive(false)
-        this.speaking = false
+        this.endSpeaking()
         fail(error)
         this.ring.clear()
         emit({ type: 'playback', id, phase: 'end' })
@@ -419,7 +426,7 @@ class Engine {
     const finish = (stopped: boolean): void => {
       settled = true
       this.aecSetActive(false)
-      this.speaking = false
+      this.endSpeaking()
       debug(`qwen id=${id} finish stopped=${stopped} player=${player !== undefined}`)
       if (player && this.player === player) this.player = undefined
       if (this.qwen === job) this.qwen = undefined
@@ -499,9 +506,11 @@ class Engine {
   stopSpeak(): void {
     debug(`stop-speak armed=${this.armed?.id ?? 'none'} player=${this.player !== undefined}`)
     this.aecSetActive(false)
-    this.speaking = false
+    this.endSpeaking()
     this.bargeQueue.length = 0
     this.bargeScheduled = false
+    this.bargePreroll.length = 0
+    this.bargePrerollSamples = 0
     this.speakToken += 1
     this.cancelQwen()
     const armed = this.armed
@@ -550,6 +559,12 @@ class Engine {
     this.aecScheduled = false
     this.bargeQueue.length = 0
     this.bargeScheduled = false
+    this.bargePreroll.length = 0
+    this.bargePrerollSamples = 0
+    this.bargeHeard = false
+    this.bargeAt = 0
+    this.ttsMuted = false
+    this.ttsQuietUntil = 0
     this.micFrame = 0
     this.aecWorker?.postMessage({ type: 'reset' })
     this.aec.reset()
@@ -769,11 +784,30 @@ class Engine {
       return
     }
     if (!transcribing(this.mode)) return
+    // Our own TTS is inert for the ear: its residual must not open a VAD
+    // segment or light the ASR lamp. The KWS listens on the raw microphone; a
+    // barge opens the ear immediately, otherwise the AEC queue's tail is held
+    // back for a short quiet period after playback.
+    if (this.speaking || (!this.bargeHeard && Date.now() < this.ttsQuietUntil)) {
+      if (!this.bargeHeard) {
+        if (!this.ttsMuted) {
+          this.ttsMuted = true
+          emit({ type: 'level', value: 0 })
+        }
+        return
+      }
+    }
+    this.ttsMuted = false
     const level = this.meter.push(samples, Date.now())
     if (level !== undefined) emit({ type: 'level', value: level })
     // The VAD segment keeps the whole phrase so the command after the keyword
     // is not lost when the stop reaches the speaker a few frames late.
     this.vad?.push(samples)
+  }
+
+  private endSpeaking(): void {
+    this.speaking = false
+    this.ttsQuietUntil = Date.now() + 500
   }
 
   /** Start a sentence: reset the spotter and wait for the interject keyword. */
@@ -782,6 +816,14 @@ class Engine {
     this.bargeAt = 0
     this.bargeQueue.length = 0
     this.bargeScheduled = false
+    this.bargePreroll.length = 0
+    this.bargePrerollSamples = 0
+    this.ttsMuted = false
+    this.ttsQuietUntil = 0
+    // The command that started this sentence has already been decoded; drop any
+    // stale open VAD segment so its speech edge cannot keep the ASR lamp on
+    // while the VAD feed is held back.
+    this.vad?.reset()
     if (this.kws && this.kwsStream) this.kws.reset(this.kwsStream)
   }
 
@@ -790,12 +832,37 @@ class Engine {
   }
 
   private queueBarge(samples: Float32Array): void {
+    if (!this.bargeHeard) this.pushBargePreroll(samples)
     if (!this.kws || !this.kwsStream || this.bargeHeard) return
     this.bargeQueue.push(samples.slice())
     if (this.bargeQueue.length > 20) this.bargeQueue.shift()
     if (this.bargeScheduled) return
     this.bargeScheduled = true
     setImmediate(() => this.drainBarge())
+  }
+
+  /** Keep the raw audio just before a barge so the VAD starts with the keyword. */
+  private pushBargePreroll(samples: Float32Array): void {
+    this.bargePreroll.push(samples.slice())
+    this.bargePrerollSamples += samples.length
+    const keep = TARGET_RATE / 2
+    while (this.bargePrerollSamples > keep && this.bargePreroll.length > 1) {
+      const head = this.bargePreroll.shift()
+      if (head) this.bargePrerollSamples -= head.length
+    }
+  }
+
+  private seedBargeVad(): void {
+    if (this.bargePrerollSamples === 0) return
+    const samples = new Float32Array(this.bargePrerollSamples)
+    let offset = 0
+    for (const block of this.bargePreroll) {
+      samples.set(block, offset)
+      offset += block.length
+    }
+    this.vad?.seed(samples)
+    this.bargePreroll.length = 0
+    this.bargePrerollSamples = 0
   }
 
   private drainBarge(): void {
@@ -820,6 +887,10 @@ class Engine {
       spotter.reset(stream)
       this.bargeHeard = true
       this.bargeAt = Date.now()
+      // The keyword was spoken a few hundred milliseconds ago; seed the VAD
+      // with the raw lead-in so the command after it is not clipped.
+      this.seedBargeVad()
+      this.ttsMuted = false
       emit({ type: 'barge', keyword: result.keyword })
       return
     }
