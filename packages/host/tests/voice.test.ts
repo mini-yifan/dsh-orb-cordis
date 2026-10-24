@@ -845,6 +845,36 @@ describe('new turn speech reset', () => {
     })
   }
 
+  it('stops the speaker on a barge and interjects the flagged command without the keyword', () => {
+    const settings = settingsWith()
+    const child = fakeChild()
+    const heard: string[] = []
+    const voice = new VoiceController({
+      settings: () => settings,
+      presence: () => ({ wake: true, asr: true, tts: true }),
+      now: () => 0,
+      send() {},
+      open: () => child.link,
+      interject: (text) => { heard.push(text) },
+    })
+    voice.start()
+    child.emit({ type: 'mic', open: true, aec: true })
+    child.emit({ type: 'speech', open: true })
+    voice.beginTurn()
+    voice.noteAssistant('b:1:0:0', '正在播报。')
+    voice.endTurn()
+    assert.equal(child.sent.some((message) => message.type === 'speak' && message.text === '正在播报。'), true)
+
+    child.emit({ type: 'barge', keyword: '大肥鱼' })
+    assert.equal(child.sent.some((message) => message.type === 'stop-speak'), true, 'the speaker stops on the barge edge')
+    voice.noteAssistant('b:1:0:1', '这段不能在命令前重新播出来。')
+    assert.equal(child.sent.some((message) => message.type === 'speak' && message.text.includes('命令前')), false, 'barge mutes the rest of the turn until the command arrives')
+
+    child.emit({ type: 'utterance', text: '打开插画', mode: 'interject', interject: true })
+    assert.deepEqual(heard, ['打开插画'])
+    voice.close()
+  })
+
   it('stops the previous closing and speaks the new turn first sentence', () => {
     const child = fakeChild()
     const voice = controller(child)

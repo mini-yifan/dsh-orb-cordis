@@ -381,3 +381,15 @@ Windows 上的实测反馈:在浏览器里点球、输入、回车提交后,**Ag
 - **测试:** `pnpm typecheck`;`pnpm test`(513 例,511 过 2 跳过;computer-use 322 过);`pnpm build`。
 - **装机:** 改到 Host 的听法和子进程的采集源,必须重启 DeepSeek Harness;`dist/host`、`dist/voice` 同步进 desktop profile。
 - **对第 26 节的修订:** 第 26 节里“没有采集程序时正文播报期间不听”的降级已经不再适用;现在没有原生 AEC 也继续听,软件 AEC 之后还有文字过滤兜底。
+
+## 29. 插话关键词改为「分隔符」:早停 TTS,只上屏关键词之后的命令(2026-10-23)
+
+问题:TTS 播报中喊「大肥鱼」再下命令,ASR 会把关键词、TTS 尾巴和命令拼成一句上屏;AEC 的残余足够让 SenseVoice 继续转写出 TTS。
+
+- **交互改为关键词分隔符。** 子进程在 TTS 播放时用 sherpa-onnx 流式 KWS 听插话关键词;检出后发 `barge`,Host 立即 `stop-speak`(保留 Agent 任务),不再等整句 ASR。VAD/ASR 段不清空,因为关键词检出有 200–500 ms 延迟,清空会丢掉命令开头。
+- **关键词切点。** ASR 整句回来后,`cutAtKeyword()` 丢掉关键词及之前的所有内容;剩下的命令再过一遍 `stripEcho()`,去掉关键词结束到 TTS 真正停播之间的残余。子进程给这条 utterance 加 `interject: true`,Host 不再要求文本里带关键词,直接按插话处理。
+- **KWS 落点。** `ensureKws()` 在只开语音输入/插话时也会加载,并把 `interjectKeyword` 加进关键词表;KWS 跑**原始麦克风**(AEC worker 输出可能晚于 TTS 结束),每 256 个采样一块,最多排 20 块。`bargeHeard` 8 秒内有效,下一段命令没有关键词也会标记为插话。
+- **兜底。** KWS 漏检时,ASR 仍会识别关键词,`cutAtKeyword` 照样切;只是 TTS 停得晚一点。关键词只出现在 TTS 里时,KWS 可能误停,但停播比把 TTS 上屏安全。
+- **验证:** `echo.test.ts` 新增关键词切点 4 例(含同音字)、文本 trim 6 例;Host 新增 `barge` 停播并要求下一条带 `interject: true` 的命令用例。全量 `524 例,522 过 2 跳过`;computer-use 322 过;`pnpm typecheck`/`pnpm build` 通过。
+- **真机回采:** 部署后的子进程在 TTS 播报中叠加「大肥鱼,帮我查一下天气。」,上屏 `帮我查一下天气。`(`interject: true`),关键词和前面的 TTS 都没上屏。用扬声器回放模拟的关键词,KWS 未触发,走的是 ASR 切点兜底;真人贴近麦克风的早停还需在应用里验收。
+- **跨平台:** KWS 是 `sherpa-onnx-node` 的 CPU 模型,Windows/macOS 同一套;文本切点是纯 JS。Host 与子进程都改了,**必须重启一次 DeepSeek Harness** 才能同时加载。

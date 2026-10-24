@@ -123,6 +123,10 @@ export class VoiceController {
    * Factory 300; one wake with a spoken reply uses zero so that reply is not echoed.
    */
   private commandSeed = 300
+  /** The child heard the interject keyword; TTS is stopped and the command is coming. */
+  private bargePending = false
+  private bargeMuted = false
+  private bargeTimer: ReturnType<typeof setTimeout> | undefined
   private hold = false
   private seen = new Map<string, string>()
   /** The assistant block currently streaming; a new key starts a new block. */
@@ -169,6 +173,7 @@ export class VoiceController {
    * would leave voice dead until the whole app restarts.
    */
   close(): void {
+    this.clearBarge()
     this.closing = true
     this.live = false
     if (this.timer) clearInterval(this.timer)
@@ -442,6 +447,10 @@ export class VoiceController {
       this.onWake()
       return
     }
+    if (type === 'barge') {
+      this.onBarge()
+      return
+    }
     if (type === 'speech') {
       // A late `speech: true` from a transcription mode that has already ended must not
       // pause the idle clock forever. A falling edge is what releases a listen change
@@ -462,7 +471,7 @@ export class VoiceController {
       return
     }
     if (type === 'utterance' && typeof record?.text === 'string') {
-      this.onUtterance(record.text, record.mode)
+      this.onUtterance(record.text, record.mode, record.interject === true)
       return
     }
     if (type === 'playback' && typeof record?.id === 'string' && record.phase === 'end') {
@@ -472,8 +481,39 @@ export class VoiceController {
     }
   }
 
+  private onBarge(): void {
+    if (!this.live) return
+    if (this.bargePending) return
+    this.bargePending = true
+    this.commandSeed = 0
+    // Stop the speaker now; keep the turn alive until the command arrives. While
+    // the command is being recognized, new body text must not start speaking
+    // again.
+    if (!this.muted) {
+      this.muted = true
+      this.bargeMuted = true
+    }
+    this.apply({ type: 'stop' })
+    this.bargeTimer = setTimeout(() => {
+      this.clearBarge()
+      this.poll()
+    }, 8000)
+    debug('barge')
+  }
+
+  private clearBarge(): void {
+    if (this.bargeTimer) clearTimeout(this.bargeTimer)
+    this.bargeTimer = undefined
+    this.bargePending = false
+    if (this.bargeMuted) {
+      this.bargeMuted = false
+      this.muted = false
+    }
+  }
+
   private onWake(): void {
     if (this.mode !== 'wake') return
+    this.clearBarge()
     this.pinned = true
     this.options.send({ type: 'pin' })
     const reply = this.localReply(this.settings().wakeReply)
@@ -484,11 +524,18 @@ export class VoiceController {
     this.poll()
   }
 
-  private onUtterance(text: string, tagged: unknown): void {
+  private onUtterance(text: string, tagged: unknown, flagged = false): void {
     const mode: ListenMode = tagged === 'command' || tagged === 'interject' ? tagged : this.mode
     this.speechOpen = false
     if (mode !== 'command' && mode !== 'interject') return this.poll()
     if (!this.canFinish(mode)) return this.poll()
+    if (flagged && mode === 'interject') {
+      this.clearBarge()
+      const spoken = text.trim()
+      if (spoken) this.interject(spoken)
+      else this.poll()
+      return
+    }
     const settings = this.settings()
     if (mode === 'command') {
       const spoken = stripWakePrefix(text, settings.wakeWords)
@@ -521,6 +568,7 @@ export class VoiceController {
   }
 
   private dismiss(): void {
+    this.clearBarge()
     debug(`dismiss busy=${this.agentBusy} live=${this.live}`)
     if (this.agentBusy) {
       this.muted = true
@@ -535,6 +583,7 @@ export class VoiceController {
   }
 
   private interject(text: string): void {
+    this.clearBarge()
     debug(`interject busy=${this.agentBusy} live=${this.live}`)
     // The old turn is about to be cancelled. Re-entering transcription must not seed the
     // speaker tail of the task that is being stopped.
@@ -588,6 +637,7 @@ export class VoiceController {
 
   /** A new lifecycle starts with no inherited queue, pin, speech edge, or restart budget. */
   private fresh(initial: { agentBusy?: boolean, questionOpen?: boolean }): void {
+    this.clearBarge()
     this.closing = false
     this.restarts = 0
     this.failed = false

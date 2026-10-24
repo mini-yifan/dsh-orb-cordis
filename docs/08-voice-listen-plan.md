@@ -6,7 +6,7 @@
 >
 > **2026-10-21 修订：插话改为「硬停旧轮 + 另起新任务」。** 命中插话时不再使用官方 `steer`，而是 `sessionController.cancel` 旧轮，等官方 `turn/end` 后把原话作为 `mode: 'queue'` 的新消息发送。0.1 节保留为官方的历史行为参考；第 1 节第 2 条、4.4、4.5、4.6、4.7、5、13、14、15 已按修订更新。
 >
-> **2026-10-23 修订：VPIO 采集默认下线。** macOS 上 VPIO 会压低整个系统输出，且 macOS 26.4 无法通过公开属性或私有 unduck 关掉。生产改用 `node-cpal` 普通采集 + 基于 TTS PCM 的软件 AEC；`bodyBusy` 期间仍返回 `interject`，`echo.ts` 的文字回声过滤继续兜底。第 9、10 节的 VPIO 方案只作为历史/实验记录，见 [04-addenda.md](04-addenda.md) 第 28 节。
+> **2026-10-23 修订：VPIO 采集默认下线。** macOS 上 VPIO 会压低整个系统输出，且 macOS 26.4 无法通过公开属性或私有 unduck 关掉。生产改用 `node-cpal` 普通采集 + 基于 TTS PCM 的软件 AEC；`bodyBusy` 期间仍返回 `interject`；TTS 播放时用流式 KWS 检出插话关键词后立即停播，ASR 以关键词为切点只保留命令，`echo.ts` 的文字回声过滤继续兜底。第 9、10 节的 VPIO 方案只作为历史/实验记录，见 [04-addenda.md](04-addenda.md) 第 28 节。
 
 ## 0. 已经定下来的做法
 
