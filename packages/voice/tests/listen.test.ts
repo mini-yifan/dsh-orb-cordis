@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { holdsDevice, listenMode, needsMicrophone, transcribing, wantsNativeCapture, type ListenInput, type ListenMode } from '../src/listen.ts'
+import { holdsDevice, listenMode, needsMicrophone, transcribing, type ListenInput, type ListenMode } from '../src/listen.ts'
 
 const ready: ListenInput = {
   pinned: false,
@@ -110,14 +110,5 @@ describe('listen mode', () => {
     assert.equal(holdsDevice({ ...device, bodyBusy: true, echoCancel: false }), false, 'no echo cancellation means no body-audio listening')
     assert.equal(holdsDevice({ ...device, agentBusy: true, interjectEnabled: false }), false, 'no interject keyword means no listening')
     assert.equal(holdsDevice({ ...device, agentBusy: true, commandEnabled: false }), false, 'wake cannot interject')
-  })
-
-  it('starts the native echo canceller only while transcription is on', () => {
-    assert.equal(wantsNativeCapture('wake', false, true), false, 'wake has no ASR and must not duck the system')
-    assert.equal(wantsNativeCapture('off', false, true), false)
-    assert.equal(wantsNativeCapture('command', false, true), true, 'the pinned panel is the ASR-on state')
-    assert.equal(wantsNativeCapture('interject', false, true), true, 'a running turn keeps the panel open')
-    assert.equal(wantsNativeCapture('command', true, true), false, 'the fallback stays on plain capture')
-    assert.equal(wantsNativeCapture('command', false, false), false, 'no helper means no native capture')
   })
 })

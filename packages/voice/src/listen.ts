@@ -124,14 +124,3 @@ export function holdsDevice(input: DeviceInput): boolean {
   // 收起时只有唤醒可达，固定时只有语音输入可达。
   return input.pinned ? commandReady : wakeReady
 }
-
-/**
- * 子进程要不要用原生 VPIO 采集。
- *
- * VPIO 会压低整个系统输出，所以只在转写开着时用：`command` 只在面板固定时可达，
- * `interject` 只在执行中或收尾播报把面板留住时可达，`wake` 就是收起状态。唤醒、
- * 看视频、玩游戏这些时候走普通采集，系统音量不受影响。
- */
-export function wantsNativeCapture(mode: ListenMode, useCpal: boolean, helper: boolean): boolean {
-  return transcribing(mode) && !useCpal && helper
-}

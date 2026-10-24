@@ -383,3 +383,15 @@ Windows 上的实测反馈:在浏览器里点球、输入、回车提交后,**Ag
 - **未做:** 没有实现“只有用户开口时才压”。VPIO 没有按句开关的公开 API,启停 unit 会有延迟和首字风险;真要实现得走系统回采 AEC,见后续讨论。
 - **测试:** `listen.test.ts` 新增 `wantsNativeCapture()` 的四种模式/回退断言;`child-capture.test.ts` 原有 native 用例保持通过(缺省 listen 仍按 command/interject 开原生);`pnpm typecheck`、voice 101 例串行、host+helper 45 例通过。
 - **装机:** 只改语音子进程,不需要重启 DSH;替换 `dist/voice/lib/child.js` 后 kill 语音子进程,host 会在 1 秒内重新 fork(见第 26 节)。
+
+## 29. 试用全软件 AEC:完全不启 VPIO(2026-10-24,分支 feat/voice-software-aec)
+
+现象:TTS 一开始播报,系统音量突然变低;这是 `interject` 切到 VPIO 后 ducking 作用于包括 TTS 在内的整个输出。第 28 节的“按 mode 启用 VPIO”只能把压低限制在展开时,不能消掉 TTS 播报时的突变。
+
+- **试用分支:** `feat/voice-software-aec`,从 `docs/orb-voice` 分出;语音侧取 `18737dd` 的软件 AEC,不再默认拉起原生采集。
+- **实现:** 生产环境走 `node-cpal` 普通采集;`packages/voice/src/aec.ts` 用实际送喇叭的 TTS PCM 做参考,按 16 kHz 采样帧对齐,500 ms 互相关锁 bulk delay,256 抽头 NLMS 做残差消除,滤波在 `aec-worker.ts` 独立线程。子进程 `mic` 消息上报 `aec:true`,所以 Host 现有的 `bodyBusy && !echoCancel` 降级判断仍会放行 `interject`,这次没有改 Host;`DSH_ORB_VOICE_AEC=native` 可退回 VPIO 实验,`off` 退回纯文字过滤。
+- **效果:** 不启 VPIO,所以系统音量在收起、展开、TTS 播报、Agent 执行时都不再被压低。代价是软件 AEC 只消球自己的 TTS,不消浏览器/音乐/视频;这些声音会进 ASR,靠 `echo.ts` 的文字过滤兜底。
+- **边界:** 回声抑制量约 5.7 dB,弱于 VPIO;双讲时靠文字过滤。外部声音大时,插话/命令识别可能被干扰。
+- **测试:** `pnpm typecheck`;voice 102 例串行(含新增 `aec.test.ts`);host+helper 45 例;`pnpm build`。
+- **装机:** 只改语音子进程;把 `dist/voice` 的新 `child.js` / `aec-worker.js` 等同步进 profile,kill 语音子进程即可,不需要重启 DSH。
+- **未合入:** 本分支是试用分支;第 28 节的 VPIO 限定策略仍留在 `docs/orb-voice`。Host 的 `listen.ts` 降级条件没有改,若 AEC 失败/关闭,正文播报期间仍按旧规则停止插话。

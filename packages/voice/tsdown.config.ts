@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsdown'
 
 export default defineConfig({
-  entry: ['src/child.ts', 'src/tts-worker.ts'],
+  entry: ['src/child.ts', 'src/aec-worker.ts', 'src/tts-worker.ts'],
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',
