@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { contextFromFiles, keywordLines } from './keywords.ts'
 import { LevelMeter } from './level.ts'
 import { needsMicrophone, transcribing, type ListenMode } from './listen.ts'
-import { isEcho, type SpokenLine } from './echo.ts'
+import { cutAtKeyword, isEcho, stripEcho, type SpokenLine } from './echo.ts'
 import { EchoCanceller } from './aec.ts'
 import { speakQwen as startQwenSpeech, type QwenSpeech } from './qwen-tts.ts'
 import { DEFAULT_QWEN_SPEED, DEFAULT_QWEN_VOICE } from './qwen.ts'
@@ -235,6 +235,14 @@ class Engine {
   private kwsStream: any
   private kwsKey = ''
   private lastWake = 0
+  /** True while our own TTS is reaching the speaker. */
+  private speaking = false
+  /** The streaming spotter saw the interject keyword; the next utterance is a command. */
+  private bargeHeard = false
+  private bargeAt = 0
+  /** Raw microphone blocks for the streaming spotter; the AEC output can lag. */
+  private readonly bargeQueue: Float32Array[] = []
+  private bargeScheduled = false
   private vad: VadEar | undefined
   private worker: Worker | undefined
   private workerReady = false
@@ -365,8 +373,11 @@ class Engine {
         this.noteSpoken(line)
         this.flushAec()
         if (this.softwareAec) this.aecSetActive(true)
+        this.armBarge()
+        this.speaking = true
         this.player = playPcm(this.native.cpal, this.ensureHost(), samples, sampleRate, volume, this.softwareAec ? this.aecReference : undefined, (stopped) => {
           this.aecSetActive(false)
+          this.speaking = false
           this.player = undefined
           line.endedAt = Date.now()
           // The command that follows must not seed the recognizer with the speaker's own tail.
@@ -376,6 +387,7 @@ class Engine {
         })
       } catch (error) {
         this.aecSetActive(false)
+        this.speaking = false
         fail(error)
         this.ring.clear()
         emit({ type: 'playback', id, phase: 'end' })
@@ -407,6 +419,7 @@ class Engine {
     const finish = (stopped: boolean): void => {
       settled = true
       this.aecSetActive(false)
+      this.speaking = false
       debug(`qwen id=${id} finish stopped=${stopped} player=${player !== undefined}`)
       if (player && this.player === player) this.player = undefined
       if (this.qwen === job) this.qwen = undefined
@@ -428,6 +441,8 @@ class Engine {
           try {
             this.flushAec()
             if (this.softwareAec) this.aecSetActive(true)
+            this.armBarge()
+            this.speaking = true
             player = createStreamPlayer(this.native.cpal, this.ensureHost(), sampleRate, volume, this.softwareAec ? this.aecReference : undefined, (stopped) => finish(stopped))
           } catch (error) {
             fail(error)
@@ -484,6 +499,9 @@ class Engine {
   stopSpeak(): void {
     debug(`stop-speak armed=${this.armed?.id ?? 'none'} player=${this.player !== undefined}`)
     this.aecSetActive(false)
+    this.speaking = false
+    this.bargeQueue.length = 0
+    this.bargeScheduled = false
     this.speakToken += 1
     this.cancelQwen()
     const armed = this.armed
@@ -530,6 +548,8 @@ class Engine {
     this.ring.clear()
     this.aecQueue.length = 0
     this.aecScheduled = false
+    this.bargeQueue.length = 0
+    this.bargeScheduled = false
     this.micFrame = 0
     this.aecWorker?.postMessage({ type: 'reset' })
     this.aec.reset()
@@ -654,6 +674,9 @@ class Engine {
 
   /** 16 kHz mono PCM from the capture source. */
   private onAudio(samples: Float32Array): void {
+    // The spotter runs on the raw microphone. The AEC worker can deliver its
+    // output a little late, and the keyword must be seen before TTS ends.
+    if (this.speaking && this.mode === 'interject') this.queueBarge(samples)
     if (!this.softwareAec) {
       this.handleAudio(samples)
       return
@@ -748,7 +771,58 @@ class Engine {
     if (!transcribing(this.mode)) return
     const level = this.meter.push(samples, Date.now())
     if (level !== undefined) emit({ type: 'level', value: level })
+    // The VAD segment keeps the whole phrase so the command after the keyword
+    // is not lost when the stop reaches the speaker a few frames late.
     this.vad?.push(samples)
+  }
+
+  /** Start a sentence: reset the spotter and wait for the interject keyword. */
+  private armBarge(): void {
+    this.bargeHeard = false
+    this.bargeAt = 0
+    this.bargeQueue.length = 0
+    this.bargeScheduled = false
+    if (this.kws && this.kwsStream) this.kws.reset(this.kwsStream)
+  }
+
+  private bargeActive(): boolean {
+    return this.bargeHeard && Date.now() - this.bargeAt < 8000
+  }
+
+  private queueBarge(samples: Float32Array): void {
+    if (!this.kws || !this.kwsStream || this.bargeHeard) return
+    this.bargeQueue.push(samples.slice())
+    if (this.bargeQueue.length > 20) this.bargeQueue.shift()
+    if (this.bargeScheduled) return
+    this.bargeScheduled = true
+    setImmediate(() => this.drainBarge())
+  }
+
+  private drainBarge(): void {
+    this.bargeScheduled = false
+    const block = this.bargeQueue.shift()
+    if (block) this.feedBarge(block)
+    if (this.bargeQueue.length > 0) {
+      this.bargeScheduled = true
+      setImmediate(() => this.drainBarge())
+    }
+  }
+
+  private feedBarge(samples: Float32Array): void {
+    const spotter = this.kws
+    const stream = this.kwsStream
+    if (!spotter || !stream || this.bargeHeard) return
+    stream.acceptWaveform({ sampleRate: TARGET_RATE, samples })
+    while (spotter.isReady(stream)) {
+      spotter.decode(stream)
+      const result = spotter.getResult(stream)
+      if (!result?.keyword) continue
+      spotter.reset(stream)
+      this.bargeHeard = true
+      this.bargeAt = Date.now()
+      emit({ type: 'barge', keyword: result.keyword })
+      return
+    }
   }
 
   private drainAec(): void {
@@ -788,6 +862,10 @@ class Engine {
       const result = spotter.getResult(stream)
       if (!result?.keyword) continue
       spotter.reset(stream)
+      // The spotter also carries the interject keyword. It must not wake the
+      // ball when that phrase is different from every configured wake word.
+      const wakeWords = this.settings?.wakeWords ?? []
+      if (!wakeWords.some((word) => word.trim() === result.keyword.trim())) continue
       const now = Date.now()
       const cooldown = this.settings?.wakeCooldownMs ?? 1500
       if (now - this.lastWake < cooldown) continue
@@ -799,7 +877,9 @@ class Engine {
   private ensureKws(): void {
     const settings = this.settings
     const dir = this.paths?.kws
-    if (!settings?.wakeEnabled || !dir) {
+    const interject = settings?.interjectKeyword?.trim() ?? ''
+    const barge = settings?.commandEnabled === true && interject !== ''
+    if ((!settings?.wakeEnabled && !barge) || !dir) {
       this.clearKws()
       return
     }
@@ -808,9 +888,11 @@ class Engine {
       this.clearKws()
       return
     }
+    const words = settings.wakeEnabled ? [...settings.wakeWords] : []
+    if (interject && !words.includes(interject)) words.push(interject)
     let lines: string[] = []
     try {
-      lines = keywordLines(settings.wakeWords, contextFromFiles(dir))
+      lines = keywordLines(words, contextFromFiles(dir))
     } catch (error) {
       fail(error)
       // The configured phrase cannot be built. Keeping the previous list would make the
@@ -915,12 +997,42 @@ class Engine {
       if (typeof message.id === 'number') this.pending.delete(message.id)
       if (message.error) fail(message.error)
       else if (message.text) {
-        const echo = meta !== undefined && isEcho(message.text, this.spoken, { from: meta.from, to: meta.to }, [
+        const commands = [
           this.settings?.interjectKeyword ?? '',
           ...(this.settings?.dismissPhrases ?? []),
-        ])
+        ]
+        const window = meta !== undefined ? { from: meta.from, to: meta.to } : undefined
+        const mode = meta?.mode ?? this.mode
+        const echo = window !== undefined && isEcho(message.text, this.spoken, window, commands)
         if (echo) process.stderr.write('echo dropped\n')
-        else emit({ type: 'utterance', text: message.text, ...(meta ? { mode: meta.mode } : {}) })
+        else {
+          // Our own TTS is still allowed to leak a little past the AEC. Trim the
+          // part of the transcript that matches the line being spoken, so the
+          // host receives the user's command without the sentence tail.
+          const cleaned = window !== undefined
+            ? stripEcho(message.text, this.spoken, window, commands)
+            : message.text
+          const keyword = this.settings?.interjectKeyword?.trim() ?? ''
+          const cut = mode === 'interject' && keyword
+            ? cutAtKeyword(cleaned, keyword)
+            : { text: cleaned, matched: false }
+          const flagged = mode === 'interject' && (this.bargeActive() || cut.matched)
+          const text = cut.matched && window !== undefined
+            ? stripEcho(cut.text, this.spoken, window, commands).trim()
+            : cleaned.trim()
+          if (text) {
+            emit({
+              type: 'utterance',
+              text,
+              ...(meta ? { mode: meta.mode } : {}),
+              ...(flagged ? { interject: true } : {}),
+            })
+            if (flagged) {
+              this.bargeHeard = false
+              this.bargeAt = 0
+            }
+          }
+        }
       }
       emit({ type: 'speech', open: false })
       this.pump()

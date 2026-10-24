@@ -395,3 +395,14 @@ Windows 上的实测反馈:在浏览器里点球、输入、回车提交后,**Ag
 - **测试:** `pnpm typecheck`;voice 102 例串行(含新增 `aec.test.ts`);host+helper 45 例;`pnpm build`。
 - **装机:** 只改语音子进程;把 `dist/voice` 的新 `child.js` / `aec-worker.js` 等同步进 profile,kill 语音子进程即可,不需要重启 DSH。
 - **未合入:** 本分支是试用分支;第 28 节的 VPIO 限定策略仍留在 `docs/orb-voice`。Host 的 `listen.ts` 降级条件没有改,若 AEC 失败/关闭,正文播报期间仍按旧规则停止插话。
+
+## 30. 软件 AEC 试用补丁:TTS 期间不喂 VAD + KWS 早停(2026-10-24, feat/voice-software-aec)
+
+现象:第 29 节的软件 AEC 单独上线后,TTS 残响仍高于 VAD 阈值;圆点常亮、ASR 一直转 TTS,插话被并进 TTS 段后按回声丢掉。
+
+- **修法:** TTS 播放期间不把 AEC 输出喂给 VAD/电平条;用 sherpa-onnx 流式 KWS 在**原始麦克风**上听 `interjectKeyword`。命中后发 `barge`,Host 立即 `stop-speak` 并静音本轮剩余正文,但保留 Agent 任务。
+- **命令捕获:** barge 时把最近约 500ms 原始麦克风 seed 给 VAD,再继续喂 AEC 输出;ASR 回来用 `cutAtKeyword()` 丢掉关键词及之前内容,`stripEcho()` 清理 TTS 尾巴;utterance 带 `interject:true`,Host 不再要求文本里有关键词。
+- **圆点:** TTS 期间 VAD 不工作,所以圆点不亮、ASR 不转 TTS;barge 之后圆点才亮,表示正在转写用户命令。TTS 结束没有 barge 时保留 500ms 静默期,避免 AEC 队列里的尾巴再点亮。
+- **边界:** 插话要通过关键词触发(KWS 或 ASR 兜底);外部视频/音乐仍会进 command 模式 ASR;KWS 在 TTS 里听到关键词可能误停(停播比把 TTS 上屏安全)。
+- **测试:** `echo.test.ts` 关键词切点/trim;Host `barge` 停播与 `interject:true` 用例;后续补 TTS 期间不喂 VAD 的集成验收。
+- **装机:** Host 和子进程都改,必须重启 DeepSeek Harness。
