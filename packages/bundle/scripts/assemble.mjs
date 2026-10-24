@@ -87,6 +87,7 @@ await copyFrom('voice', 'lib', join(dist, 'voice'))
 await copyFrom('voice', 'prebuilds', join(dist, 'voice', 'prebuilds'))
 for (const binary of [
   'darwin-universal/dsh-orb-voice-capture',
+  'darwin-universal/dsh-orb-system-audio',
   'win32-x64/dsh-orb-voice-capture.exe',
 ]) {
   const file = join(dist, 'voice', 'prebuilds', binary)

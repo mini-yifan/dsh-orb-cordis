@@ -115,4 +115,31 @@ describe('software echo cancellation', () => {
     assert.equal(canceller.process(mic), mic)
     assert.equal(canceller.delayMs > 0, true)
   })
+
+  it('keeps a continuous system reference through TTS edges', () => {
+    const reference = referenceSignal()
+    const echo = delayedEcho(reference, Math.round(0.06 * RATE), [0.55, 0.24, -0.14, 0.07, -0.04])
+    const random = noise(41)
+    const mic = new Float32Array(reference.length)
+    for (let i = 0; i < mic.length; i += 1) mic[i] = echo[i]! + 0.001 * random()
+
+    const canceller = new EchoCanceller({ filterLength: 1024, stepSize: 0.04 })
+    canceller.setContinuous(true)
+    const cleaned = new Float32Array(mic.length)
+    for (let start = 0; start < mic.length; start += BLOCK) {
+      const end = Math.min(mic.length, start + BLOCK)
+      canceller.pushReference(reference.subarray(start, end))
+      cleaned.set(canceller.process(mic.subarray(start, end)), start)
+      // A sentence edge must not reset the live reference ring.
+      if (start === 8 * BLOCK) canceller.setActive(true)
+      if (start === 24 * BLOCK) canceller.setActive(false)
+    }
+
+    const from = Math.round(0.45 * RATE)
+    const to = Math.round(0.95 * RATE)
+    const reductionDb = 10 * Math.log10(energy(mic, from, to) / Math.max(energy(cleaned, from, to), 1e-12))
+    assert.ok(reductionDb > 6, `expected >6 dB continuous echo reduction, got ${reductionDb.toFixed(1)} dB`)
+    assert.equal(canceller.enabled, true)
+  })
+
 })

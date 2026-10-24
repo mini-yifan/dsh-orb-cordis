@@ -406,3 +406,15 @@ Windows 上的实测反馈:在浏览器里点球、输入、回车提交后,**Ag
 - **边界:** 插话要通过关键词触发(KWS 或 ASR 兜底);外部视频/音乐仍会进 command 模式 ASR;KWS 在 TTS 里听到关键词可能误停(停播比把 TTS 上屏安全)。
 - **测试:** `echo.test.ts` 关键词切点/trim;Host `barge` 停播与 `interject:true` 用例;后续补 TTS 期间不喂 VAD 的集成验收。
 - **装机:** Host 和子进程都改,必须重启 DeepSeek Harness。
+
+## 31. 系统回采 AEC:CoreAudio process tap + 连续参考(2026-10-24, feat/voice-software-aec)
+
+第 30 节把 TTS 期间的 VAD 关掉、只靠 KWS,插话仍然受关键词漏检影响;而且软件 AEC 的参考只有 TTS,外部视频/音乐仍会进 ASR。这一节把参考换成**整个系统输出**。
+
+- **回采:** macOS 14.2+ 的 CoreAudio process tap。新增原生 helper `packages/voice/native/macos-system-audio.swift`:`CATapDescription(stereoGlobalTapButExcludeProcesses: [])` 建全局 tap,私有 aggregate device 只含 tap,`AudioDeviceCreateIOProcIDWithBlock` 读 48 kHz 输出,downmix 成 mono Float32 从 stdout 输出。`muteBehavior = .unmuted`,不改变默认输出设备,不需要 BlackHole/多输出设备。
+- **子进程:** `SystemTapCapture` 把 helper 的 48 kHz mono 用 `sherpa.LinearResampler` 降到 16 kHz,作为 `EchoCanceller` 的连续参考。`setContinuous()` 只在第一次拿到 tap PCM 时锚定当前麦克风帧,之后 TTS 的 `setActive()` 不再重置参考;滤波器 1024 抽头、步长 0.04,权重跨句保留。TTS 播放路径不再喂自己的 PCM 参考,避免两个参考混在一起。
+- **听法:** 有系统参考时 VAD 在 TTS 期间**继续工作**,不再置零/不再 `vad.reset`;圆点只在 VAD 真的检测到人声时亮。KWS/barge 保留为早停手段,漏检时 ASR 也能在 TTS 里听到关键词。
+- **回退:** helper 缺失、启动失败或没有 tap 数据时,`systemReference=false`,回到第 30 节的 TTS 参考 + VAD 抑制 + KWS;原生 VPIO 仍可用 `DSH_ORB_VOICE_AEC=native` 强制。
+- **验证:** helper 单独跑,48 kHz 输出在 `say` 期间 peak 0.63、RMS 0.097;`aec.test.ts` 新增连续参考用例(1024 抽头)通过;voice 113 例串行、host+helper 46 例、typecheck 通过。装机日志:`system-aec ready rate=48000`、`system-aec reference on`,helper 进程在跑。
+- **边界:** 第一次启动 tap 约 0.5–0.8 s,这期间没有参考;tap 启动前已经播放的声音无法消。外部视频/音乐也会被回采,但 AEC 只按线性房间路径消,非线性/削波残留仍可能进 ASR。系统输出设备切换时 tap 是否跟随需要真机验收。
+- **装机:** 只改语音子进程和 helper,Host 不再改;把 `dist/voice` 和 `prebuilds/darwin-universal/dsh-orb-system-audio` 同步进 profile,kill 语音子进程即可,不需要重启 DSH。

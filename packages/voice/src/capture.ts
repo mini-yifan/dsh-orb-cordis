@@ -208,3 +208,122 @@ function pickCapture(cpal: any, device: any): { config: unknown, channels: numbe
   const config = fallback.config()
   return { config, channels: config.channels, rate: config.sampleRate, needsResample: config.sampleRate !== TARGET_RATE }
 }
+
+/** The system-output tap helper (48 kHz mono Float32 on stdout). */
+export function systemAudioBinary(): string | undefined {
+  if (process.platform !== 'darwin') return undefined
+  const fromEnv = process.env.DSH_ORB_SYSTEM_AUDIO_BIN
+  if (fromEnv) return fromEnv
+  for (const url of [
+    new URL('./prebuilds/darwin-universal/dsh-orb-system-audio', import.meta.url),
+    new URL('../prebuilds/darwin-universal/dsh-orb-system-audio', import.meta.url),
+  ]) {
+    const path = fileURLToPath(url)
+    if (existsSync(path)) return path
+  }
+  return undefined
+}
+
+/**
+ * Live system-output reference for the software AEC. The helper wraps a
+ * CoreAudio process tap; its stdout is 48 kHz mono Float32, resampled here to
+ * the canceller's 16 kHz clock. It does not change the default output device.
+ */
+export class SystemTapCapture {
+  private child: ChildProcessWithoutNullStreams | undefined
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private settled = false
+  private reportedError = false
+  private ready = false
+  private resampler: { resample(samples: Float32Array): Float32Array } | undefined
+  private pending = Buffer.alloc(0)
+  private rate = 48_000
+
+  constructor(private readonly binary: string, private readonly native: CpalNative) {}
+
+  start(handlers: {
+    onPcm(samples: Float32Array): void
+    onReady(info: { rate: number }): void
+    onFailure(reason: CaptureFailure, detail: string): void
+  }): void {
+    const child = spawn(this.binary, [], { stdio: ['pipe', 'pipe', 'pipe'] })
+    this.child = child
+    this.timer = setTimeout(() => {
+      this.fail(handlers, 'unavailable', 'system audio ready timed out')
+      child.kill()
+    }, READY_MS)
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (this.settled) return
+      this.pending = Buffer.concat([this.pending, chunk])
+      if (this.ready) this.drain(handlers)
+    })
+    const lines = createInterface({ input: child.stderr })
+    lines.on('line', (line) => {
+      let message: { event?: string, rate?: unknown, code?: unknown, message?: unknown }
+      try {
+        message = JSON.parse(line) as typeof message
+      } catch {
+        process.stderr.write(`${line}\n`)
+        return
+      }
+      if (message.event === 'ready') {
+        if (this.settled) return
+        if (this.timer) clearTimeout(this.timer)
+        this.timer = undefined
+        this.rate = typeof message.rate === 'number' && message.rate > 0 ? message.rate : 48_000
+        this.resampler = this.rate === TARGET_RATE
+          ? undefined
+          : new this.native.sherpa.LinearResampler(this.rate, TARGET_RATE)
+        this.ready = true
+        handlers.onReady({ rate: this.rate })
+        this.drain(handlers)
+        return
+      }
+      if (message.event === 'error') {
+        const code = message.code
+        const reason: CaptureFailure = code === 'unavailable' || code === 'no-device' || code === 'failed'
+          ? code
+          : 'failed'
+        this.reportedError = true
+        this.fail(handlers, reason, typeof message.message === 'string' ? message.message : reason)
+      }
+    })
+    child.on('error', (error) => {
+      this.fail(handlers, 'failed', error.message)
+    })
+    child.on('exit', () => {
+      if (this.settled || this.reportedError) return
+      this.fail(handlers, 'crashed', 'system audio exited before ready')
+    })
+  }
+
+  close(): void {
+    this.settled = true
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+    const child = this.child
+    this.child = undefined
+    if (!child) return
+    child.stdin.end()
+    setTimeout(() => {
+      try { child.kill() } catch { /* already gone */ }
+    }, 500).unref()
+  }
+
+  private drain(handlers: { onPcm(samples: Float32Array): void }): void {
+    const usable = this.pending.length - (this.pending.length % Float32Array.BYTES_PER_ELEMENT)
+    if (usable < Float32Array.BYTES_PER_ELEMENT) return
+    const slice = Buffer.from(this.pending.subarray(0, usable))
+    this.pending = Buffer.from(this.pending.subarray(usable))
+    const samples = new Float32Array(slice.buffer, slice.byteOffset, usable / Float32Array.BYTES_PER_ELEMENT)
+    handlers.onPcm(this.resampler ? this.resampler.resample(samples) : samples)
+  }
+
+  private fail(handlers: { onFailure(reason: CaptureFailure, detail: string): void }, reason: CaptureFailure, detail: string): void {
+    if (this.settled) return
+    this.settled = true
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+    handlers.onFailure(reason, detail)
+  }
+}

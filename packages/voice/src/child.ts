@@ -21,7 +21,7 @@ import { speakQwen as startQwenSpeech, type QwenSpeech } from './qwen-tts.ts'
 import { DEFAULT_QWEN_SPEED, DEFAULT_QWEN_VOICE } from './qwen.ts'
 import { isRecoverableSpeakerError } from './speaker.ts'
 import { DEFAULT_TTS_VOLUME, scaledSample } from './volume.ts'
-import { captureBinary, CpalCapture, NativeCapture, type CaptureSource } from './capture.ts'
+import { captureBinary, CpalCapture, NativeCapture, SystemTapCapture, systemAudioBinary, type CaptureSource } from './capture.ts'
 import { type VoiceSettings } from './settings.ts'
 
 const require = createRequire(import.meta.url)
@@ -293,7 +293,7 @@ class Engine {
   private readonly softwareAec = process.env.DSH_ORB_CAPTURE_BIN === undefined
     && process.env.DSH_ORB_VOICE_AEC !== 'native'
     && process.env.DSH_ORB_VOICE_AEC !== 'off'
-  private readonly aec = new EchoCanceller({ filterLength: 256, stepSize: 0.02 })
+  private readonly aec = new EchoCanceller({ filterLength: 1024, stepSize: 0.04 })
   /** Raw microphone blocks waiting for the AEC, so the audio callback never runs the filter. */
   private readonly aecQueue: { samples: Float32Array, startFrame: number }[] = []
   private aecScheduled = false
@@ -302,8 +302,16 @@ class Engine {
   private aecWorker: Worker | undefined
   private aecWorkerFailed = false
   private readonly aecReference: EchoReference = {
-    pushReference: (block) => this.forwardReference(block),
+    // When a live system tap is present it owns the reference; do not mix the
+    // per-sentence TTS PCM into the same ring.
+    pushReference: (block) => {
+      if (this.systemReference) return
+      this.forwardReference(block)
+    },
   }
+  private systemTap: SystemTapCapture | undefined
+  private systemReference = false
+  private systemTapFailed = false
 
   constructor(private readonly native: Native) {}
 
@@ -382,7 +390,7 @@ class Engine {
         if (this.softwareAec) this.aecSetActive(true)
         this.armBarge()
         this.speaking = true
-        this.player = playPcm(this.native.cpal, this.ensureHost(), samples, sampleRate, volume, this.softwareAec ? this.aecReference : undefined, (stopped) => {
+        this.player = playPcm(this.native.cpal, this.ensureHost(), samples, sampleRate, volume, this.ttsReference(), (stopped) => {
           this.aecSetActive(false)
           this.endSpeaking()
           this.player = undefined
@@ -450,7 +458,7 @@ class Engine {
             if (this.softwareAec) this.aecSetActive(true)
             this.armBarge()
             this.speaking = true
-            player = createStreamPlayer(this.native.cpal, this.ensureHost(), sampleRate, volume, this.softwareAec ? this.aecReference : undefined, (stopped) => finish(stopped))
+            player = createStreamPlayer(this.native.cpal, this.ensureHost(), sampleRate, volume, this.ttsReference(), (stopped) => finish(stopped))
           } catch (error) {
             fail(error)
             this.armed = undefined
@@ -549,6 +557,7 @@ class Engine {
   }
 
   private stopMic(): void {
+    this.stopSystemReference()
     if (this.relaunchTimer) clearTimeout(this.relaunchTimer)
     this.relaunchTimer = undefined
     const capture = this.capture
@@ -572,8 +581,8 @@ class Engine {
   }
 
   startMic(): void {
-    if (this.capture) return
     if (this.softwareAec) this.ensureAecWorker()
+    if (this.capture) return
     const binary = this.nativeCapture && !this.useCpal ? captureBinary() : undefined
     if (!binary) {
       this.useCpal = true
@@ -613,6 +622,9 @@ class Engine {
       },
       onFailure: (reason, detail) => this.onCaptureFailure(reason, detail),
     })
+    // Start the system tap after the microphone playback has begun. Starting
+    // it first would anchor the reference clock ahead of the capture clock.
+    this.startSystemReference()
   }
 
   private onCaptureFailure(reason: 'mic-denied' | 'no-device' | 'unavailable' | 'failed' | 'crashed', detail: string): void {
@@ -739,6 +751,8 @@ class Engine {
         debug(`aec-worker failed: ${String(error)}`)
         this.aecWorkerFailed = true
         this.aecWorker = undefined
+        // Keep the continuous reference alive in this thread if the worker dies.
+        if (this.systemReference) this.aec.setContinuous(true, this.micFrame)
       })
       worker.unref()
       this.aecWorker = worker
@@ -768,12 +782,78 @@ class Engine {
   }
 
   private aecSetActive(active: boolean): void {
+    // The system loopback reference is continuous; sentence edges must not
+    // disable or re-anchor it.
+    if (this.systemReference) return
     const worker = this.aecWorker
     if (worker && !this.aecWorkerFailed) {
       worker.postMessage({ type: 'active', active, anchor: this.micFrame })
       return
     }
     this.aec.setActive(active, this.micFrame)
+  }
+
+  private aecSetContinuous(active: boolean): void {
+    const worker = this.aecWorker
+    if (worker && !this.aecWorkerFailed) {
+      worker.postMessage({ type: 'continuous', active, anchor: this.micFrame })
+      return
+    }
+    this.aec.setContinuous(active, this.micFrame)
+  }
+
+  /** Start the CoreAudio system-output tap that feeds the continuous AEC. */
+  private startSystemReference(): void {
+    if (this.systemTap || this.systemTapFailed || !this.softwareAec) return
+    if (process.env.DSH_ORB_SYSTEM_AEC === 'off') {
+      debug('system-aec off')
+      this.systemTapFailed = true
+      return
+    }
+    const binary = systemAudioBinary()
+    if (!binary) {
+      debug('system-aec helper missing')
+      this.systemTapFailed = true
+      return
+    }
+    const tap = new SystemTapCapture(binary, this.native)
+    this.systemTap = tap
+    tap.start({
+      onPcm: (samples) => {
+        if (this.systemTap !== tap || samples.length === 0) return
+        if (!this.systemReference) {
+          this.systemReference = true
+          this.aecSetContinuous(true)
+          debug('system-aec reference on')
+        }
+        this.forwardReference(samples)
+      },
+      onReady: ({ rate }) => debug(`system-aec ready rate=${rate}`),
+      onFailure: (reason, detail) => {
+        if (this.systemTap !== tap) return
+        this.systemTap = undefined
+        this.systemTapFailed = true
+        if (this.systemReference) {
+          this.systemReference = false
+          this.aecSetContinuous(false)
+        }
+        debug(`system-aec failed ${reason} ${detail}`)
+      },
+    })
+  }
+
+  private stopSystemReference(): void {
+    const tap = this.systemTap
+    this.systemTap = undefined
+    if (this.systemReference) {
+      this.systemReference = false
+      this.aecSetContinuous(false)
+    }
+    tap?.close()
+  }
+
+  private ttsReference(): EchoReference | undefined {
+    return this.softwareAec && !this.systemReference ? this.aecReference : undefined
   }
 
   /** Feed one cleaned block to the ring, wake spotter, or VAD. */
@@ -788,7 +868,7 @@ class Engine {
     // segment or light the ASR lamp. The KWS listens on the raw microphone; a
     // barge opens the ear immediately, otherwise the AEC queue's tail is held
     // back for a short quiet period after playback.
-    if (this.speaking || (!this.bargeHeard && Date.now() < this.ttsQuietUntil)) {
+    if (!this.systemReference && (this.speaking || (!this.bargeHeard && Date.now() < this.ttsQuietUntil))) {
       if (!this.bargeHeard) {
         if (!this.ttsMuted) {
           this.ttsMuted = true
@@ -822,8 +902,9 @@ class Engine {
     this.ttsQuietUntil = 0
     // The command that started this sentence has already been decoded; drop any
     // stale open VAD segment so its speech edge cannot keep the ASR lamp on
-    // while the VAD feed is held back.
-    this.vad?.reset()
+    // while the VAD feed is held back. A live system tap keeps the VAD running
+    // through playback, so it must not be reset.
+    if (!this.systemReference) this.vad?.reset()
     if (this.kws && this.kwsStream) this.kws.reset(this.kwsStream)
   }
 
@@ -832,7 +913,7 @@ class Engine {
   }
 
   private queueBarge(samples: Float32Array): void {
-    if (!this.bargeHeard) this.pushBargePreroll(samples)
+    if (!this.bargeHeard && !this.systemReference) this.pushBargePreroll(samples)
     if (!this.kws || !this.kwsStream || this.bargeHeard) return
     this.bargeQueue.push(samples.slice())
     if (this.bargeQueue.length > 20) this.bargeQueue.shift()
@@ -853,7 +934,7 @@ class Engine {
   }
 
   private seedBargeVad(): void {
-    if (this.bargePrerollSamples === 0) return
+    if (this.systemReference || this.bargePrerollSamples === 0) return
     const samples = new Float32Array(this.bargePrerollSamples)
     let offset = 0
     for (const block of this.bargePreroll) {

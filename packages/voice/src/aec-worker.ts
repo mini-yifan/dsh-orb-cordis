@@ -11,15 +11,20 @@ import { EchoCanceller } from './aec.ts'
 
 type Request =
   | { type: 'active', active: boolean, anchor: number }
+  | { type: 'continuous', active: boolean, anchor: number }
   | { type: 'reference', samples: ArrayBuffer }
   | { type: 'process', samples: ArrayBuffer, offset: number, length: number, startFrame: number }
   | { type: 'reset' }
 
-const aec = new EchoCanceller({ filterLength: 256, stepSize: 0.02 })
+const aec = new EchoCanceller({ filterLength: 1024, stepSize: 0.04 })
 
 parentPort?.on('message', (message: Request) => {
   if (message.type === 'active') {
     aec.setActive(message.active, message.anchor)
+    return
+  }
+  if (message.type === 'continuous') {
+    aec.setContinuous(message.active, message.anchor)
     return
   }
   if (message.type === 'reference') {

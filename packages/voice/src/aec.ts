@@ -104,6 +104,7 @@ export class EchoCanceller {
   private readonly refDown: Float32Array
   private readonly residual: Float32Array
   private active = false
+  private continuous = false
   private micFrames = 0
   private referenceFrames = 0
   private referenceBase = 0
@@ -136,6 +137,9 @@ export class EchoCanceller {
 
   /** A sentence starts or finishes. The filter itself survives across sentences. */
   setActive(active: boolean, anchorFrame = this.micFrames): void {
+    // A system loopback reference is live all the time; sentence edges must not
+    // reset its ring or stop the filter.
+    if (this.continuous) return
     if (active && !this.active) {
       // Anchor the reference at the capture frame where playback starts.
       // Everything the speaker emits from now on lines up with this clock.
@@ -148,6 +152,30 @@ export class EchoCanceller {
     }
     this.active = active
     if (!active) this.sinceSearch = SEARCH_INTERVAL
+  }
+
+  /**
+   * Use a live system-output reference (the loopback tap) instead of anchoring
+   * each TTS sentence. The reference clock starts at the current microphone
+   * frame; the delay search then locks the output-to-microphone latency.
+   */
+  setContinuous(active: boolean, anchorFrame = this.micFrames): void {
+    if (active) {
+      if (!this.continuous) {
+        this.referenceBase = Math.max(0, anchorFrame)
+        this.referenceFrames = 0
+        this.reference.clear()
+        this.sinceSearch = SEARCH_INTERVAL
+        this.blocks = 0
+        this.delayLocked = false
+      }
+      this.continuous = true
+      this.active = true
+      return
+    }
+    this.continuous = false
+    this.active = false
+    this.sinceSearch = SEARCH_INTERVAL
   }
 
   get enabled(): boolean {
@@ -163,6 +191,7 @@ export class EchoCanceller {
     this.microphone.clear()
     this.weights.fill(0)
     this.active = false
+    this.continuous = false
     this.micFrames = 0
     this.referenceFrames = 0
     this.referenceBase = 0
