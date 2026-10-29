@@ -1842,6 +1842,32 @@ describe('ball control socket', { concurrency: 1 }, () => {
       harness.runtime.halt()
     }
   })
+
+  it('does not leave a running turn behind when the ball is halted mid-turn', async () => {
+    const harness = boot()
+    const client = await connect(harness.runtime)
+    try {
+      client.send({ type: 'new' })
+      await waitFor(() => client.messages.some((message) => message.type === 'session'))
+      client.send({ type: 'prompt', text: '干活' })
+      await waitFor(() => client.messages.some((message) => message.type === 'turn' && message.running === true))
+
+      // halt() stops the only poll that can observe turn/end, so the running flag has to be
+      // cleared here. Otherwise the next ball inherits "running", spins forever, and the
+      // selection toolbar stays paused because pausedReads() still sees a running session.
+      harness.runtime.halt()
+      const reconnected = await connect(harness.runtime)
+      try {
+        const turns = reconnected.messages.filter((message) => message.type === 'turn')
+        assert.equal((turns.at(-1) as { running: boolean }).running, false)
+      } finally {
+        reconnected.socket.end()
+      }
+    } finally {
+      client.socket.end()
+      harness.runtime.halt()
+    }
+  })
 })
 
 describe('blank conversation sweep', () => {

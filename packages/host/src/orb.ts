@@ -688,6 +688,13 @@ export class OrbRuntime {
     if (this.retry) clearTimeout(this.retry)
     this.retry = undefined
     this.stopWatch()
+    // stopWatch() removes the only thing that can observe turn/end, and turnRunning is otherwise
+    // only cleared by finishTurn(). Leaving it set makes the next ball come back spinning forever
+    // and keeps pausedReads() true, which silently kills the selection toolbar until a new
+    // transcript arrives.
+    this.turnRunning = false
+    this.idleWarned = false
+    this.selection.setSessionRunning(false)
     this.stopAgentPoll()
     this.clearDirty()
     this.handQuestionBack()
