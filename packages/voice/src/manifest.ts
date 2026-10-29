@@ -68,10 +68,16 @@ export const TTS_ORIGINS = ['https://hf-mirror.com', 'https://huggingface.co'] a
  * and the current one both exist in the wild: the old one inside an already
  * installed folder, the new one on the Hub. Accepting either keeps an existing
  * install valid and lets a fresh download pass.
+ *
+ * The Chinese package was re-exported once more on 2026-10-29 04:01 UTC: same
+ * name, same 75,624,188 bytes, different bytes. A release that only carries the
+ * older digests fails every fresh download with "校验失败" and deletes the
+ * staging tree, so this build has to accept the third one as well.
  */
 export const TTS_ZH_MODEL_SHA256 = [
   '47e82b11454edeeb65adc4e44a24fd54c6715cd4d875cc2a20f75545ecc32d4d',
   'ff1cc7f7abdedc4eeec668a4a0dc2e72a0c314c5637d5fce885345b490bd08de',
+  '78a9fd17e9a6c20198dca4e69d18f941303f8ab39ec61dde04cfc7595262ddfd',
 ] as const
 export const TTS_EN_MODEL_SHA256 = [
   'f8e8bae6f731310a1cda0012871ed5e91b0d19f1e2ceff077f62922bba95e3c1',
