@@ -1,0 +1,12 @@
+# Keep the working tree LF on every platform.
+#
+# Without this file a Windows checkout with the default core.autocrlf=true rewrites every
+# tracked text file to CRLF, so `git status` is noisy, diffs show whole files changed, and
+# line-ending sensitive assertions read the wrong bytes. `text=auto` still lets git detect
+# binaries (dylibs, .node, prebuilt exes, PNGs) and leave them alone.
+* text=auto eol=lf
+
+# The exception: Windows tooling expects CRLF in these when they appear.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
