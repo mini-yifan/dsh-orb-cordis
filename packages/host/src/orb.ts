@@ -2160,6 +2160,8 @@ export class OrbRuntime {
 
     const route = this.store.models().overlay
     let answer = ''
+    /** The last text the panel was actually given, which is what a stop must keep. */
+    let shown = ''
     try {
       // The question and the answer are separate blocks under separate keys. The panel keys
       // its nodes by `key` alone, so sharing one would land the answer's updates on the
@@ -2186,6 +2188,7 @@ export class OrbRuntime {
           // The panel ignores a frame for a transcript it has already replaced, and a
           // superseded translation must not paint over the one that replaced it.
           if (this.translation?.key !== key) return
+          shown = soFar
           this.block(`${key}:say`, 'assistant', soFar, true, 'set', undefined, undefined, {
             local: true,
             response: true,
@@ -2199,18 +2202,19 @@ export class OrbRuntime {
         console.error(`dsh-orb: translate failed: ${message}`)
         this.status(message)
       }
-    } finally {
-      // Only the newest translation owns the shared state. A superseded one settles its own
+    } finally {      // Only the newest translation owns the shared state. A superseded one settles its own
       // blocks and stops there, so it cannot unlock the panel or reopen the microphone while
       // its replacement is still streaming.
       const current = this.translation?.key === key
       if (current) this.translation = undefined
       // Settle whether the answer finished, failed, or was stopped: the panel drops its
-      // busy look either way, and the idle clock starts counting down to the unpin.
+      // busy look either way, and the idle clock starts counting down to the unpin. A stop
+      // leaves `answer` empty because the call threw, so what already reached the panel is
+      // what gets settled — never a blank that would erase the partial translation.
       this.block(
         `${key}:say`,
         'assistant',
-        answer,
+        answer || shown,
         false,
         'set',
         undefined,

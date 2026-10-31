@@ -1977,12 +1977,55 @@ describe('selection translation', () => {
     client.send({ type: 'selection-action', action: 'translate' })
     await waitFor(() => fake.requests.length === 1)
 
+    // Let the first delta through, then stop while the rest is still held.
     client.send({ type: 'stop' })
     release()
 
     const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
     await waitFor(() => lastTurn()?.running === false)
     assert.equal(harness.calls.cancel.length, 0, 'stopping a translation cancels no session')
+    // A stopped answer settles what already reached the panel; it must not be blanked out.
+    const settled = blocksOf(client).filter((block) => block.kind === 'assistant').at(-1)
+    assert.equal(settled?.running, false)
+    assert.equal(settled?.text !== '', true, 'the partial translation survives the stop')
+  })
+
+  it('keeps the streamed text when the transport rejects on abort', async () => {
+    // The real adapter rejects rather than ending cleanly, which leaves `answer` empty; the
+    // panel must still be settled with what it was already shown.
+    const requests: Record<string, unknown>[] = []
+    let emitFirst = () => {}
+    const firstDelta = new Promise<void>((resolve) => { emitFirst = resolve })
+    const service = {
+      stream(options: unknown) {
+        requests.push(options as Record<string, unknown>)
+        const signal = (options as { signal: AbortSignal }).signal
+        return (async function* emit() {
+          await firstDelta
+          yield { type: 'text-delta', index: 0, text: '半句' }
+          await new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => { reject(Object.assign(new Error('aborted'), { name: 'AbortError' })) })
+          })
+        })()
+      },
+    }
+    let feed: ((event: unknown) => void) | undefined
+    const harness = boot({ llm: service, monitorHandlers: (handlers) => { feed = handlers.onEvent } })
+    const client = await connect(harness.runtime)
+    await waitFor(() => feed !== undefined)
+
+    feed({ type: 'selection', text: 'source', pid: 9, x: 1, y: 2 })
+    client.send({ type: 'selection-action', action: 'translate' })
+    await waitFor(() => requests.length === 1)
+    emitFirst()
+    await waitFor(() => blocksOf(client).some((block) => block.text === '半句'))
+    client.send({ type: 'stop' })
+
+    const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
+    await waitFor(() => lastTurn()?.running === false)
+    const settled = blocksOf(client).filter((block) => block.kind === 'assistant').at(-1)
+    assert.equal(settled?.text, '半句', 'the text on screen survives a rejecting transport')
+    assert.equal(settled?.running, false)
   })
 
   it('keeps a superseded translation from unlocking the panel of the one replacing it', async () => {

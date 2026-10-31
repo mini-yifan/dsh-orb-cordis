@@ -529,3 +529,20 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - **语言菜单盖住选区**：`selectionToolbarMenuBounds` 在下方放不下时向上生长，而工具条此时就在选区正下方，菜单正好压在选中的文字上。新增 `barBelowSelection` 参数：工具条在文字下方时，菜单不再向上翻，改为保持窗口锚在工具条上、裁掉菜单的溢出部分——把窗口上移会把工具条本身拖回去盖住文字。
 - **测试**：`runtime.test.ts` 的 "selection translation" 组扩到 4 例（各自的 key、`response` 标记、并发翻译的 `turn` 序列、切会话后旧译文不得落地）；`overlay-geometry.test.ts` 新增"菜单不翻进选区"；`selection.test.ts` 的源码钉桩补三条——剪贴板兜底已删、`leftMouseDragged` 必须放行、AX 矩形不得二次翻转。
 - **验证**：`pnpm typecheck` 通过；`pnpm test` **540 例全过**；dylib 重建，`nm` 确认新符号在两个架构分片里都在。
+
+### 37.2 真机冒烟：译文确实渲染、折叠后仍可见、停止保留半句（同日）
+
+`.zcode/smoke/orb-selection-smoke.cjs` 用真实 Electron 加装配后的 `dist/helper/assets` 跑，按宿主实际发出的帧序灌入 `orb:block` / `orb:turn`，八项全过（SMOKE-PASS）：
+
+- 译文正文渲染成 `你好，世界`；用户气泡是「把下面这段文字翻译成中文：\n\nhello, world」。
+- 两个块各带一枚「未计入对话」徽章（用户气泡右对齐、译文左对齐），切到英文后变成 "Not in the conversation"——徽章跟着界面语言走。
+- 轮次结束后 `.turn` 是折叠态（`data-open` 为假），译文仍然可见（`display` 非 none、高度非零）——`response` 标记有效。
+- 连续两次翻译追加成两条，不覆盖。
+- 中途停止时保留已流出的「一半」，后面跟着面板自己的「已停止」标记。
+
+真机这一步另外抓到两个静态测试没覆盖的东西：
+
+- **中止时译文被抹掉**：`runTranslation` 在中止时是抛错返回，`answer` 保持空字符串，而 `finally` 拿它去落定块，把已经流出的内容清空了。改为记住最后一次推给面板的文本（`shown`），落定时用 `answer || shown`。`runtime.test.ts` 新增一例专门模拟「adapter 收到 abort 后 reject」，断言半句仍在。
+- 冒烟脚手架自身的两处：`smoke-preload.cjs` 的 `onBlock`/`onTurn`/`onReset` 原本是空实现，且漏了 `smoke:appearance` 的转发，看起来像产品缺陷。补齐后徽章才随语言切换。这不是产品问题，记下来免得下次误判。
+
+**验证**：`pnpm typecheck` 通过；`pnpm test` **541 例全过**；`pnpm build` 后真机冒烟 SMOKE-PASS。
