@@ -132,8 +132,14 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
       if (record.type === 'selection') {
         if (typeof record.x !== 'number' || typeof record.y !== 'number') return true
         language = record.language === 'en' ? 'en' : 'zh'
+        // A rectangle anchors the bar clear of the selected text; without one the pointer
+        // point stands in, which is what a platform with no range geometry can offer.
+        const rect = readRect(record.bounds)
+        const anchor = rect === undefined
+          ? { x: record.x, y: record.y }
+          : { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
         const work = workAreaOf({ x: record.x, y: record.y })
-        const bounds = selectionToolbarBounds({ x: record.x, y: record.y }, SELECTION_TOOLBAR_SIZE, work)
+        const bounds = selectionToolbarBounds(anchor, SELECTION_TOOLBAR_SIZE, work)
         barOrigin = { x: bounds.x, y: bounds.y }
         if (!toolbar.isDestroyed()) {
           toolbar.setBounds(bounds)

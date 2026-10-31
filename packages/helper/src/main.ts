@@ -28,6 +28,7 @@ interface Appearance {
 interface ChromeState {
   overlay: MenuSelection
   background: MenuSelection
+  selectionEnabled: boolean
   millifractionEnabled: boolean
   openMain: boolean
   catalog: MenuCatalog
@@ -44,6 +45,8 @@ const noSelection: MenuSelection = { provider: '', model: '' }
 let chrome: ChromeState = {
   overlay: noSelection,
   background: noSelection,
+  // The toolbar ships on; the host's first publish corrects this either way.
+  selectionEnabled: true,
   millifractionEnabled: false,
   openMain: false,
   catalog: { groups: [] },
@@ -638,6 +641,7 @@ function readChrome(value: unknown): ChromeState {
   const record = value as {
     overlay?: MenuSelection
     background?: MenuSelection
+    selectionEnabled?: unknown
     millifractionEnabled?: unknown
     openMain?: unknown
     update?: unknown
@@ -646,6 +650,7 @@ function readChrome(value: unknown): ChromeState {
   return {
     overlay: selectionOr(record.overlay, chrome.overlay),
     background: selectionOr(record.background, chrome.background),
+    selectionEnabled: record.selectionEnabled === true,
     millifractionEnabled: record.millifractionEnabled === true,
     openMain: record.openMain === true,
     update: typeof record.update === 'string' && record.update !== '' ? record.update : null,
@@ -664,6 +669,7 @@ async function showMenu(window: BrowserWindow): Promise<void> {
     openSettings: () => { write({ type: 'open-settings' }) },
     setOverlay: (selection) => { write({ type: 'set-overlay', selection }) },
     setBackground: (selection) => { write({ type: 'set-background', selection }) },
+    setSelection: (enabled) => { write({ type: 'set-selection', enabled }) },
     setMillifraction: (enabled) => { void confirmMillifraction(window, enabled) },
     update: () => { write({ type: 'update' }) },
     disable: () => { write({ type: 'disable' }) },

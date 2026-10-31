@@ -37,6 +37,7 @@ describe('idle unpin', () => {
     const pauses: Partial<IdleSample>[] = [
       { speechOpen: true },
       { agentBusy: true },
+      { translationBusy: true },
       { questionOpen: true },
       { playbackBusy: true },
     ]

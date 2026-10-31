@@ -17,6 +17,7 @@ window.__ModuleLoader__.load({
       runtimeFailedTitle: '悬浮球运行时下载失败',
       runtimeFailed: '下载没有完成，所以球没有出现。点「重新下载」立即接着下——已经下好的部分不会重来，也不用重启应用。',
       permissionFallback: '权限设置无法读取，已改为工作区内修改。',
+      selectionUnavailable: '划词不可用。',
       retry: '重试',
       redownload: '重新下载',
       ball: '启用悬浮球',
@@ -51,6 +52,9 @@ window.__ModuleLoader__.load({
       millifractionTitle: '千分比坐标',
       millifractionDescription: '新建对话使用截图的 0–1000 比例。关闭后使用已附加图片的像素。更改此项会新建对话。',
       millifractionToggle: '使用千分比坐标',
+      selectionTitle: '划词工具栏',
+      selectionDescription: '打开后，在其他应用里选中文字会出现搜索、翻译和发给 AI。',
+      selectionToggle: '启用划词工具栏',
       millifractionConfirm: '新编码只在新对话中生效。当前对话不变，仍可从历史记录打开。取消不写入、不新建。',
       frameTitle: '观察框彩带',
       frameDescription: 'Computer Use 操作某个窗口时，窗口周围显示这条彩带。关闭后不再显示。',
@@ -246,6 +250,7 @@ window.__ModuleLoader__.load({
       runtimeFailedTitle: 'The floating-ball runtime download failed',
       runtimeFailed: 'The download did not finish, so no ball appeared. Download again picks up where it stopped — the bytes already here are kept, and no app restart is needed.',
       permissionFallback: 'The permission file could not be read. Access is now Workspace Write.',
+      selectionUnavailable: 'Selection is unavailable.',
       retry: 'Retry',
       redownload: 'Download again',
       ball: 'Enable the floating ball',
@@ -280,6 +285,9 @@ window.__ModuleLoader__.load({
       millifractionTitle: 'Millifraction coordinates',
       millifractionDescription: 'New chats use 0–1000 fractions of the screenshot. Turn off to use pixels of the attached image. Changing this creates a new conversation.',
       millifractionToggle: 'Use millifraction coordinates',
+      selectionTitle: 'Selection toolbar',
+      selectionDescription: 'When on, selecting text in another app shows Search, Translate, and Send to AI.',
+      selectionToggle: 'Enable the selection toolbar',
       millifractionConfirm: 'The new encoding takes effect in a new conversation. The current conversation stays unchanged and remains in History. Cancel leaves the default and this chat as they are.',
       frameTitle: 'Observation ribbon',
       frameDescription: 'Draws the coloured ribbon around the window Computer Use is working on. Turn it off to hide it.',
@@ -823,6 +831,11 @@ window.__ModuleLoader__.load({
         snap.permissionFallback === true
           ? h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.permissionFallback)
           : null,
+        // A monitor that cannot load (no accessibility grant, no native library) is the reason
+        // the toolbar never appears, so it belongs next to the other startup warnings.
+        snap.supported && snap.selectionAvailable === false
+          ? h('p', { className: 'dsh-orb-set-banner', role: 'status' }, text.selectionUnavailable)
+          : null,
         // Below the runtime wait/failure: an interrupted download is more urgent than release
         // notes. Above the update card because this note is the reason the user came to look.
         whatsNewNotice(text, snap, mutate),
@@ -884,6 +897,15 @@ window.__ModuleLoader__.load({
                 if (enabled === snap.observationFrameEnabled) return
                 void mutate('/.dsh-orb/observation-frame', { enabled })
               }),
+          }),
+          // Sits with the other behaviour toggles: like the ribbon and the coordinate encoder,
+          // this turns something the ball does outside its own panel on or off.
+          card({
+            icon: 'orb',
+            title: text.selectionTitle,
+            description: text.selectionDescription,
+            control: toggleHead(text, snap.selectionEnabled === true, text.selectionToggle, disabled,
+              (enabled) => { void mutate('/.dsh-orb/selection', { enabled }) }),
           }),
           h(IdleCard, { text, snap, mutate }),
           snap.tcc && snap.tcc.applicable ? tccCard(text, snap, disabled, mutate) : null),

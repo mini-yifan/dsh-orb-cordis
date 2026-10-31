@@ -10,8 +10,6 @@ import {
 } from '@dsh-orb/native-selection'
 import { createOverlayGuard } from '../src/overlay-guard.ts'
 import {
-  composeSelectionTranslatePrompt,
-  SELECTION_PREAMBLE,
   SelectionController,
   selectionSearchUrl,
   type SelectionHost,
@@ -100,6 +98,33 @@ describe('selection actions', () => {
     assert.deepEqual(shown, ['same', 'same'])
   })
 
+  it('passes the selection rectangle to the helper and ignores an unusable one', () => {
+    const payloads: { text: string; x: number; y: number; bounds?: unknown }[] = []
+    const controller = new SelectionController(fakeHost({
+      show: (payload) => { payloads.push(payload) },
+    }), () => undefined)
+    controller.onHelperEvent({
+      type: 'selection',
+      text: 'word',
+      pid: 7,
+      x: 40,
+      y: 60,
+      bounds: { x: 12, y: 30, width: 80, height: 18 },
+    })
+    // The rectangle is what the toolbar hangs off, so it must reach the helper intact.
+    assert.deepEqual(payloads[0]?.bounds, { x: 12, y: 30, width: 80, height: 18 })
+    controller.onHelperEvent({
+      type: 'selection',
+      text: 'second',
+      pid: 7,
+      x: 1,
+      y: 2,
+      bounds: { x: 0, y: 0, width: 0, height: 0 },
+    })
+    // A zero-area rectangle is not a rectangle: the pointer stays the anchor.
+    assert.equal(payloads[1]?.bounds, undefined)
+  })
+
   it('hides the toolbar and skips reads while a turn or a click is in progress', () => {
     const shown: string[] = []
     const hidden: string[] = []
@@ -116,14 +141,14 @@ describe('selection actions', () => {
     assert.equal(hidden.length, 2)
   })
 
-  it('opens a Bing URL for search and starts a translate turn with the capture preamble', () => {
+  it('opens a Bing URL for search, translates outside the session, and attaches for the agent', () => {
     assert.equal(selectionSearchUrl('a b'), 'https://www.bing.com/search?q=a%20b')
     const opened: string[] = []
-    const prompted: string[] = []
+    const translated: { text: string; language: string }[] = []
     const attached: string[] = []
     const controller = new SelectionController(fakeHost({
       openExternal: (url) => { opened.push(url) },
-      prompt: (text) => { prompted.push(text) },
+      translate: (text, language) => { translated.push({ text, language }) },
       attach: (text) => { attached.push(text) },
       language: () => 'zh',
     }), () => undefined)
@@ -132,10 +157,9 @@ describe('selection actions', () => {
     controller.translate()
     controller.sendToAgent()
     assert.deepEqual(opened, ['https://www.bing.com/search?q=%E4%BD%A0%E5%A5%BD'])
-    assert.equal(prompted.length, 1)
-    assert.equal(prompted[0]?.startsWith(SELECTION_PREAMBLE), true)
-    assert.match(prompted[0] ?? '', /Translate the following into Chinese:\n\n你好$/)
-    assert.equal(composeSelectionTranslatePrompt('hi', 'en').includes('into English'), true)
+    // Translate hands the raw selection to the host: composing the prompt moved into the
+    // host's own throwaway call, which never reaches the session.
+    assert.deepEqual(translated, [{ text: '你好', language: 'zh' }])
     assert.deepEqual(attached, ['你好'])
   })
 
@@ -369,7 +393,7 @@ function fakeHost(overrides: Partial<SelectionHost> = {}): SelectionHost {
     hide() {},
     pointer() {},
     attach() {},
-    prompt() {},
+    translate() {},
     openExternal() {},
     requestAccessibility: () => false,
     accessibilityTrusted: () => false,

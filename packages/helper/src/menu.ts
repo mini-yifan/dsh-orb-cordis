@@ -6,6 +6,7 @@ export interface ContextMenuState {
   readonly catalog: MenuCatalog
   readonly overlay: MenuSelection
   readonly background: MenuSelection
+  readonly selectionEnabled: boolean
   readonly millifractionEnabled: boolean
   readonly openMain: boolean
   /** Newer published version, or null when the ball has nothing to offer. */
@@ -17,12 +18,13 @@ export interface ContextMenuActions {
   openSettings(): void
   setOverlay(selection: MenuSelection): void
   setBackground(selection: MenuSelection): void
+  setSelection(enabled: boolean): void
   setMillifraction(enabled: boolean): void
   update(): void
   disable(): void
 }
 
-/** Labels and actions for the ball menu. The selection toolbar is disabled (buggy) and has no entry here. */
+/** Labels and actions for the ball menu. The selection checkbox writes the preference; the host starts and stops the monitor. */
 export function contextMenuTemplate(state: ContextMenuState, zh: boolean, actions: ContextMenuActions): MenuItem[] {
   const labels = {
     empty: zh ? '没有可用的模型。' : 'No models available.',
@@ -48,6 +50,12 @@ export function contextMenuTemplate(state: ContextMenuState, zh: boolean, action
     {
       label: zh ? '后台 Agent 模型' : 'Background Agent model',
       submenu: modelMenuItems(state.catalog, state.background, actions.setBackground, labels),
+    },
+    {
+      label: zh ? '划词工具栏' : 'Selection toolbar',
+      type: 'checkbox',
+      checked: state.selectionEnabled,
+      click: (item) => { actions.setSelection(item.checked) },
     },
     {
       label: zh ? '千分比坐标' : 'Millifraction coordinates',

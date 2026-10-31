@@ -115,6 +115,13 @@ export class VoiceController {
   private slowRetry: ReturnType<typeof setTimeout> | undefined
   private pinned = false
   private agentBusy = false
+  /**
+   * A selection-toolbar translation is streaming. It is not an agent turn, so it must not
+   * set {@link agentBusy}: that flag would make the ball look like it owns the session. It
+   * only needs the two side effects a translation wants back — a shut microphone and a
+   * paused idle clock.
+   */
+  private translationBusy = false
   private questionOpen = false
   private speechOpen = false
   private micOpen = false
@@ -226,6 +233,7 @@ export class VoiceController {
       asrModel: presence.asr,
       pinned: this.pinned,
       agentBusy: this.agentBusy,
+      translationBusy: this.translationBusy,
       questionOpen: this.questionOpen,
       bodyBusy: bodyBusy(this.queue),
       interjectEnabled: this.interjectEnabled(),
@@ -270,6 +278,27 @@ export class VoiceController {
     if (!this.live) return
     const step = stepIdle(this.idle, { ...this.sample(), activity: true })
     this.idle = step.clock
+  }
+
+  /**
+   * A selection-toolbar translation started or ended.
+   *
+   * The microphone shuts for its duration even though no agent turn is running. The ball is
+   * pinned while it streams, and a pinned idle ball would otherwise listen for a command.
+   * @param busy - whether a translation is now streaming.
+   */
+  setTranslationBusy(busy: boolean): void {
+    if (this.translationBusy === busy) return
+    this.translationBusy = busy
+    // The idle clock treats this like work: it must not unpin the ball mid-translation.
+    if (busy) {
+      this.idle = createIdle()
+      this.pushListen(false)
+      this.poll()
+      return
+    }
+    this.pushListen(false)
+    this.poll()
   }
 
   beginTurn(): void {
@@ -770,6 +799,7 @@ export class VoiceController {
     const mode = listenMode({
       pinned: this.pinned,
       agentBusy: this.agentBusy,
+      translationBusy: this.translationBusy,
       questionOpen: this.questionOpen,
       bodyBusy: bodyBusy(this.queue),
       localBusy: localBusy(this.queue),
@@ -819,6 +849,7 @@ export class VoiceController {
       now: this.options.now(),
       pinned: this.pinned,
       agentBusy: this.agentBusy,
+      translationBusy: this.translationBusy,
       questionOpen: this.questionOpen,
       playbackBusy: queueView(this.queue).playbackBusy,
       speechOpen: this.speechOpen,

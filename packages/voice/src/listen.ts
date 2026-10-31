@@ -42,6 +42,12 @@ export interface ListenInput {
   readonly pinned: boolean
   /** The floating-ball agent is in a turn. */
   readonly agentBusy: boolean
+  /**
+   * A selection-toolbar translation is streaming into the ball. It reads like an agent turn
+   * but is not one, and it must hold the microphone shut rather than opening it for an
+   * interjection: the user asked for a translation, not for a conversation.
+   */
+  readonly translationBusy?: boolean
   /** A question card is waiting for a click. */
   readonly questionOpen: boolean
   /** queue.bodyBusy */
@@ -65,13 +71,15 @@ export interface ListenInput {
 /**
  * `off`, `wake`, `command`, or `interject`.
  *
- * A question card, a local reply, a stop that has not settled, or a closed
+ * A translation, a question card, a local reply, a stop that has not settled, or a closed
  * microphone wins. A busy agent or agent body audio listens for an interjection
  * when that column is on and, while body audio is playing, echo cancellation is
  * present. Otherwise an unpinned ball listens for the wake word, and a pinned
  * ball listens for a command.
  */
 export function listenMode(input: ListenInput): ListenMode {
+  // A translation closes the ears entirely, before the interjection branch can claim them.
+  if (input.translationBusy === true) return 'off'
   if (input.questionOpen || input.localBusy || input.stopping || !input.micOpen) return 'off'
   if (input.agentBusy || input.bodyBusy) {
     if (!input.interjectEnabled) return 'off'
@@ -89,6 +97,8 @@ export interface DeviceInput extends MicInput {
   readonly pinned: boolean
   /** The floating-ball agent is in a turn. */
   readonly agentBusy: boolean
+  /** A selection-toolbar translation is streaming; it asks for no decoder at all. */
+  readonly translationBusy?: boolean
   /** A question card is waiting for a click. */
   readonly questionOpen: boolean
   /** queue.bodyBusy */
@@ -112,6 +122,9 @@ export interface DeviceInput extends MicInput {
  */
 export function holdsDevice(input: DeviceInput): boolean {
   if (input.questionOpen) return false
+  // A translation wants no decoder, so the device is released and the system microphone
+  // indicator goes out for the few seconds the answer streams in.
+  if (input.translationBusy === true) return false
   const wakeReady = input.wakeEnabled && hasWakeWord(input.wakeWords) && input.wakeModel
   const commandReady = input.commandEnabled && input.asrModel
   if (!wakeReady && !commandReady) return false

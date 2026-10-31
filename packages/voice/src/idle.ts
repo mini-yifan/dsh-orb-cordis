@@ -14,6 +14,8 @@ export interface IdleSample {
   readonly pinned: boolean
   /** Agent turn in progress. */
   readonly agentBusy: boolean
+  /** A selection-toolbar translation is streaming: it holds the ball the same way. */
+  readonly translationBusy?: boolean
   /** Question card waiting for a click. */
   readonly questionOpen: boolean
   /** Speaker or queue still holds a closing line, a prompt, or a local reply. */
@@ -39,6 +41,7 @@ export function createIdle(): IdleClock {
 export function stepIdle(clock: IdleClock, sample: IdleSample): { clock: IdleClock, unpin: boolean } {
   const running = sample.pinned
     && !sample.agentBusy
+    && sample.translationBusy !== true
     && !sample.questionOpen
     && !sample.playbackBusy
     && !sample.speechOpen

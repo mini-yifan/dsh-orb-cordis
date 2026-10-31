@@ -48,6 +48,14 @@ import {
   type SelectionStarter,
 } from './selection.ts'
 import { pinSessionId } from './services.ts'
+import {
+  clipTranslationText,
+  runTranslation,
+  translationUserText,
+  type TranslationLlm,
+  type TranslationRoute,
+  type TranslationTarget,
+} from './translate.ts'
 import { validateWorkspaceSelection } from './workspace.ts'
 import { publishScreenOwner } from './screen-owner.ts'
 import { selectModelKeepDefault } from './select-model.ts'
@@ -266,10 +274,25 @@ interface BlockMessage {
   readonly text: string
   readonly running: boolean
   readonly interrupted?: true
+  /**
+   * Shown in the transcript but never part of the conversation.
+   *
+   * A selection-toolbar translation sets this: the ball renders it like any other exchange,
+   * the panel marks it as outside the conversation, and no request ever carries it.
+   */
+  readonly local?: true
   /** Part of the turn's final answer: the only text a folded turn keeps visible. */
   readonly response?: true
   readonly detail?: ToolDetail
   readonly usage?: BlockUsage
+}
+
+/** Per-block flags the turn machinery does not derive on its own. */
+interface BlockFlags {
+  /** The answer was cut short by the user rather than finished by the model. */
+  readonly interrupted?: boolean
+  /** Display-only content: never sent to the model, never in the session log. */
+  readonly local?: boolean
 }
 
 interface PendingQuestion {
@@ -308,6 +331,15 @@ export class OrbRuntime {
   private pendingPrompt: { text: string; key: string; sessionId?: string } | undefined
   /** Steps whose first tool-call delta already told voice that the preceding text was mid-turn. */
   private readonly toolVoiceSteps = new Set<string>()
+  /**
+   * The translation currently streaming into the ball, if any.
+   *
+   * A translation is shown exactly like an agent turn but is not one: it never touches the
+   * session, so `turnRunning` must stay false while it runs. The ball still gets a
+   * `turn: true` broadcast, and the completion wait that guards real turns does not apply —
+   * nothing is queued behind a translation, so there is nothing to serialise.
+   */
+  private translation: { readonly abort: AbortController; readonly key: string } | undefined
   private child: ChildProcess | undefined
   private binary = ''
   private failures = 0
@@ -414,7 +446,9 @@ export class OrbRuntime {
       hide: () => { this.broadcast({ type: 'selection-hide' }) },
       pointer: (x, y) => { this.broadcast({ type: 'selection-pointer', x, y }) },
       attach: (text) => { this.broadcast({ type: 'selection-attach', text }) },
-      prompt: (text) => { void this.onPrompt(text) },
+      // Translate renders in the ball without reaching the session, so it does not go through
+      // onPrompt: that path writes a user message and starts a real agent turn.
+      translate: (text, language) => { this.run('translate', () => this.startTranslation(text, language)) },
       openExternal: (url) => { openSystemUrl(url) },
       requestAccessibility: () => access.requestAccessibility(),
       accessibilityTrusted: () => access.accessibilityTrusted(),
@@ -1101,6 +1135,10 @@ export class OrbRuntime {
       return
     }
     this.missingLogged = false
+    // A translation owns the transcript while it streams. Session events are left for later
+    // rather than consumed, so a notice that landed mid-translation cannot interleave with
+    // the answer; the watermark does not move, which means nothing is skipped either.
+    if (this.translation !== undefined) return
     let fresh = false
     try {
       for (const event of session.snapshotEvents()) {
@@ -1419,6 +1457,7 @@ export class OrbRuntime {
     mode: 'set' | 'append',
     detail?: Partial<ToolDetail>,
     usage?: BlockUsage,
+    flags?: BlockFlags,
   ): void {
     const previous = this.blocks.get(key)
     const previousText = previous?.text ?? ''
@@ -1440,6 +1479,8 @@ export class OrbRuntime {
     const message: BlockMessage = {
       type: 'block', key, kind, text: next, running,
       ...(this.turnInterrupted && kind === 'assistant' && !running ? { interrupted: true } : {}),
+      ...flags?.interrupted === true ? { interrupted: true as const } : {},
+      ...flags?.local === true ? { local: true as const } : {},
       ...(this.responseKeys.includes(key) ? { response: true as const } : {}),
       ...(merged === undefined ? {} : { detail: merged }),
       ...(mergedUsage === undefined ? {} : { usage: mergedUsage }),
@@ -1465,8 +1506,12 @@ export class OrbRuntime {
       }
     }
     this.blocks.set(key, message)
-    if (!this.replaying && kind === 'assistant') this.voice.noteAssistant(key, next)
-    if (!this.replaying && kind === 'tool' && previous?.kind !== 'tool') this.voice.tool()
+    // A local block is display-only, and that includes the speaker: a translation is read,
+    // not listened to, and reading it aloud would also fight the microphone the user just
+    // had shut for it.
+    const spoken = flags?.local !== true && message.local !== true
+    if (!this.replaying && spoken && kind === 'assistant') this.voice.noteAssistant(key, next)
+    if (!this.replaying && spoken && kind === 'tool' && previous?.kind !== 'tool') this.voice.tool()
     if (running) {
       this.dirty.add(key)
       this.dirtyTimer ??= setTimeout(() => this.flushDirty(), 60)
@@ -1704,6 +1749,7 @@ export class OrbRuntime {
       type: 'chrome',
       overlay: models.overlay,
       background: models.background,
+      selectionEnabled: this.store.selectionEnabled(),
       millifractionEnabled: this.store.millifractionEnabled(),
       openMain: isDesktopHost(),
       update: this.updateAvailable,
@@ -1997,6 +2043,12 @@ export class OrbRuntime {
     }
     if (record.type === 'stop') {
       this.voice.haltSpeech()
+      // A translation looks like a turn on screen, so the stop button reaches it here. It
+      // has no session to cancel: abort the stream and keep what already arrived.
+      if (this.translation !== undefined) {
+        this.stopTranslation()
+        return
+      }
       if (this.turnRunning) {
         const epoch = this.turnEpoch
         this.run('stop', () => this.stopTurn(epoch))
@@ -2074,6 +2126,93 @@ export class OrbRuntime {
     this.store.setPermission(preset)
     if (this.sessionId) pinSessionId(this.ctx, this.sessionId, preset, this.store.workspaceDirectory())
     await this.publishChrome()
+  }
+
+  /**
+   * Translate a selection into the ball's transcript without touching the conversation.
+   *
+   * The ball shows a user bubble and a streaming answer exactly as it would for a real turn,
+   * but `turnRunning` stays false and nothing reaches `sessionController`: the pair is display
+   * only, so no later request ever carries it and the user pays for the words once. Every
+   * block carries `local: true`, which is how the panel marks it as outside the conversation.
+   * @param source - the selected text, already trimmed by the monitor.
+   * @param target - the language the toolbar's dropdown selects.
+   */
+  private async startTranslation(source: string, target: TranslationTarget): Promise<void> {
+    const text = source.trim()
+    if (!text) return
+    const llm = this.ctx.get('llm') as TranslationLlm | undefined
+    if (llm === undefined || typeof llm.stream !== 'function') {
+      this.status('翻译不可用：当前宿主没有模型服务。')
+      return
+    }
+    // A second selection replaces the first: one answer streaming at a time keeps the stop
+    // button unambiguous.
+    this.stopTranslation()
+    const key = `translate:${randomUUID()}`
+    const abort = new AbortController()
+    this.translation = { abort, key }
+
+    const clipped = clipTranslationText(text)
+    const userText = translationUserText(clipped.text, target, clipped.truncated, LOCAL_TRUNCATED_MARK)
+    this.block(key, 'user', userText, false, 'set', undefined, undefined, { local: true })
+    // The answer block exists before the first token so the panel can lay out the turn and
+    // show its busy state; `append` grows it in place as deltas arrive.
+    this.block(key, 'assistant', '', true, 'set', undefined, undefined, { local: true })
+
+    // The ball reads exactly like an agent turn from here: expanded, pinned, stop button up,
+    // composer locked. `turn: true` is the same broadcast a real turn sends.
+    this.broadcast({ type: 'turn', running: true })
+    this.voice.setTranslationBusy(true)
+
+    const route = this.store.models().overlay
+    let answer = ''
+    try {
+      answer = await runTranslation({
+        source: clipped.text,
+        target,
+        route: toTranslationRoute(route),
+        truncatedMark: LOCAL_TRUNCATED_MARK,
+        llm,
+        signal: abort.signal,
+        onText: (soFar) => {
+          // The panel ignores a frame for a transcript it has already replaced.
+          if (this.translation?.key !== key) return
+          this.block(key, 'assistant', soFar, true, 'set', undefined, undefined, { local: true })
+        },
+      })
+    } catch (error) {
+      // An abort is the user's own stop, not a failure: keep whatever was on screen.
+      if (!abort.signal.aborted) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(`dsh-orb: translate failed: ${message}`)
+        this.status(message)
+      }
+    } finally {
+      if (this.translation?.key === key) this.translation = undefined
+      // Settle whether the answer finished, failed, or was stopped: the panel drops its
+      // busy look either way, and the idle clock starts counting down to the unpin.
+      this.block(
+        key,
+        'assistant',
+        answer,
+        false,
+        'set',
+        undefined,
+        undefined,
+        { local: true, ...abort.signal.aborted ? { interrupted: true as const } : {} },
+      )
+      this.broadcast({ type: 'turn', running: false })
+      this.voice.setTranslationBusy(false)
+      // The transcript poll stood aside while the translation held the view. Catch up now
+      // instead of waiting out the next tick.
+      this.drain()
+    }
+  }
+
+  /** Halt the translation in flight, keeping the text already on screen. */
+  private stopTranslation(): void {
+    this.translation?.abort.abort()
   }
 
   private async stopTurn(epoch: number): Promise<void> {
@@ -2841,4 +2980,16 @@ function questionError(message: string, code: string): Error {
 
 function clip(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max)
+}
+
+/**
+ * Appended to a translation's source when the selection was longer than the toolbar's budget.
+ * The panel already has a translated "truncated" string for the composer; this is the host's
+ * own copy so the marker travels with the stored bubble rather than being re-derived.
+ */
+const LOCAL_TRUNCATED_MARK = '\n\n…[已截断]'
+
+/** The ball's model route, narrowed to what one throwaway call needs. */
+function toTranslationRoute(route: { provider: string; model: string }): TranslationRoute {
+  return { provider: route.provider, model: route.model }
 }

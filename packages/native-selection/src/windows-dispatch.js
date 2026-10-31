@@ -56,6 +56,12 @@ export function startWindowsSelectionMonitor(handlers, probe, install) {
   }
   return {
     stop() { unhook() },
+    /**
+     * Windows needs no visible-toolbar gate: dismissing a bar costs nothing there, because
+     * no read is started until a left-click release actually asks for one. The method keeps
+     * the shared monitor interface whole.
+     */
+    setToolbarVisible() {},
     setExcludePids(pids) {
       excluded.clear()
       for (const pid of pids) excluded.add(pid)

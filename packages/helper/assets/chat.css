@@ -1724,3 +1724,24 @@
     transition: none;
   }
 }
+
+/* A block the ball rendered without putting it in the conversation (a selection
+ * translation). The badge states that plainly, because everything else about the
+ * exchange looks exactly like a real one. */
+.local-badge {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 0 8px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: default;
+  user-select: none;
+}
+
+.user-row[data-local] .local-badge {
+  align-self: flex-end;
+}
+

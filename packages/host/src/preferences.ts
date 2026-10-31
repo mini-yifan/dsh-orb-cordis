@@ -516,10 +516,10 @@ function readMillifraction(dir: string): boolean {
 function readSelection(dir: string): { enabled: boolean; language: 'zh' | 'en' } {
   const value = record(readJson(join(dir, SELECTION_FILE)))
   const language = value?.translateTargetLanguage === 'en' ? 'en' : 'zh'
-  // The selection toolbar is disabled everywhere (buggy). The stored flag is
-  // ignored so profiles that enabled it before also stay off; only the
-  // language preference is still honored.
-  return { enabled: false, language }
+  // The toolbar ships on. A profile whose file predates it, or whose file was lost,
+  // starts enabled; only an explicit `false` turns it off.
+  const enabled = typeof value?.enabled === 'boolean' ? value.enabled : true
+  return { enabled, language }
 }
 
 function readBall(dir: string): boolean {

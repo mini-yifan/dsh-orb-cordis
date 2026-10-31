@@ -493,3 +493,23 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - **测试**:host 新增 `whats-new.test.ts` 覆盖平台/版本/已关闭;`preferences.test.ts` 覆盖写盘、重载、坏文件;`routes.test.ts` 覆盖 snapshot、dismiss、重复 GET、非法 id、旧版本。client 的 `section.test.mjs` 覆盖首次渲染、两个关闭入口、请求体、英文文案、Linux/缺失/错位 id 隐藏和样式表。
 - **验证/打包**:`pnpm typecheck` 通过;`whats-new.test.ts` 2 例、`preferences.test.ts` 新增 1 例、`routes.test.ts` 新增 1 例、`section.test.mjs` 新增 1 例全部通过;全量 `pnpm test` 527 例,524 过,3 个失败仍是既有环境问题(`deferred-install` 拉未发布的 `dsh-orb@0.2.0`、macOS `say`、voice EPIPE)。`pnpm build`、`pnpm --filter dsh-orb run pack` 通过;新包 `dsh-orb-0.2.0.tgz` 59,826,634 B,SHA-256 `cdf25778…28f4c72e`,解包确认 `client.js` 含 `dsh-orb-set-whats-new`、`dist/host/index.js` 含 `whats-new/dismiss` 与 `orb-whats-new.json`,版本仍为 0.2.0。本轮未做真机设置页截图,以 host/client 测试与解包校验为准;卡片渲染、两个关闭入口和请求体由 client 测试覆盖。
 - **边界/未做**:按 profile、按版本各一次;0.2.1 若有新公告,改 `WHATS_NEW_VERSION` 和 client 文案 id 即可,0.2.0 的关闭不影响。用户如果从不打开设置页就不会看到——这是「只在设置页显示」的直接结果。不做导航角标、toast、自动打开设置页。
+
+## 37. 划词工具栏重新上线：翻译不走会话 (2026-10-31)
+
+第 8 节把划词整体关掉等修缺陷，第 11 组补了三处底层问题（选区缺坐标、Windows 乱序读取、macOS 双击不读），但入口一直没恢复。这一节是重新放开前按 [11-selection.md](11-selection.md) 重新约定的效果与实现。分支 `feat/selection-toolbar`。
+
+- **开关恢复**：`readSelection` 重新读盘，缺失文件按**开启**处理（`selection-toolbar.json` 只有显式 `false` 才算关）。右键菜单把「划词工具栏」复选框加回来，设置页把卡片和「划词不可用」横幅加回来；卡片放在千分比、观察框之后——它和这两项一样是球在面板外的行为，不属于语音那一组。`publishChrome` 重新带 `selectionEnabled`。
+- **工具条锚在选区，不锚鼠标**：`selectionToolbarBounds` 改为接受一个矩形（`x/y/width/height`，缺 `width`/`height` 即退化成点），**水平居中于选区、垂直挂在选区下沿之外**；下方放不下就翻到上方，两边都不行才夹进工作区。host 的 `onSelection` 把 `event.bounds` 经 `readRect` 校验（四个有限数且面积 ≥ 1）后随 `show` 一起发出去，helper 侧矩形优先、鼠标点兜底。原先双击选词时工具条正好压在刚选的词上。
+- **翻译不再进会话**（本节最大的改动）：旧路径 `translate()` → `host.prompt()` → `sessionController.prompt()` 会写一条用户消息并起一轮真实 agent turn，因此"不进历史"根本无从谈起。新路径是 `selection.ts` 直接把原文交给 `host.translate(text, language)`，由 `orb.ts` 的 `startTranslation` 调 `ctx.get('llm').stream()` 发一个一次性请求：`system` 是翻译指令，`messages` 只有选区和一行要求，**不带任何工具 schema、不带 Computer Use policy、不带截图**。这样也不占会话历史，后续任何一轮都不会重发它。
+- **`local` 标记**：`BlockMessage` 新增 `local?: true`，`block()` 的末尾位置参数从"零散可选参数"收成 `BlockFlags`（`interrupted`、`local`）。带 `local` 的块在 `chat.css` 里带一个「未计入对话」徽章（`syncLocalBadge` 随语言刷新），并且**在 `block()` 里就跳过 `voice.noteAssistant`**——译文不朗读，也不去碰刚被关掉的麦克风。
+- **体感对齐 agent 执行**：翻译开始广播 `turn: true`，球的 `setRunning(true)` 自动完成展开、固定、停止按钮、隐藏 composer、锁住历史/新建、过程区展开；结束广播 `turn: false` 解锁。`turnRunning` 保持 `false`——翻译没有会话可取消，`stopTurn` 的 epoch 语义不适用。
+- **停止**：`record.type === 'stop'` 先看 `this.translation`，有就 `abort()` 那个 `AbortController`（`GenerateOptions` 的 `signal`），**不碰 session**；`runTranslation` 的循环每轮检查 `signal.aborted`，把已到达的译文保留下来并把块落定为 `interrupted`。第二次划词翻译会先 `stopTranslation()`，同一时刻只有一条译文在流。
+- **麦克风真的关掉**：`listenMode` 原先在 `agentBusy` 为真时进 `interject`、pinned 时进 `command`，两种都会开麦。新增 `translationBusy`（`ListenInput`/`DeviceInput`/`IdleSample` 三处），在 `listenMode` 里**第一个判断**就返回 `off`，`holdsDevice` 也返回 `false`，所以系统麦克风指示随之灭掉。`VoiceController.setTranslationBusy` 负责置位并 `pushListen`。
+- **空闲取消固定**：`stepIdle` 把 `translationBusy` 和 `agentBusy` 同等对待，翻译期间不启动 30 秒倒计时；结束后才开始，走用户已能在设置里调的 `idleMs`（5–600 秒，默认 30）。
+- **翻译期间不消费会话事件**：`drain()` 在 `translation !== undefined` 时直接返回且**不推进 watermark**，被推迟的事件在 `finally` 里补一次 `drain()` 按序补上。否则后台 code agent 的完成通知可能在译文流到一半时插进同一个显示框。
+- **剪贴板兜底删掉**：`macos-selection.swift` 的 `readClipboardFallback`/`postCommandC` 整体移除。它在 AX 读不到时盲发一个 ⌘C，恢复剪贴板时**只写回纯文本一种类型**，因此会静默毁掉用户复制的图片和富文本，还会打进密码框和终端。现在读不到就是没有选区，不弹工具条。
+- **键鼠事件门控**：Swift 侧新增 `toolbarVisible` 与 C 入口 `dsh_macos_selection_set_toolbar_visible`，工具条隐藏时只有左右键按下/抬起过管道（那是唯一可能升起工具条的事件），拖拽、滚轮、按键一律不发——原先每敲一个键都写一行 NDJSON 再广播一次 hide。host 的 `SelectionController` 把所有隐藏收进 `hideToolbar()`，显示/隐藏各通知一次 monitor；Windows 的 `setToolbarVisible` 是空实现并注明理由（那边每次读取才起进程，隐藏的条不花代价）。
+- **字符上限**：`TRANSLATION_TEXT_LIMIT = 8000`，与球 composer 的 `PROMPT_LIMIT` 一致；超长截断并在气泡里带 `…[已截断]`。
+- **测试**：新增 `host/tests/translate.test.ts`（提示词、截断、流式增量、超长源文本在到达模型前就被裁、abort 后不再投递）；`runtime.test.ts` 新增 "selection translation" 组两例——完整一轮译文带 `local: true`、`prompt` 调用数为 0、请求里没有 `tools`、`turn: true`→`false`；以及"停止只 abort 译文、`cancel` 调用数为 0"。`selection.test.ts` 的 translate 用例改断新语义并新增矩形透传/零面积矩形被丢弃；`listen.test.ts` 新增"翻译时麦克风完全关闭"（pinned、agentBusy、bodyBusy 三种都压成 `off`）；`idle.test.ts` 把 `translationBusy` 加进暂停项。helper 的菜单与设置页断言从"不得出现划词"改为正向断言。
+- **验证**：`pnpm typecheck` 通过；`pnpm test` **537 例全过**；`pnpm build` 装配通过；`libmacos-selection.dylib` 重建，`nm` 确认 `_dsh_macos_selection_set_toolbar_visible` 在 x86_64 与 arm64 两个分片里都导出。
+- **未做**：没有真机跑工具条的出现位置、翻译的展开/固定/取消固定手感，也没有验证「发给 AI」在 macOS 上抓到的截图是不是原应用（`foreground.restore()` 只在 Windows 生效）。Windows 的读取仍按次起 `powershell.exe`，改常驻进程留待下一步。

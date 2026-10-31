@@ -26,6 +26,13 @@ export interface SelectionMonitor {
   stop(): void
   setExcludePids(pids: readonly number[]): void
   activatePid(pid: number): void
+  /**
+   * Whether the toolbar is on screen.
+   *
+   * While it is hidden the monitor only reports clicks that could raise one; every other
+   * key and pointer event would only dismiss a bar that is not there.
+   */
+  setToolbarVisible(visible: boolean): void
   lastFrontPid(): number | undefined
 }
 

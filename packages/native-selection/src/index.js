@@ -63,6 +63,7 @@ function loadDarwin() {
       stop: lib.func('void dsh_macos_selection_stop()'),
       exclude: lib.func('void dsh_macos_selection_exclude_pids(const char *pids)'),
       activate: lib.func('void dsh_macos_selection_activate_pid(int32 pid)'),
+      setToolbarVisible: lib.func('void dsh_macos_selection_set_toolbar_visible(int32 visible)'),
       lastFront: lib.func('int32 dsh_macos_selection_last_front_pid()'),
       prompt: lib.func('int32 dsh_macos_selection_prompt()'),
       trusted: lib.func('int32 dsh_macos_selection_trusted()'),
@@ -110,6 +111,9 @@ function startDarwin(handlers) {
       },
       activatePid(pid) {
         try { binding.activate(pid) } catch { /* monitor gone */ }
+      },
+      setToolbarVisible(visible) {
+        try { binding.setToolbarVisible(visible ? 1 : 0) } catch { /* monitor gone */ }
       },
       lastFrontPid() {
         try {

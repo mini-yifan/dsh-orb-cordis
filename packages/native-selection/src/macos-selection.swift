@@ -10,9 +10,6 @@ import Foundation
 
 private let minDragPixels: CGFloat = 8
 private let readDelayNs: UInt64 = 100_000_000
-private let clipboardWaitNs: UInt64 = 20_000_000
-private let clipboardDeadlineNs: UInt64 = 150_000_000
-private let vkAnsiC: CGKeyCode = 8
 
 private func selectionEventCallback(
   _ proxy: CGEventTapProxy,
@@ -42,7 +39,11 @@ private final class SelectionMonitor: @unchecked Sendable {
   private var press: CGPoint?
   private var dragged = false
   private var frontPid: pid_t = 0
-  private var postedCommandCRemaining = 0
+  /**
+   * Whether the toolbar is on screen. Nothing but the events that would dismiss it needs to
+   * cross the pipe while it is hidden, which is the overwhelmingly common case.
+   */
+  private var toolbarVisible = false
   private var readFd: Int32 = -1
   private var writeFd: Int32 = -1
   private var thread: Thread?
@@ -123,6 +124,12 @@ private final class SelectionMonitor: @unchecked Sendable {
   func setExcludePids(_ pids: Set<pid_t>) {
     lock.lock()
     excludePids = pids
+    lock.unlock()
+  }
+
+  func setToolbarVisible(_ visible: Bool) {
+    lock.lock()
+    toolbarVisible = visible
     lock.unlock()
   }
 
@@ -212,6 +219,21 @@ private final class SelectionMonitor: @unchecked Sendable {
   fileprivate func handle(type: CGEventType, event: CGEvent) {
     let location = event.location
     let point = (x: Double(location.x), y: Double(location.y))
+    // A hidden toolbar only needs the click that may raise one. Anything else — a drag, a
+    // scroll, a keystroke — can only dismiss a toolbar that does not exist, and sending it
+    // would be one cross-process write per keystroke while the user types.
+    lock.lock()
+    let visible = toolbarVisible
+    lock.unlock()
+    guard visible || type == .leftMouseDown || type == .leftMouseUp else {
+      // Keep the press tracking honest so a drag that starts before the bar appears still
+      // reads as a drag when it finishes.
+      if type == .leftMouseDown {
+        press = location
+        dragged = false
+      }
+      return
+    }
     switch type {
     case .leftMouseDown:
       press = location
@@ -245,7 +267,6 @@ private final class SelectionMonitor: @unchecked Sendable {
       if dx == 0 && dy == 0 { return }
       emit(["type": "dismiss"])
     case .keyDown:
-      if consumePostedCommandC(event) { return }
       emit(["type": "key"])
     default:
       break
@@ -261,22 +282,6 @@ private final class SelectionMonitor: @unchecked Sendable {
     lock.unlock()
   }
 
-  private func notePostedCommandC() {
-    lock.lock()
-    postedCommandCRemaining += 1
-    lock.unlock()
-  }
-
-  private func consumePostedCommandC(_ event: CGEvent) -> Bool {
-    let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-    guard keyCode == vkAnsiC, event.flags.contains(.maskCommand) else { return false }
-    lock.lock()
-    defer { lock.unlock() }
-    guard postedCommandCRemaining > 0 else { return false }
-    postedCommandCRemaining -= 1
-    return true
-  }
-
   private func readSelection(anchor: (x: Double, y: Double)) {
     usleep(useconds_t(readDelayNs / 1_000))
     lock.lock()
@@ -284,27 +289,19 @@ private final class SelectionMonitor: @unchecked Sendable {
     lock.unlock()
     let front = NSWorkspace.shared.frontmostApplication
     if let pid = front?.processIdentifier, excluded.contains(pid) { return }
-    if let ax = readAccessibility() {
-      emitSelection(
-        text: ax.text,
-        bounds: ax.bounds,
-        pid: front?.processIdentifier,
-        bundle: front?.bundleIdentifier,
-        x: anchor.x,
-        y: anchor.y,
-      )
-      return
-    }
-    if let text = readClipboardFallback(onPostCommandC: { self.notePostedCommandC() }) {
-      emitSelection(
-        text: text,
-        bounds: nil,
-        pid: front?.processIdentifier,
-        bundle: front?.bundleIdentifier,
-        x: anchor.x,
-        y: anchor.y,
-      )
-    }
+    // Accessibility only. The old clipboard fallback posted a synthetic ⌘C whenever AX had
+    // nothing to offer and then restored the pasteboard by writing back a single string,
+    // which silently destroyed any image or rich text the user had copied; it also fired
+    // into password fields and terminals. Reporting no selection is the cheaper mistake.
+    guard let ax = readAccessibility() else { return }
+    emitSelection(
+      text: ax.text,
+      bounds: ax.bounds,
+      pid: front?.processIdentifier,
+      bundle: front?.bundleIdentifier,
+      x: anchor.x,
+      y: anchor.y,
+    )
   }
 
   private func emitSelection(
@@ -387,39 +384,6 @@ private func readAccessibility() -> (text: String, bounds: CGRect?)? {
   return (trimmed, bounds)
 }
 
-private func readClipboardFallback(onPostCommandC: () -> Void) -> String? {
-  let pasteboard = NSPasteboard.general
-  let previous = pasteboard.string(forType: .string) ?? ""
-  let before = previous.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard postCommandC(onPost: onPostCommandC) else { return nil }
-  let deadline = DispatchTime.now().uptimeNanoseconds + clipboardDeadlineNs
-  while DispatchTime.now().uptimeNanoseconds < deadline {
-    let current = (pasteboard.string(forType: .string) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    if !current.isEmpty && current != before {
-      pasteboard.clearContents()
-      if !previous.isEmpty { pasteboard.setString(previous, forType: .string) }
-      return current
-    }
-    usleep(useconds_t(clipboardWaitNs / 1_000))
-  }
-  pasteboard.clearContents()
-  if !previous.isEmpty { pasteboard.setString(previous, forType: .string) }
-  return nil
-}
-
-private func postCommandC(onPost: () -> Void) -> Bool {
-  guard let source = CGEventSource(stateID: .hidSystemState) else { return false }
-  guard let down = CGEvent(keyboardEventSource: source, virtualKey: vkAnsiC, keyDown: true),
-    let up = CGEvent(keyboardEventSource: source, virtualKey: vkAnsiC, keyDown: false)
-  else { return false }
-  down.flags = .maskCommand
-  up.flags = .maskCommand
-  onPost()
-  down.post(tap: .cghidEventTap)
-  up.post(tap: .cghidEventTap)
-  return true
-}
-
 private func electronPoint(_ cocoa: NSPoint) -> (x: Double, y: Double) {
   let primary = NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.main
   let maxY = primary?.frame.maxY ?? cocoa.y
@@ -492,6 +456,12 @@ public func dsh_macos_selection_exclude_pids(_ pids: UnsafePointer<CChar>?) {
 @_cdecl("dsh_macos_selection_activate_pid")
 public func dsh_macos_selection_activate_pid(_ pid: Int32) {
   libraryMonitor?.activatePid(pid_t(pid))
+}
+
+/// Tell the monitor whether the toolbar is on screen, so a hidden bar costs no event traffic.
+@_cdecl("dsh_macos_selection_set_toolbar_visible")
+public func dsh_macos_selection_set_toolbar_visible(_ visible: Int32) {
+  libraryMonitor?.setToolbarVisible(visible != 0)
 }
 
 @_cdecl("dsh_macos_selection_last_front_pid")

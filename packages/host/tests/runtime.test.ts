@@ -80,6 +80,13 @@ function boot(extra: {
   millifraction?: boolean
   /** The code-agent plugin's bookmark registry, as `ctx.get('codeAgentRegistry')` returns it. */
   agentRegistry?: unknown
+  /**
+   * The `llm` service a selection translation calls. Absent means the host has no model
+   * service, which is what the other tests want: they never translate.
+   */
+  llm?: { stream(options: unknown): AsyncIterable<unknown> }
+  /** Capture the selection monitor's handlers instead of starting a real hook. */
+  monitorHandlers?: (handlers: { onEvent(event: unknown): void }) => void
 } = {}): Harness {
   const profile = mkdtempSync(join(home, 'profile-'))
   if (extra.millifraction !== undefined) {
@@ -206,6 +213,7 @@ function boot(extra: {
     effect() {},
     get(name: string) {
       if (name === 'sessions') return ctx.sessions
+      if (name === 'llm') return extra.llm
       if (name === 'codeAgentRegistry') return extra.agentRegistry
       if (name === 'permissionPresets') {
         return {
@@ -232,7 +240,15 @@ function boot(extra: {
     },
   }
   const runtime = new OrbRuntime(ctx as unknown as OrbContext, store, {
-    startMonitor: () => undefined,
+    startMonitor: extra.monitorHandlers === undefined ? () => undefined : (handlers) => {
+      extra.monitorHandlers?.(handlers as { onEvent(event: unknown): void })
+      return {
+        stop() {},
+        setExcludePids() {},
+        activatePid() {},
+        lastFrontPid: () => undefined,
+      }
+    },
     ...extra.tcc === undefined ? {} : { tcc: extra.tcc },
   })
   runtime.attachQuestions()
@@ -749,8 +765,10 @@ describe('ball control socket', { concurrency: 1 }, () => {
       assert.equal(harness.store.models().overlay.model, 'deepseek-pro')
 
       const creates = harness.calls.create.length
+      // The toolbar ships on, so `enabled: true` is already the stored state: wait for the
+      // write itself rather than for a value that was true before the message arrived.
       client.send({ type: 'set-selection', enabled: true })
-      await waitFor(() => harness.store.selectionEnabled() === true)
+      await waitFor(() => existsSync(join(harness.profile, 'selection-toolbar.json')))
       const selection = JSON.parse(readFileSync(join(harness.profile, 'selection-toolbar.json'), 'utf8')) as { enabled: boolean }
       assert.equal(selection.enabled, true)
       await new Promise((resolve) => setTimeout(resolve, 30))
@@ -1875,5 +1893,90 @@ describe('blank conversation sweep', () => {
     scheduleBlankSweep({ marker: retry, delayMs: 0, sweep: async () => { attempts += 1; return 0 }, log: () => {} })
     await waitFor(() => attempts === 2 && markerHas(retry, 0))
     assert.match(readFileSync(retry, 'utf8'), /"swept":0/, 'a real "nothing to sweep" pass is recorded')
+  })
+})
+
+describe('selection translation', () => {
+  /** A model that answers with the given deltas and records every request it was given. */
+  function model(deltas: readonly string[], gate?: Promise<void>) {
+    const requests: Record<string, unknown>[] = []
+    return {
+      requests,
+      service: {
+        stream(options: unknown) {
+          requests.push(options as Record<string, unknown>)
+          return (async function* emit() {
+            if (gate !== undefined) await gate
+            for (const text of deltas) yield { type: 'text-delta', index: 0, text }
+            yield { type: 'finish', reason: 'stop' }
+          })()
+        },
+      },
+    }
+  }
+
+  it('renders a translation in the ball without touching the session', async () => {
+    const fake = model(['你好', '，世界'])
+    let feed: ((event: unknown) => void) | undefined
+    const harness = boot({
+      llm: fake.service,
+      // The controller starts only when the helper reports in; capture what it subscribes to.
+      monitorHandlers: (handlers) => { feed = handlers.onEvent },
+    })
+    const client = await connect(harness.runtime)
+    // The monitor starts once a helper connects and the switch is on (it ships on).
+    await waitFor(() => feed !== undefined)
+
+    feed?.({ type: 'selection', text: 'hello, world', pid: 9, x: 10, y: 20 })
+    client.send({ type: 'selection-action', action: 'translate' })
+
+    const blocks = () => client.messages.filter((message) => message.type === 'block') as {
+      key: string
+      kind: string
+      text: string
+      running: boolean
+      local?: true
+    }[]
+    await waitFor(() => blocks().some((block) => block.kind === 'assistant' && block.text.includes('世界')))
+
+    const answered = blocks().filter((block) => block.kind === 'assistant')
+    assert.equal(answered.at(-1)?.text, '你好，世界')
+    // Every block the translation produced carries the local flag: the panel marks it as
+    // outside the conversation, and nothing in it ever reaches the model again.
+    assert.equal(blocks().every((block) => block.local === true), true)
+
+    // Nothing was prompted: the session never saw this exchange.
+    assert.equal(harness.calls.prompt.length, 0)
+    // One throwaway call, routed at the ball's model, with no tool schemas attached.
+    assert.equal(fake.requests.length, 1)
+    assert.equal('tools' in (fake.requests[0] ?? {}), false)
+
+    // The panel is told to look busy, then idle again, exactly like a real turn.
+    const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
+    assert.equal(client.messages.some((message) => message.type === 'turn' && message.running === true), true)
+    await waitFor(() => lastTurn()?.running === false)
+  })
+
+  it('stops a translation on the stop button and keeps what arrived', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const fake = model(['一半', '的译文'], gate)
+    let feed: ((event: unknown) => void) | undefined
+    const harness = boot({ llm: fake.service, monitorHandlers: (handlers) => { feed = handlers.onEvent } })
+    const client = await connect(harness.runtime)
+    await waitFor(() => feed !== undefined)
+
+    feed?.({ type: 'selection', text: 'source', pid: 9, x: 1, y: 2 })
+    client.send({ type: 'selection-action', action: 'translate' })
+    await waitFor(() => fake.requests.length === 1)
+
+    // Stop reaches a translation before it can reach a session — there is no session turn.
+    client.send({ type: 'stop' })
+    release()
+
+    // The panel hears the turn close, so the composer comes back and the idle clock starts.
+    const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
+    await waitFor(() => lastTurn()?.running === false)
+    assert.equal(harness.calls.cancel.length, 0, 'stopping a translation cancels no session')
   })
 })

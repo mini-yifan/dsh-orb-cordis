@@ -30,18 +30,48 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), Math.max(min, max))
 }
 
-/** Toolbar sits just below the mouse-up point and stays inside the work area. */
+/**
+ * Where the toolbar lands, given the selection rectangle (or a bare point when the
+ * platform could not report one). It hangs clear of the selection instead of covering it:
+ * below the rectangle when there is room, above it otherwise.
+ */
+export interface ToolbarAnchor {
+  readonly x: number
+  readonly y: number
+  /** Selection width. Absent means `x` is a point, not the left edge of a rectangle. */
+  readonly width?: number
+  /** Selection height. Absent means `y` is a point, not the top edge of a rectangle. */
+  readonly height?: number
+}
+
+/** Toolbar sits clear of the selection rectangle and stays inside the work area. */
 export function selectionToolbarBounds(
-  anchor: { readonly x: number; readonly y: number },
+  anchor: ToolbarAnchor,
   size: { readonly width: number; readonly height: number } = SELECTION_TOOLBAR_SIZE,
   workArea: OverlayRect,
 ): OverlayRect {
   const gap = 8
+  const height = Math.max(1, Math.round(size.height))
+  const width = Math.max(1, Math.round(size.width))
+  // A rectangle anchors on its own edges; a bare point is both edges at once.
+  const left = anchor.x
+  const top = anchor.y
+  const right = anchor.x + Math.max(0, anchor.width ?? 0)
+  const bottom = anchor.y + Math.max(0, anchor.height ?? 0)
+  const centre = (left + right) / 2
+
+  const below = bottom + gap
+  const above = top - gap - height
+  const fitsBelow = below + height <= workArea.y + workArea.height
+  const fitsAbove = above >= workArea.y
+  // Prefer below (the reading direction), fall back to above, and only then overlap.
+  const y = fitsBelow ? below : fitsAbove ? above : clamp(below, workArea.y, workArea.y + workArea.height - height)
+
   return {
-    x: clamp(anchor.x, workArea.x, workArea.x + workArea.width - size.width),
-    y: clamp(anchor.y + gap, workArea.y, workArea.y + workArea.height - size.height),
-    width: size.width,
-    height: size.height,
+    x: clamp(centre - width / 2, workArea.x, workArea.x + workArea.width - width),
+    y,
+    width,
+    height,
   }
 }
 

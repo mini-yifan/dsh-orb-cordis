@@ -40,7 +40,7 @@ function loadSection(hooks = {}) {
     qwenVoices: qwenVoiceViews(),
     overlay: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
     background: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
-    selectionEnabled: false,
+    selectionEnabled: true,
     millifractionEnabled: false,
     observationFrameEnabled: true,
     voice: { voiceEnabled: true },
@@ -467,9 +467,11 @@ describe('settings section', () => {
     // \r? so a Windows checkout of the patch (CRLF) matches the same way.
     assert.match(patch, /id: ui-settings-orb\r?\n\s+name: dsh-orb\r?\n/)
     const client = readFileSync(join(here, '../client.js'), 'utf8')
-    // The selection toolbar is disabled (buggy): no settings entry point may ship.
-    assert.equal(client.includes('划词'), false)
-    assert.equal(client.includes('selectionToggle'), false)
+    // The selection toolbar ships with an entry point in both directions: its card and the
+    // unavailable banner that explains a monitor which never loaded.
+    assert.match(client, /selectionToggle/)
+    assert.match(client, /\/\.dsh-orb\/selection/)
+    assert.match(client, /selectionUnavailable/)
     assert.equal(client.includes('authenticatedUrl'), false)
   })
 
@@ -1119,7 +1121,8 @@ describe('settings section', () => {
       .map((node) => find(node, (child) => child.type === 'h3')[0]?.children?.[0])
     assert.deepEqual(titles.slice(0, 5), ['启用悬浮球', '悬浮球头像', '悬浮球 Agent', '后台 Agent', '语音'])
     assert.equal(titles[5], '千分比坐标', 'coordinate and frame cards stay below the voice panel')
-    assert.equal(titles[7], '空闲后取消固定', 'idle unpin lives outside the voice card')
+    assert.equal(titles[7], '划词工具栏', 'the selection toolbar sits with the other behaviour toggles')
+    assert.equal(titles[8], '空闲后取消固定', 'idle unpin lives outside the voice card')
   })
 
   it('starts with voice collapsed and expands it from the master switch', async () => {

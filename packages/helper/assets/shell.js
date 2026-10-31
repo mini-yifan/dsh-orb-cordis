@@ -80,6 +80,8 @@ const zh = {
   agentOpen: '点击在主窗口打开',
   agentDismiss: '移除这张书签（不打开主窗口）',
   noticeTitle: '后台任务报告',
+  localBadge: '未计入对话',
+  localBadgeTitle: '这段内容只在屏幕上，不进入对话历史，模型也看不到',
 }
 const en = {
   title: 'Desktop agent',
@@ -136,6 +138,8 @@ const en = {
   agentOpen: 'Click to open in the main window',
   agentDismiss: 'Remove this bookmark without opening the main window',
   noticeTitle: 'Background task report',
+  localBadge: 'Not in the conversation',
+  localBadgeTitle: 'This stays on screen only. It never enters the chat history, and the model cannot see it.',
 }
 
 const PROMPT_LIMIT = 8000
@@ -389,6 +393,9 @@ function main() {
     for (const [key, node] of blocks) {
       const block = blockData.get(key)
       if (block === undefined) continue
+      // The badge is the one label a user block carries, so it refreshes before the early
+      // return that skips user rows.
+      syncLocalBadge(node, block)
       if (block.kind === 'user') continue
       if (block.kind === 'notice') {
         const title = node.querySelector('.think-title')
@@ -1718,6 +1725,29 @@ function main() {
     return String(text).split('\n').find((line) => line.trim() !== '') ?? ''
   }
 
+  /**
+   * Mark a block as display-only.
+   *
+   * A translation is shown like any other exchange but is not in the conversation, so the
+   * reader needs one visible cue that the model cannot see it. The badge lives inside the
+   * block, which keeps it moving with the block through folding and re-renders.
+   */
+  function syncLocalBadge(node, block) {
+    const wanted = block.local === true
+    let badge = node.querySelector('.local-badge')
+    if (!wanted) {
+      badge?.remove()
+      return
+    }
+    if (badge === null) {
+      badge = document.createElement('span')
+      badge.className = 'local-badge'
+      node.append(badge)
+    }
+    badge.textContent = messages.localBadge
+    badge.title = messages.localBadgeTitle
+  }
+
   function upsertBlock(block) {
     if (typeof block?.key !== 'string' || typeof block.text !== 'string') return
     blockData.set(block.key, block)
@@ -1776,6 +1806,10 @@ function main() {
       placeBlock(node, block.kind)
     }
     if (block.kind !== 'tool') node.dataset.state = block.running ? 'running' : 'ok'
+    // A local block is display-only: a translation the ball rendered without putting it
+    // in the conversation. The badge is what tells the reader the model never saw it.
+    node.toggleAttribute('data-local', block.local === true)
+    syncLocalBadge(node, block)
     // A folded turn keeps only the final answer visible (Harness turn-process fold).
     node.toggleAttribute('data-response', block.response === true)
     if (block.kind === 'user') {

@@ -66,6 +66,21 @@ describe('listen mode', () => {
     assert.equal(transcribing('off'), false)
   })
 
+  it('shuts the microphone entirely while a translation streams', () => {
+    // The ball is pinned for a translation, which would otherwise read as `command`, and an
+    // agent-busy flag would read as `interject`: both keep the microphone open. A translation
+    // wants neither, so it must win before either branch is reached.
+    assert.equal(mode({ pinned: true, translationBusy: true }), 'off')
+    assert.equal(mode({ pinned: false, translationBusy: true }), 'off')
+    assert.equal(mode({ agentBusy: true, translationBusy: true }), 'off')
+    assert.equal(mode({ pinned: true, bodyBusy: true, translationBusy: true }), 'off')
+    // And the device is released, so macOS drops its microphone indicator for the duration.
+    assert.equal(holdsDevice({ ...device, pinned: true, translationBusy: true }), false)
+    assert.equal(holdsDevice({ ...device, agentBusy: true, translationBusy: true }), false)
+    // Once it ends the ordinary rules apply again.
+    assert.equal(mode({ pinned: true, translationBusy: false }), 'command')
+  })
+
   it('drops only the column whose switch is off', () => {
     assert.equal(mode({ pinned: false, wakeEnabled: false }), 'off')
     assert.equal(mode({ pinned: true, wakeEnabled: false }), 'command', 'wake off still allows commands once pinned')

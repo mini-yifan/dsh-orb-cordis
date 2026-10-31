@@ -111,12 +111,13 @@ describe('ball menu', () => {
     }), [{ label: '没有可用的模型。', enabled: false }])
   })
 
-  it('lists open, settings, both models, coordinates, update, and disable', () => {
+  it('lists open, settings, both models, the selection switch, coordinates, update, and disable', () => {
     const actions: string[] = []
     const template = contextMenuTemplate({
       catalog,
       overlay: { provider: 'deepseek-official', model: 'plain' },
       background: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
+      selectionEnabled: true,
       millifractionEnabled: false,
       openMain: true,
       update: '0.2.0',
@@ -125,6 +126,7 @@ describe('ball menu', () => {
       openSettings: () => { actions.push('settings') },
       setOverlay: () => { actions.push('overlay') },
       setBackground: () => { actions.push('background') },
+      setSelection: (enabled) => { actions.push(`selection:${enabled}`) },
       setMillifraction: (enabled) => { actions.push(`fraction:${enabled}`) },
       update: () => { actions.push('update') },
       disable: () => { actions.push('disable') },
@@ -134,25 +136,31 @@ describe('ball menu', () => {
       '打开悬浮球设置',
       '悬浮球 Agent 模型',
       '后台 Agent 模型',
+      '划词工具栏',
       '千分比坐标',
       '更新到 0.2.0',
       'separator',
       '停用悬浮球',
     ])
+    const selection = template[4]
+    assert.equal(selection?.type, 'checkbox')
+    assert.equal(selection?.checked, true, 'the checkbox mirrors the stored switch')
     assert.equal(template[0]?.enabled, true)
     template[0]?.click?.({ checked: false })
     template[1]?.click?.({ checked: false })
-    template[4]?.click?.({ checked: true })
-    template[5]?.click?.({ checked: false })
-    template[7]?.click?.({ checked: false })
+    selection?.click?.({ checked: false })
+    template[5]?.click?.({ checked: true })
+    template[6]?.click?.({ checked: false })
+    template[8]?.click?.({ checked: false })
     const background = template[3]?.submenu?.find((item) => item.label === '✓ Flash')
     assert.equal(background?.submenu?.find((item) => item.label === 'Max')?.checked, true)
     background?.submenu?.[0]?.click?.({ checked: true })
-    assert.deepEqual(actions, ['open', 'settings', 'fraction:true', 'update', 'disable', 'background'])
+    assert.deepEqual(actions, ['open', 'settings', 'selection:false', 'fraction:true', 'update', 'disable', 'background'])
     const english = contextMenuTemplate({
       catalog: { groups: [] },
       overlay: { provider: 'deepseek-official', model: 'plain' },
       background: { provider: 'deepseek-official', model: 'plain' },
+      selectionEnabled: false,
       millifractionEnabled: false,
       openMain: false,
       update: null,
@@ -161,6 +169,7 @@ describe('ball menu', () => {
       openSettings() {},
       setOverlay() {},
       setBackground() {},
+      setSelection() {},
       setMillifraction() {},
       update() {},
       disable() {},
@@ -170,6 +179,7 @@ describe('ball menu', () => {
     // The settings panel is a main-window surface: no main window, no row to click.
     assert.equal(english[1]?.label, 'Open floating-ball settings')
     assert.equal(english[1]?.enabled, false)
+    assert.equal(english.find((item) => item.label === 'Selection toolbar')?.checked, false)
     // Without a version waiting there is no row to click, and no gap either.
     assert.equal(english.some((item) => String(item.label ?? '').startsWith('Update to')), false)
     assert.deepEqual(english.map((item) => item.label ?? item.type).slice(-2), ['separator', 'Disable floating ball'])

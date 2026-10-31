@@ -15,13 +15,33 @@ export const SELECTION_DEDUPE_MS = 3_000
 export const SELECTION_RESTORE_FRONT_MS = 80
 export const SELECTION_ACCESSIBILITY_POLL_MS = 1_000
 
-export const SELECTION_PREAMBLE =
-  'Desktop selection. Answer in this chat only. Do not call GUI tools or code_agent.'
+/** The selection rectangle in screen coordinates, as the toolbar positions itself against. */
+export interface SelectionRect {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+/** A rectangle is usable only when every field is a finite number and it has an area. */
+export function readRect(value: unknown): SelectionRect | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as { x?: unknown; y?: unknown; width?: unknown; height?: unknown }
+  if (typeof record.x !== 'number' || typeof record.y !== 'number'
+    || typeof record.width !== 'number' || typeof record.height !== 'number') {
+    return undefined
+  }
+  if (![record.x, record.y, record.width, record.height].every(Number.isFinite)) return undefined
+  if (record.width < 1 || record.height < 1) return undefined
+  return { x: record.x, y: record.y, width: record.width, height: record.height }
+}
 
 export interface SelectionMonitorHandle {
   stop(): void
   setExcludePids(pids: readonly number[]): void
   activatePid(pid: number): void
+  /** Told when the toolbar appears and disappears, so a hidden bar costs no event traffic. */
+  setToolbarVisible?(visible: boolean): void
   lastFrontPid(): number | undefined
 }
 
@@ -37,11 +57,23 @@ export interface SelectionHost {
   setLanguage(language: 'zh' | 'en'): void
   helperConnected(): boolean
   helperPid(): number | undefined
-  show(payload: { text: string; x: number; y: number; language: 'zh' | 'en' }): void
+  show(payload: {
+    text: string
+    x: number
+    y: number
+    bounds?: SelectionRect
+    language: 'zh' | 'en'
+  }): void
   hide(): void
   pointer(x: number, y: number): void
   attach(text: string): void
-  prompt(text: string): void
+  /**
+   * Show a translation of `text` in the ball.
+   *
+   * Deliberately not a prompt: a translation is displayed without entering the
+   * conversation, so the host renders it itself instead of starting an agent turn.
+   */
+  translate(text: string, language: 'zh' | 'en'): void
   openExternal(url: string): void
   requestAccessibility(): boolean
   accessibilityTrusted(): boolean
@@ -50,11 +82,6 @@ export interface SelectionHost {
 
 export function selectionSearchUrl(text: string): string {
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`
-}
-
-export function composeSelectionTranslatePrompt(text: string, language: 'zh' | 'en'): string {
-  const target = language === 'en' ? 'English' : 'Chinese'
-  return `${SELECTION_PREAMBLE}\n\nTranslate the following into ${target}:\n\n${text}`
 }
 
 /** Open a URL with the system handler. Search uses this and does not expand the ball. */
@@ -72,6 +99,7 @@ export class SelectionController {
   private monitor: SelectionMonitorHandle | undefined
   private lastText = ''
   private lastAnchor = { x: 0, y: 0 }
+  private lastRect: SelectionRect | undefined
   private lastDedupe: { key: string; at: number } | undefined
   private lastPid: number | undefined
   private restoreTimer: ReturnType<typeof setTimeout> | undefined
@@ -107,33 +135,41 @@ export class SelectionController {
     this.host.setLanguage(language)
   }
 
+  /**
+   * Hide the toolbar and tell the monitor, so it stops reporting the events that would only
+   * dismiss a bar that is no longer there. Every dismissal path goes through here.
+   */
+  private hideToolbar(): void {
+    this.host.hide()
+    this.monitor?.setToolbarVisible?.(false)
+  }
+
   setSessionRunning(running: boolean): void {
     this.sessionRunning = running
-    if (running) this.host.hide()
+    if (running) this.hideToolbar()
   }
 
   setHidInput(active: boolean): void {
     this.hidInput = active
-    if (active) this.host.hide()
+    if (active) this.hideToolbar()
   }
 
   search(): void {
     if (this.lastText === '') return
-    this.host.hide()
+    this.hideToolbar()
     this.host.openExternal(selectionSearchUrl(this.lastText))
   }
 
   translate(): void {
     if (this.lastText === '') return
-    const text = composeSelectionTranslatePrompt(this.lastText, this.host.language())
-    this.host.hide()
-    this.host.prompt(text)
+    this.hideToolbar()
+    this.host.translate(this.lastText, this.host.language())
     this.scheduleRestoreFrontApp()
   }
 
   sendToAgent(): void {
     if (this.lastText === '') return
-    this.host.hide()
+    this.hideToolbar()
     this.host.attach(this.lastText)
   }
 
@@ -154,7 +190,7 @@ export class SelectionController {
         return
       case 'key':
       case 'dismiss':
-        this.host.hide()
+        this.hideToolbar()
         return
       case 'mouse-up':
         this.lastAnchor = { x: event.x, y: event.y }
@@ -200,12 +236,18 @@ export class SelectionController {
       && Number.isFinite(event.x) && Number.isFinite(event.y)) {
       this.lastAnchor = { x: event.x, y: event.y }
     }
+    // The rectangle is what the toolbar hangs off; a platform that reports one gets the
+    // bar clear of the text, and one that does not falls back to the pointer.
+    this.lastRect = readRect(event.bounds)
     this.host.show({
       text: event.text,
       x: this.lastAnchor.x,
       y: this.lastAnchor.y,
+      ...this.lastRect === undefined ? {} : { bounds: this.lastRect },
       language: this.host.language(),
     })
+    // From here on the monitor must report keys and scrolls again: each one dismisses the bar.
+    this.monitor?.setToolbarVisible?.(true)
   }
 
   private scheduleRestoreFrontApp(): void {
