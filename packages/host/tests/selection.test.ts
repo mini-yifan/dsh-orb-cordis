@@ -81,8 +81,21 @@ describe('selection lines', () => {
     // frontmost application for its own focused element, and keep the system-wide element only
     // as a fallback. A short messaging timeout keeps a hung app from stalling later reads.
     assert.match(swift, /AXUIElementCreateApplication/)
-    assert.match(swift, /readAccessibility\(frontPid: front\?\.processIdentifier\)/)
+    assert.match(swift, /readAccessibility\(frontPid: pid\)/)
     assert.match(swift, /AXUIElementSetMessagingTimeout/)
+    // `NSWorkspace.frontmostApplication` answers `com.deepseek.dsh` — the app itself — from a
+    // Host that runs as its child, so every read asked the wrong application and found no
+    // selection. The app is taken from the window under the release, and our own app is never
+    // read: a selection inside the main window still raises no toolbar.
+    assert.match(swift, /CGWindowListCopyWindowInfo/)
+    assert.match(swift, /appUnderPoint\(/)
+    assert.match(swift, /Bundle\.main\.bundleIdentifier/)
+    // Chromium apps (Chrome, VS Code, Slack) keep their accessibility tree off until a client
+    // asks, so a first selection in a browser reads nothing. Ask on the press and again after
+    // a failed read; the tree comes up about two seconds later.
+    assert.match(swift, /AXEnhancedUserInterface/)
+    assert.match(swift, /AXManualAccessibility/)
+    assert.match(swift, /requestAccessibility\(pid: pid\)/)
     // Casts into AXValue are type-checked first: a malformed attribute value must not crash.
     assert.equal(swift.includes('range as! AXValue'), false)
     assert.match(worker, /GetMessageW/)

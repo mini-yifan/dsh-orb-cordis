@@ -602,3 +602,24 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - **测试**：`selection.test.ts` 的源码钉桩补四条——走应用级元素、system-wide 只作兜底、有消息超时、不裸转 `AXValue`；该文件 17 例全过。
 - **验证**：`pnpm typecheck` 通过；`libmacos-selection.dylib` 重建（universal，含 `dsh_macos_selection_set_toolbar_visible`）；装进 profile 后用一个独立进程加载装机产物起监听、在 TextEdit 里双击选词，收到 `{"type":"selection","text":"The","bounds":{"x":478,"y":266,"width":20.7,"height":14},"pid":…,"bundle":"com.apple.TextEdit"}`——修复前同一套探针只收到 `mouse-down`/`mouse-up`。
 - **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-152010-ax-focus/`，`rsync -a --delete` 同步 `dist/` 进 `~/.dsh/profiles/desktop/node_modules/dsh-orb/`。dylib 由 Host 进程在启动时加载，**需重启应用**生效。
+
+## 40. 划词仍然不弹：Host 里 NSWorkspace 把「前台应用」报成它自己 (2026-10-31)
+
+第 39 节装机、重启后仍然一个按钮都没有。临时追踪（Host 侧写 `/tmp/dsh-orb-selection.log`，原生侧发 `debug` 事件）一次就抓到了：
+
+```
+monitor tap-ready {"trusted":true}
+monitor up {"click":2,"dragged":false,"shouldRead":true}
+monitor read-start {"front":2315,"bundle":"com.deepseek.dsh","excluded":false}
+monitor read-failed
+```
+
+`front` 就是 DeepSeek Harness 自己（pid 2315，Electron 主进程），而用户当时明明在浏览器里拖选。于是 AX 读的是本应用的焦点元素，当然没有选区——工具条不出现，且中间所有环节（tap、权限、广播、helper）都是好的。用 shell 起同样的二进制时 `NSWorkspace.frontmostApplication` 又能正确返回 Chrome / TextEdit，所以这个错只在「Host 作为 App 的子进程」这一身份下出现。
+
+- **改法：不再问 NSWorkspace。** 新增 `appUnderPoint(_:excluding:)`——用 `CGWindowListCopyWindowInfo` 的前后序（和用户看到的叠放顺序一致），取鼠标抬起点所在的 **layer 0** 窗口的 owner pid；按 `excludePids` 跳过 Host 与 helper，再用 `Bundle.main.bundleIdentifier` 跳过本应用（保持「在主窗口里划词不弹」的语义）。菜单栏、Dock 等非 0 层自然被排除。NSWorkspace 只在释放点不落在任何窗口时兜底（例如全屏浮层在拖拽中被关掉），且同样拒绝本应用。
+- **Chromium 类应用另加预热**：Chrome / VS Code / Slack 在有客户端提问前不建 AX 树，`kAXFocusedUIElement` 返回 `kAXErrorNoValue`（-25212）；设一次 `AXEnhancedUserInterface`（返回 -25208 NotImplemented 也算问到）**约两秒后**树才起来。所以按下时就异步请求一次，读失败后再请求一次（同时设 `AXManualAccessibility` 给 Electron 类），每个进程只请求一次；冷启动后的第一次划词可能落空，两秒后再划就正常。
+- **Chrome 的矩形是零**：`kAXBoundsForRange` 在 Chrome 上返回 `{x:0,y:0,w:0,h:0}`，Host 的 `readRect` 要求面积 ≥ 1，会丢弃它并按设计退回鼠标点锚定——工具条贴指针而不是贴选区，这是预期的降级，不是缺陷。
+- **测试**：`selection.test.ts` 的源码钉桩补五条——走窗口表、只认 layer 0、跳过本应用、`readAccessibility(frontPid: pid)`、两处 AX 预热属性；该文件 17 例全过，`pnpm typecheck` 通过。
+- **验证**：独立进程加载装机产物后真机拖选，TextEdit 收到 `pid=89093 bundle=com.apple.TextEdit`，Chrome 收到 `pid=6862 bundle=com.google.Chrome`（文本完整）；修复前同一套探针在 Host 里是 `front=com.deepseek.dsh` → 空。
+- **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-15*-selection-final/`，`rsync -a --delete` 同步 `dist/`。dylib 由 Host 启动时加载，**需重启应用**生效。
+- **未做**：没有在 Windows 上复验（那边走 PowerShell/UIA，与这条无关）；Chromium 预热的两秒等待没有做成进度提示。

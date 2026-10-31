@@ -44,6 +44,8 @@ private final class SelectionMonitor: @unchecked Sendable {
    * cross the pipe while it is hidden, which is the overwhelmingly common case.
    */
   private var toolbarVisible = false
+  /** Processes whose accessibility tree has already been asked to turn on. */
+  private var accessibilityAsked: Set<pid_t> = []
   private var readFd: Int32 = -1
   private var writeFd: Int32 = -1
   private var thread: Thread?
@@ -110,6 +112,9 @@ private final class SelectionMonitor: @unchecked Sendable {
     lock.unlock()
     press = nil
     dragged = false
+    lock.lock()
+    accessibilityAsked.removeAll()
+    lock.unlock()
   }
 
   func lastFrontPid() -> pid_t {
@@ -236,6 +241,12 @@ private final class SelectionMonitor: @unchecked Sendable {
       press = location
       dragged = false
       emit(["type": "mouse-down", "x": point.x, "y": point.y])
+      // Chromium apps build no accessibility tree until a client asks for one, and the ask
+      // takes about two seconds to take effect. Start it as the press lands, off the tap
+      // thread, so the next selection in that app reads normally.
+      DispatchQueue.global(qos: .utility).async { [weak self] in
+        self?.requestAccessibilityUnder(point: CGPoint(x: point.x, y: point.y))
+      }
     case .leftMouseDragged:
       if let origin = press {
         let dx = location.x - origin.x
@@ -287,21 +298,101 @@ private final class SelectionMonitor: @unchecked Sendable {
     lock.lock()
     let excluded = excludePids
     lock.unlock()
-    let front = NSWorkspace.shared.frontmostApplication
-    if let pid = front?.processIdentifier, excluded.contains(pid) { return }
+    // The window under the release is the application the user selected in. AppKit's
+    // "frontmost" is not usable from this process: the Host runs as a child of the app, and
+    // `NSWorkspace.frontmostApplication` answers `com.deepseek.dsh` — the app itself — even
+    // while the browser is in front, so every read targeted the wrong application, found no
+    // selection, and the toolbar never appeared.
+    var pid = appUnderPoint(CGPoint(x: anchor.x, y: anchor.y), excluding: excluded)
+    if pid == nil, let front = NSWorkspace.shared.frontmostApplication,
+      !excluded.contains(front.processIdentifier),
+      front.bundleIdentifier != Bundle.main.bundleIdentifier {
+      // A release outside every app window (a full-screen overlay closed mid-drag, say).
+      // This fallback is only for that case and never picks our own application.
+      pid = front.processIdentifier
+    }
+    guard let pid else { return }
+    let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
     // Accessibility only. The old clipboard fallback posted a synthetic ⌘C whenever AX had
     // nothing to offer and then restored the pasteboard by writing back a single string,
     // which silently destroyed any image or rich text the user had copied; it also fired
     // into password fields and terminals. Reporting no selection is the cheaper mistake.
-    guard let ax = readAccessibility(frontPid: front?.processIdentifier) else { return }
+    guard let ax = readAccessibility(frontPid: pid) else {
+      // Nothing came back; if this is a Chromium app whose tree is still off, ask now so the
+      // next selection in it works.
+      requestAccessibility(pid: pid)
+      return
+    }
     emitSelection(
       text: ax.text,
       bounds: ax.bounds,
-      pid: front?.processIdentifier,
-      bundle: front?.bundleIdentifier,
+      pid: pid,
+      bundle: bundle,
       x: anchor.x,
       y: anchor.y,
     )
+  }
+
+  /**
+   * The application that owns the frontmost normal window containing `point`.
+   *
+   * The WindowServer's list is ordered front to back — the stacking order the user actually
+   * sees — and layer 0 is the app windows, so the menu bar, the Dock, and our own
+   * always-on-top chrome are all out of the way. The app itself and the helper are dropped
+   * by `excluding` plus the bundle comparison, which keeps a selection inside the main
+   * window from raising a toolbar.
+   */
+  /**
+   * Ask the app under `point` to turn its accessibility tree on.
+   *
+   * Chromium (Chrome, VS Code, Slack) keeps `kAXFocusedUIElement` at kAXErrorNoValue until a
+   * client asks: setting `AXEnhancedUserInterface` gets kAXErrorNotImplemented back and the
+   * tree comes up about two seconds later. Electron apps take `AXManualAccessibility`, so
+   * both are set — an unsupported one is ignored. Once per process is enough.
+   */
+  private func requestAccessibilityUnder(point: CGPoint) {
+    lock.lock()
+    let excluded = excludePids
+    lock.unlock()
+    if let pid = appUnderPoint(point, excluding: excluded) { requestAccessibility(pid: pid) }
+  }
+
+  private func requestAccessibility(pid: pid_t) {
+    lock.lock()
+    let first = accessibilityAsked.insert(pid).inserted
+    lock.unlock()
+    if !first { return }
+    let application = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(application, 0.5)
+    _ = AXUIElementSetAttributeValue(
+      application,
+      "AXEnhancedUserInterface" as CFString,
+      kCFBooleanTrue,
+    )
+    _ = AXUIElementSetAttributeValue(
+      application,
+      "AXManualAccessibility" as CFString,
+      kCFBooleanTrue,
+    )
+  }
+
+  private func appUnderPoint(_ point: CGPoint, excluding: Set<pid_t>) -> pid_t? {
+    guard let windows = CGWindowListCopyWindowInfo(
+      [.optionOnScreenOnly, .excludeDesktopElements],
+      kCGNullWindowID,
+    ) as? [[String: Any]] else { return nil }
+    for window in windows {
+      guard (window[kCGWindowLayer as String] as? Int) == 0,
+        let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+        !excluding.contains(pid),
+        NSRunningApplication(processIdentifier: pid)?.bundleIdentifier != Bundle.main.bundleIdentifier,
+        let bounds = window[kCGWindowBounds as String] as? [String: Any],
+        let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+        frame.contains(point)
+      else { continue }
+      return pid
+    }
+    return nil
   }
 
   private func emitSelection(
