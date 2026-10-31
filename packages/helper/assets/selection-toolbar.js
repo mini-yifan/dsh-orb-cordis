@@ -48,14 +48,23 @@ async function syncToolbarSize() {
     width: Math.max(1, Math.ceil(Math.max(bar.right, menuRect.right) - left)),
     height: Math.max(1, Math.ceil(Math.max(bar.bottom, menuRect.bottom) - top)),
   })
-  document.body.classList.toggle('menu-above', layout.menuAbove)
+  // The helper picks the direction, because only it knows where the screen edges are and
+  // which side the bar was placed on relative to the selected text.
+  const side = layout?.side ?? (layout?.menuAbove ? 'above' : 'below')
+  document.body.classList.toggle('menu-above', side === 'above')
+  document.body.classList.toggle('menu-side', side === 'right' || side === 'left')
+  document.body.classList.toggle('menu-left', side === 'left')
+  // A sideways layout may grow the window above the bar; shifting the bar down by the same
+  // amount is what keeps it on screen exactly where the user saw it.
+  const offset = Number(layout?.barOffsetY) || 0
+  document.body.style.setProperty('--bar-offset', `${offset}px`)
 }
 
 function closeMenu() {
   const menu = document.querySelector('#language-menu')
   if (menu.hidden) return
   menu.hidden = true
-  document.body.classList.remove('menu-above')
+  document.body.classList.remove('menu-above', 'menu-side', 'menu-left')
   void syncToolbarSize()
 }
 
@@ -74,13 +83,13 @@ document.querySelector('#translate-arrow').addEventListener('click', (event) => 
 })
 document.querySelector('#language-zh').addEventListener('click', () => {
   document.querySelector('#language-menu').hidden = true
-  document.body.classList.remove('menu-above')
+  document.body.classList.remove('menu-above', 'menu-side', 'menu-left')
   api.selection.setLanguage('zh')
   void syncToolbarSize()
 })
 document.querySelector('#language-en').addEventListener('click', () => {
   document.querySelector('#language-menu').hidden = true
-  document.body.classList.remove('menu-above')
+  document.body.classList.remove('menu-above', 'menu-side', 'menu-left')
   api.selection.setLanguage('en')
   void syncToolbarSize()
 })

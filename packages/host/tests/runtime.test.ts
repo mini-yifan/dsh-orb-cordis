@@ -2063,25 +2063,51 @@ describe('selection translation', () => {
   })
 
   it('drops a translation in flight when the conversation is replaced', async () => {
-    let release = () => {}
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    const fake = model(['旧译文'], gate)
-    const { client, feed } = await bootWithMonitor(fake.service)
+    // The gate opens *after* the first delta, so the aborted run has text to settle. A gate
+    // before any delta would pass even with the bug: an empty assistant text is dropped by
+    // `block()` before it can reach the panel.
+    let releaseFirst = () => {}
+    const firstDelta = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const requests: Record<string, unknown>[] = []
+    const service = {
+      stream(options: unknown) {
+        requests.push(options as Record<string, unknown>)
+        return (async function* emit() {
+          await firstDelta
+          yield { type: 'text-delta', index: 0, text: '旧译文' }
+          // Hold the stream open so the reset lands while this answer is mid-flight.
+          await new Promise<void>((_resolve, reject) => {
+            (options as { signal: AbortSignal }).signal.addEventListener('abort', () => {
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            })
+          })
+        })()
+      },
+    }
+    const { harness, client, feed } = await bootWithMonitor(service)
 
     feed({ type: 'selection', text: 'one', pid: 9, x: 1, y: 2 })
     client.send({ type: 'selection-action', action: 'translate' })
-    await waitFor(() => fake.requests.length === 1)
+    await waitFor(() => requests.length === 1)
+    releaseFirst()
+    await waitFor(() => blocksOf(client).some((block) => block.text.includes('旧译文')))
 
-    // New chat clears the transcript; a translation belongs to the one it was rendered into.
+    // New chat clears the transcript while the answer is on screen.
     client.send({ type: 'new' })
     await waitFor(() => client.messages.some((message) => message.type === 'reset'))
-    release()
 
     const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
     await waitFor(() => lastTurn()?.running === false)
-    // Nothing may arrive after the reset that belongs to the old transcript.
+    // Settling the aborted block must not resurrect it in the new, empty transcript.
     const resetAt = client.messages.findIndex((message) => message.type === 'reset')
     const after = client.messages.slice(resetAt + 1).filter((message) => message.type === 'block')
     assert.equal(after.some((block) => String(block.text).includes('旧译文')), false)
+    // And a reconnecting page must not be handed it from the block store either.
+    const replayed = await connect(harness.runtime)
+    assert.equal(
+      replayed.messages.some((message) => message.type === 'block' && String(message.text).includes('旧译文')),
+      false,
+      'the block store does not replay it to a fresh page',
+    )
   })
 })

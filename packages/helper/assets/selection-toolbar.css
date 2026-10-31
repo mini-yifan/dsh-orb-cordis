@@ -99,3 +99,37 @@ body.menu-above #bar {
 body.menu-above #language-menu {
   top: 4px;
 }
+
+/* Sideways: the bar keeps its place and the menu sits beside it, with the window grown to
+ * hold both. This is what the helper picks when neither vertical side of the screen has room
+ * and unfolding upward would cover the selected text. */
+/* Sideways: the bar keeps its place on screen and the menu sits beside it. The window grew
+ * taller than the bar to fit the menu, so the bar is pushed down by exactly the amount the
+ * window grew above it; the menu occupies the full height from the window's top edge. */
+body.menu-side {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+
+body.menu-side #bar {
+  position: relative;
+  flex: none;
+  margin-top: var(--bar-offset, 0px);
+}
+
+body.menu-side #language-menu {
+  position: relative;
+  top: 0;
+  left: 0;
+  flex: none;
+  align-self: flex-start;
+}
+
+body.menu-side.menu-left {
+  flex-direction: row-reverse;
+}
+
+body.menu-side.menu-left {
+  flex-direction: row-reverse;
+}

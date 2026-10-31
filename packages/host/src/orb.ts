@@ -342,6 +342,12 @@ export class OrbRuntime {
    * nothing is queued behind a translation, so there is nothing to serialise.
    */
   private translation: { readonly abort: AbortController; readonly key: string } | undefined
+  /**
+   * Bumped whenever the transcript is thrown away. A translation belongs to the transcript it
+   * was rendered into, so one that outlives a reset must not settle its block into the new,
+   * empty transcript — `abort()` only asks the stream to stop; the settle still runs after it.
+   */
+  private transcriptEpoch = 0
   private child: ChildProcess | undefined
   private binary = ''
   private failures = 0
@@ -2159,6 +2165,8 @@ export class OrbRuntime {
     const userText = translationUserText(clipped.text, target, clipped.truncated, LOCAL_TRUNCATED_MARK)
 
     const route = this.store.models().overlay
+    /** The transcript this translation was rendered into. A reset invalidates it. */
+    const epoch = this.transcriptEpoch
     let answer = ''
     /** The last text the panel was actually given, which is what a stop must keep. */
     let shown = ''
@@ -2187,7 +2195,7 @@ export class OrbRuntime {
         onText: (soFar) => {
           // The panel ignores a frame for a transcript it has already replaced, and a
           // superseded translation must not paint over the one that replaced it.
-          if (this.translation?.key !== key) return
+          if (this.transcriptEpoch !== epoch || this.translation?.key !== key) return
           shown = soFar
           this.block(`${key}:say`, 'assistant', soFar, true, 'set', undefined, undefined, {
             local: true,
@@ -2202,7 +2210,12 @@ export class OrbRuntime {
         console.error(`dsh-orb: translate failed: ${message}`)
         this.status(message)
       }
-    } finally {      // Only the newest translation owns the shared state. A superseded one settles its own
+    } finally {
+      // A translation belongs to the transcript it was rendered into. Once that transcript is
+      // gone, settling the block would create it afresh in the new, empty one — the exact
+      // opposite of what the reset asked for.
+      const live = this.transcriptEpoch === epoch
+      // Only the newest translation owns the shared state. A superseded one settles its own
       // blocks and stops there, so it cannot unlock the panel or reopen the microphone while
       // its replacement is still streaming.
       const current = this.translation?.key === key
@@ -2211,20 +2224,22 @@ export class OrbRuntime {
       // busy look either way, and the idle clock starts counting down to the unpin. A stop
       // leaves `answer` empty because the call threw, so what already reached the panel is
       // what gets settled — never a blank that would erase the partial translation.
-      this.block(
-        `${key}:say`,
-        'assistant',
-        answer || shown,
-        false,
-        'set',
-        undefined,
-        undefined,
-        {
-          local: true,
-          response: true,
-          ...abort.signal.aborted ? { interrupted: true as const } : {},
-        },
-      )
+      if (live) {
+        this.block(
+          `${key}:say`,
+          'assistant',
+          answer || shown,
+          false,
+          'set',
+          undefined,
+          undefined,
+          {
+            local: true,
+            response: true,
+            ...abort.signal.aborted ? { interrupted: true as const } : {},
+          },
+        )
+      }
       if (!current) return
       this.broadcast({ type: 'turn', running: false })
       this.voice.setTranslationBusy(false)
@@ -2364,6 +2379,9 @@ export class OrbRuntime {
   private resetTranscript(): void {
     // A translation belongs to the transcript it was rendered into. Switching or clearing the
     // conversation must cancel it, or its late deltas would paint into the new transcript.
+    // Bumping the epoch is what stops the aborted run's `finally` from settling its block
+    // into the fresh transcript — aborting only asks the stream to stop.
+    this.transcriptEpoch += 1
     this.stopTranslation()
     this.translation = undefined
     this.voice.setTranslationBusy(false)

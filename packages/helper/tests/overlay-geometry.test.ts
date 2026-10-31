@@ -6,6 +6,7 @@ import {
   pointInRect,
   selectionToolbarBounds,
   selectionToolbarMenuBounds,
+  selectionToolbarMenuLayout,
   SELECTION_TOOLBAR_SIZE,
 } from '../src/overlay-geometry.ts'
 
@@ -40,30 +41,38 @@ describe('overlay geometry', () => {
     assert.equal(placed.x + placed.width / 2, rect.x + rect.width / 2)
   })
 
-  it('grows the language menu down, and up when it would leave the work area', () => {
-    const below = selectionToolbarMenuBounds({ x: 20, y: 40 }, { width: 280, height: 120 }, work)
-    assert.equal(below.y, 40)
-    assert.equal(below.height, 120)
-    const above = selectionToolbarMenuBounds({ x: 20, y: 760 }, { width: 280, height: 120 }, work)
-    assert.equal(above.y < 760, true)
-    assert.equal(above.y + above.height <= work.height, true)
-  })
-
-  it('does not unfold the language menu into the selection it was moved clear of', () => {
-    // A bar under a low selection has no room below for the whole menu. Opening upward would
-    // cover the words the toolbar was deliberately placed clear of, so the window stays
-    // anchored on the bar and is clipped instead.
-    const selection = { x: 480, y: 700, width: 40, height: 20 }
+  it('opens the language menu sideways when neither vertical side has room', () => {
+    // A selection near the bottom: no room below for the menu, and the bar sits under the
+    // text so unfolding upward would cover it. The menu must still be fully usable.
+    const selection = { x: 480, y: 720, width: 40, height: 20 }
     const bar = selectionToolbarBounds(selection, SELECTION_TOOLBAR_SIZE, work)
     assert.equal(bar.y >= selection.y + selection.height, true, 'the bar is below the text')
-    const menu = selectionToolbarMenuBounds(bar, { width: 280, height: 100 }, work, true)
-    assert.equal(menu.y, bar.y, 'the window stays where the bar is')
-    assert.equal(menu.y >= selection.y + selection.height, true, 'so the bar itself never covers the text')
-    assert.equal(menu.y + menu.height <= work.y + work.height, true)
-    assert.equal(menu.y + menu.height, work.y + work.height, 'the menu takes what room is left')
-    // A bar above the text may open upward freely: there is nothing under it to cover.
-    const up = selectionToolbarMenuBounds({ x: 20, y: 760 }, { width: 280, height: 120 }, work, false)
-    assert.equal(up.y < 760, true)
+    const layout = selectionToolbarMenuLayout(bar, { width: 280, height: 108 }, work, true)
+    assert.equal(layout.side, 'right')
+    // The whole menu fits: both language rows stay reachable instead of being clipped away.
+    assert.equal(layout.height >= 108, true, 'the window is tall enough for the whole menu')
+    assert.equal(layout.width >= 280, true, 'and wide enough')
+    assert.equal(layout.y >= work.y && layout.y + layout.height <= work.y + work.height, true)
+    // The window may grow upward to make that room, but the bar must not move with it.
+    assert.equal(layout.y + layout.barOffsetY, bar.y, 'the bar stays exactly where it was')
+    assert.equal(bar.y >= selection.y + selection.height, true, 'so it never creeps over the text')
+  })
+
+  it('opens the language menu upward when the bar is above the selection', () => {
+    const selection = { x: 480, y: 760, width: 40, height: 18 }
+    const bar = selectionToolbarBounds(selection, SELECTION_TOOLBAR_SIZE, work)
+    assert.equal(bar.y + bar.height <= selection.y, true, 'the bar is above the text here')
+    const layout = selectionToolbarMenuLayout(bar, { width: 280, height: 108 }, work, false)
+    assert.equal(layout.side, 'above')
+    assert.equal(layout.y >= work.y, true)
+    assert.equal(layout.height, 108, 'the menu keeps its full height')
+  })
+
+  it('keeps an ordinary menu below the bar without growing sideways', () => {
+    const layout = selectionToolbarMenuLayout({ x: 20, y: 40 }, { width: 280, height: 120 }, work, true)
+    assert.equal(layout.side, 'below')
+    assert.equal(layout.y, 40)
+    assert.equal(layout.height, 120)
   })
 
   it('keeps the observation hole on the rectangle and clips a flush edge', () => {

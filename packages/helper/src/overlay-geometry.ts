@@ -78,52 +78,87 @@ export function selectionToolbarBounds(
 /**
  * Grow the toolbar window for the language menu.
  *
- * The menu hangs below the bar when that fits, and above it otherwise. `barBelowSelection`
- * says which side of the selected text the bar itself was placed on: when the bar sits
- * *under* the text, the menu must not unfold upward into the text it was moved clear of.
+ * Below the screen there is often no room for a menu, and above it the menu would cover the
+ * selection the bar was deliberately moved clear of. So when neither vertical side has room,
+ * the menu opens to the *side* of the bar instead: the window grows sideways, where a screen
+ * edge is far less likely and nothing it covers was just selected.
  */
+export interface ToolbarMenuBounds extends OverlayRect {
+  /** Which way the menu opened, so the page can lay the menu out on the same side. */
+  readonly side: 'below' | 'above' | 'right' | 'left'
+  /**
+   * Where the bar sits inside the returned window. A sideways menu often has to grow the
+   * window upward past the bar, and this is what tells the page not to move the bar with it.
+   */
+  readonly barOffsetY: number
+}
+
+export function selectionToolbarMenuLayout(
+  barOrigin: { readonly x: number; readonly y: number },
+  contentSize: { readonly width: number; readonly height: number },
+  workArea: OverlayRect,
+  barBelowSelection = false,
+): ToolbarMenuBounds {
+  const width = Math.max(1, Math.round(contentSize.width))
+  const height = Math.max(1, Math.round(contentSize.height))
+  const barHeight = SELECTION_TOOLBAR_SIZE.height
+  const barWidth = SELECTION_TOOLBAR_SIZE.width
+  const workBottom = workArea.y + workArea.height
+  const workRight = workArea.x + workArea.width
+  const x = clamp(barOrigin.x, workArea.x, workRight - width)
+
+  // Straight down, when it fits: the natural direction.
+  if (barOrigin.y + height <= workBottom) {
+    const y = clamp(barOrigin.y, workArea.y, workBottom - height)
+    return { x, y, width, height, side: 'below', barOffsetY: barOrigin.y - y }
+  }
+  // Straight up, when that fits *and* the bar is not under the selection — otherwise the menu
+  // would unfold into the very words the bar was moved clear of.
+  if (!barBelowSelection && barOrigin.y + barHeight - height >= workArea.y) {
+    const y = clamp(barOrigin.y + barHeight - height, workArea.y, workBottom - height)
+    return {
+      x,
+      y,
+      width,
+      height,
+      side: 'above',
+      barOffsetY: barOrigin.y - y,
+    }
+  }
+  // Neither vertical side has room for a stacked menu. Open sideways: the window grows away
+  // from the bar horizontally, and upward just enough to give the menu its full height. The
+  // page pushes the bar down by `barOffsetY`, which is what keeps the bar itself from moving
+  // even though the window grew above it.
+  const windowH = Math.max(height, barHeight)
+  // Start high enough that the menu fits above the bar's row, but never above the work area.
+  const y = Math.max(workArea.y, Math.min(barOrigin.y + barHeight - windowH, workBottom - windowH))
+  const rightRoom = workRight - (barOrigin.x + barWidth)
+  const leftRoom = barOrigin.x - workArea.x
+  const barOffsetY = barOrigin.y - y
+  if (rightRoom >= width || rightRoom >= leftRoom) {
+    const w = Math.min(width, Math.max(barWidth, rightRoom))
+    return { x: barOrigin.x, y, width: w, height: windowH, side: 'right', barOffsetY }
+  }
+  const w = Math.min(width, Math.max(barWidth, leftRoom))
+  return {
+    x: Math.max(workArea.x, barOrigin.x + barWidth - w),
+    y,
+    width: w,
+    height: windowH,
+    side: 'left',
+    barOffsetY,
+  }
+}
+
+/** The rectangle alone, for callers that do not need the side. */
 export function selectionToolbarMenuBounds(
   barOrigin: { readonly x: number; readonly y: number },
   contentSize: { readonly width: number; readonly height: number },
   workArea: OverlayRect,
   barBelowSelection = false,
 ): OverlayRect {
-  const width = Math.max(1, Math.round(contentSize.width))
-  const height = Math.max(1, Math.round(contentSize.height))
-  const x = clamp(barOrigin.x, workArea.x, workArea.x + workArea.width - width)
-  const fitsBelow = barOrigin.y + height <= workArea.y + workArea.height
-  const barHeight = SELECTION_TOOLBAR_SIZE.height
-  if (fitsBelow || height <= barHeight) {
-    return {
-      x,
-      y: clamp(barOrigin.y, workArea.y, workArea.y + workArea.height - height),
-      width,
-      height,
-    }
-  }
-  // No room below the bar. Opening upward would cover the selection whenever the bar is
-  // itself under the text, so in that case the menu stays below and the window is clipped
-  // instead. The window must stay anchored on the bar: moving it up would drag the bar
-  // itself back over the words it was just placed clear of.
-  if (barBelowSelection) {
-    const room = Math.max(barHeight, workArea.y + workArea.height - barOrigin.y)
-    return {
-      x,
-      y: barOrigin.y,
-      width,
-      height: Math.min(height, room),
-    }
-  }
-  return {
-    x,
-    y: clamp(
-      barOrigin.y + barHeight - height,
-      workArea.y,
-      workArea.y + workArea.height - height,
-    ),
-    width,
-    height,
-  }
+  const { side: _side, ...rect } = selectionToolbarMenuLayout(barOrigin, contentSize, workArea, barBelowSelection)
+  return rect
 }
 
 function intersectRects(area: OverlayRect, clip: OverlayRect): OverlayRect {

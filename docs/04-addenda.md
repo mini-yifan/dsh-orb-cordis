@@ -554,3 +554,13 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 `macos-selection.swift:220-238` 把 `CGEvent.location` 原样发成 `mouse-down`/`mouse-up` 的 `x`/`y`，一次翻转都不做；而 `orb.ts` 与 `overlays.ts` 拿这两个数直接进 `screen.getDisplayNearestPoint()`（Electron 的左上原点、y 向下空间）。也就是说：**鼠标点从不为 Electron 做转换**。若 AX 矩形走 `electronPoint` 翻到「y = 主屏高度 − y」，两个来源就会落在相反的半屏，工具条在「锚矩形」与「锚鼠标」之间跳动。现在两者都不转换，同一坐标系，`selectionToolbarBounds` 的上下判断才有意义。
 
 顺带说明这条在 `main` 上是潜伏的：旧代码一直发 `bounds`，但 helper 只读 `x`/`y`，`bounds` 从未被消费；本分支开始用它定位，坐标错误才变成可见缺陷。
+
+### 37.4 第二轮复核：切会话残留与菜单被裁（同日）
+
+第二轮独立审查又找出两处，都是 37.1 的修法自己带出来的。
+
+- **切会话后旧译文飘回新对话（重）**：`resetTranscript` 里 `abort()` 只是**请求**中止，被中止那次 `startTranslation` 的 `finally` 照样跑到底，而 `blocks` 已被 `blocks.clear()` 清空——于是 `block()` 认为这是一个新 key，重新入栈、重新广播，并留在 `blockOrder` 里供下次重连回放。用户看到的是：切到新对话，旧对话的半句译文凭空出现在空白页上。`37.1` 那条 `drops a translation in flight` 抓不到它，因为它的 gate 卡在第一个 delta **之前**，`answer`/`shown` 都是空串，而 `block()` 对空 assistant 文本会提前 return——恰好被挡掉。修法：新增 `transcriptEpoch`，`resetTranscript` 时递增，`startTranslation` 记下进入时的值，`onText` 与落定两处都校验；作废时连落定一起跳过。测试把 gate 移到第一个 delta 之后，并加一条"重连的新页面也不该收到它"，反向验证（把守卫改回恒真）该用例变红。
+- **低选区下语言菜单被裁到点不到（中）**：37.1 把"向上翻进选区"改成"留在下方裁掉"，代价转到了菜单上——`overflow: hidden` 且可见高度可能只剩 4–30px，两个语言选项都点不到。这在"选区底边距屏幕底边 46–90px"时发生，正是划词最常见的屏幕下半部分。改为**横向展开**：`selectionToolbarMenuLayout` 在上下都放不下时把菜单放到工具条右侧（左侧放不下则左侧），窗口横向变宽、纵向只增到容纳整份菜单；页面新增 `.menu-side` / `.menu-left` 布局，并用 `--bar-offset` 把工具条按 `barOffsetY` 下推——窗口向上长了多少，工具条就下移多少，屏幕位置分毫不动。实测选区底边 560/700/720/748/780 五个位置：菜单都完整可点、工具条屏幕位置不变、窗口不越界。
+- **顺带修的判据错误**：`barBelowSelection` 原先在"没有 bounds 的纯指针锚点"上恒为 `true`，但 `selectionToolbarBounds` 对指针锚点同样会向上翻。改成 `rect === undefined ? bounds.y >= record.y : bounds.y >= rect.y + rect.height`。
+- **验证**：`pnpm typecheck` 通过；`pnpm test` **542 例全过**；`pnpm build` 后真机冒烟 SMOKE-PASS。
+- **未做**：横向菜单只验证了几何与 CSS 类切换，没有在真实 Electron 里截图确认视觉；`.menu-side` 下菜单与工具条的间距用的是 0，靠两个圆角边框自然区分，真机可能需要一两像素微调。

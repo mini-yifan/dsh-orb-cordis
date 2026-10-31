@@ -14,7 +14,7 @@ import {
   pointInRect,
   SELECTION_TOOLBAR_SIZE,
   selectionToolbarBounds,
-  selectionToolbarMenuBounds,
+  selectionToolbarMenuLayout,
   type OverlayRect,
 } from './overlay-geometry.ts'
 
@@ -54,13 +54,16 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
   })
 
   ipcMain.handle('orb:selection-size', (event, size) => {
-    if (!fromToolbar(event, toolbar) || !isSize(size) || toolbar.isDestroyed()) return { menuAbove: false }
+    if (!fromToolbar(event, toolbar) || !isSize(size) || toolbar.isDestroyed()) return { menuAbove: false, side: 'below', barOffsetY: 0 }
     const work = workAreaOf(barOrigin)
-    // Opening the menu upward is only safe when the bar sits above the selection; otherwise
-    // it would unfold straight into the words the toolbar was moved clear of.
-    const bounds = selectionToolbarMenuBounds(barOrigin, size, work, barBelowSelection)
+    // The menu's direction has to satisfy two things the page cannot see: staying off the
+    // selection the bar was moved clear of, and finding room at the screen edge.
+    const layout = selectionToolbarMenuLayout(barOrigin, size, work, barBelowSelection)
+    const { side, barOffsetY, ...bounds } = layout
     toolbar.setBounds(bounds)
-    return { menuAbove: bounds.y < barOrigin.y }
+    // A sideways menu grows the window upward past the bar; `barOffsetY` is what keeps the bar
+    // itself on screen where the user left it.
+    return { menuAbove: side === 'above', side, barOffsetY }
   })
 
   ipcMain.on('orb:selection-action', (event, payload) => {
@@ -147,7 +150,11 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
         barOrigin = { x: bounds.x, y: bounds.y }
         // The bar hangs below the rectangle's bottom edge, or above its top edge when the
         // screen runs out. Remembering which keeps the language menu out of the selection.
-        barBelowSelection = rect === undefined || bounds.y >= rect.y + rect.height
+        // Without a rectangle the anchor point stands in for both edges, so compare against
+        // it directly — `rect.y + rect.height` would compare against a made-up bottom.
+        barBelowSelection = rect === undefined
+          ? bounds.y >= record.y
+          : bounds.y >= rect.y + rect.height
         if (!toolbar.isDestroyed()) {
           toolbar.setBounds(bounds)
           toolbar.showInactive()
