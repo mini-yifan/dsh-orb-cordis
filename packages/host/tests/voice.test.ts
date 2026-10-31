@@ -229,6 +229,85 @@ describe('voice controller with a script child', () => {
       child.kill()
     }
   })
+
+  it('drops to the wake word after a translation instead of opening voice input', async () => {
+    const dir = join(root, 'translation')
+    const inject = join(dir, 'inject.ndjson')
+    const trace = join(dir, 'trace.ndjson')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(inject, '')
+    writeFileSync(trace, '')
+    const settings = settingsWith()
+    const page: VoicePageMessage[] = []
+    const child = spawn(process.execPath, [script], {
+      env: { ...process.env, VOICE_INJECT: inject, VOICE_TRACE: trace },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    })
+    const voice = new VoiceController({
+      settings: () => settings,
+      presence: () => ({ wake: true, asr: true, tts: true }),
+      now: () => 0,
+      send: (message) => { page.push(message) },
+      open: () => linkProcess(child),
+    })
+    const lastAfter = async (before: number, match: (item: { mode?: string, device?: boolean }) => boolean) => {
+      await until(() => listens(trace).length > before && match(listens(trace).at(-1) ?? {}), () => readFileSync(trace, 'utf8'))
+    }
+    voice.start()
+    try {
+      await until(() => listenModes(trace).includes('wake'), () => readFileSync(trace, 'utf8'))
+      // The ball is pinned for the translation, which on its own would mean `command`.
+      voice.setPinned(true)
+      await until(() => voice.listenMode() === 'command')
+
+      // While it streams nothing listens, and the microphone is released for the duration.
+      let mark = listens(trace).length
+      voice.setTranslationBusy(true)
+      await lastAfter(mark, (item) => item.mode === 'off' && item.device === false)
+
+      // Settling it must not hand the decoder back: the answer is still on screen and the
+      // ball is still pinned, but the user did not ask for a conversation.
+      mark = listens(trace).length
+      voice.setTranslationBusy(false)
+      await lastAfter(mark, (item) => item.mode === 'wake' && item.device === true)
+      assert.equal(voice.listenMode(), 'wake')
+      // The page's meter follows the mode, so the blue bar is gone.
+      const modes = page.filter((message): message is { type: 'voice-mode', mode: string } => message.type === 'voice-mode')
+      assert.equal(modes.at(-1)?.mode, 'wake', 'the page is told to drop the meter')
+
+      // The wake word is one way back in: it pins the ball and the command decoder returns.
+      // The greeting it speaks keeps the decoder busy until playback ends, so wait that out
+      // rather than expecting `command` immediately.
+      const emit = (message: unknown) => { appendFileSync(inject, `${JSON.stringify(message)}\n`) }
+      emit({ type: 'wake' })
+      await until(() => page.some((message) => message.type === 'pin'))
+      const greeting = speaks(trace).at(-1)
+      if (greeting !== undefined) emit({ type: 'playback', id: greeting.id, phase: 'end' })
+      await until(() => voice.listenMode() === 'command', () => readFileSync(trace, 'utf8'))
+
+      // And unpinning is the other: it lifts the quiet so the next pin takes commands.
+      mark = listens(trace).length
+      voice.setTranslationBusy(true)
+      await lastAfter(mark, (item) => item.mode === 'off')
+      voice.setTranslationBusy(false)
+      await until(() => voice.listenMode() === 'wake')
+      voice.setPinned(false)
+      await until(() => voice.listenMode() === 'wake')
+      voice.setPinned(true)
+      await until(() => voice.listenMode() === 'command')
+
+      // Resetting the transcript is not a translation finishing: no answer is left on
+      // screen, so the ordinary pinned rule applies at once instead of the quiet.
+      mark = listens(trace).length
+      voice.setTranslationBusy(true)
+      await lastAfter(mark, (item) => item.mode === 'off')
+      voice.clearTranslation()
+      await until(() => voice.listenMode() === 'command')
+    } finally {
+      voice.close()
+      child.kill()
+    }
+  })
 })
 
 function settingsWith(patch: Partial<typeof DEFAULT_VOICE_SETTINGS> = {}): typeof DEFAULT_VOICE_SETTINGS {

@@ -81,6 +81,40 @@ describe('listen mode', () => {
     assert.equal(mode({ pinned: true, translationBusy: false }), 'command')
   })
 
+  it('listens for the wake word only once a translation has settled', () => {
+    // The answer stays on a pinned ball, but a translation is not a conversation: the
+    // command decoder waits for the user to start one on purpose.
+    assert.equal(mode({ pinned: true, translationQuiet: true }), 'wake', 'a pinned ball does not take commands')
+    assert.equal(mode({ pinned: false, translationQuiet: true }), 'wake')
+    // A command-only setup has no way back in until the ball is unpinned and pinned again.
+    assert.equal(mode({ pinned: true, translationQuiet: true, wakeEnabled: false }), 'off')
+    // The streaming state still wins: mid-translation there is nothing to listen for.
+    assert.equal(mode({ pinned: true, translationBusy: true, translationQuiet: true }), 'off')
+    // A real turn takes over from the quiet, because that is the user talking again.
+    assert.equal(mode({ pinned: true, translationQuiet: true, agentBusy: true }), 'interject')
+  })
+
+  it('holds the device for the wake word alone while a translation is settled', () => {
+    // The command column is not listening, so the system microphone indicator must not go
+    // on for it: only the wake column may keep the device.
+    assert.equal(holdsDevice({ ...device, pinned: true, translationQuiet: true }), true, 'both columns ready: wake still holds it')
+    assert.equal(
+      holdsDevice({ ...device, pinned: true, translationQuiet: true, commandEnabled: false }),
+      true,
+      'wake alone still holds it while pinned, unlike the ordinary pinned rule',
+    )
+    assert.equal(
+      holdsDevice({ ...device, translationQuiet: true, wakeEnabled: false }),
+      false,
+      'voice input alone releases it, because it cannot be reached',
+    )
+    assert.equal(
+      holdsDevice({ ...device, pinned: false, translationQuiet: true }),
+      true,
+      'collapsed behaves like the ordinary collapsed rule',
+    )
+  })
+
   it('drops only the column whose switch is off', () => {
     assert.equal(mode({ pinned: false, wakeEnabled: false }), 'off')
     assert.equal(mode({ pinned: true, wakeEnabled: false }), 'command', 'wake off still allows commands once pinned')

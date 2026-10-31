@@ -48,6 +48,13 @@ export interface ListenInput {
    * interjection: the user asked for a translation, not for a conversation.
    */
   readonly translationBusy?: boolean
+  /**
+   * A translation finished and the user has not asked for anything since. The ball is
+   * still pinned because it is showing the answer, but a translation is not a
+   * conversation: the command decoder stays shut and only the wake word is listened
+   * for, so the voice meter is gone until the user starts talking again on purpose.
+   */
+  readonly translationQuiet?: boolean
   /** A question card is waiting for a click. */
   readonly questionOpen: boolean
   /** queue.bodyBusy */
@@ -75,7 +82,8 @@ export interface ListenInput {
  * microphone wins. A busy agent or agent body audio listens for an interjection
  * when that column is on and, while body audio is playing, echo cancellation is
  * present. Otherwise an unpinned ball listens for the wake word, and a pinned
- * ball listens for a command.
+ * ball listens for a command — unless a finished translation is still on screen,
+ * which keeps the command decoder shut and listens for the wake word alone.
  */
 export function listenMode(input: ListenInput): ListenMode {
   // A translation closes the ears entirely, before the interjection branch can claim them.
@@ -87,6 +95,11 @@ export function listenMode(input: ListenInput): ListenMode {
     if (input.bodyBusy && !input.echoCancel) return 'off'
     return 'interject'
   }
+  // A finished translation leaves its answer on a pinned ball without turning that
+  // ball into a conversation: the wake word is the only way back in. Both columns go
+  // through the same door, so a command-only setup stays quiet until the ball is
+  // unpinned and pinned again.
+  if (input.translationQuiet === true) return input.wakeEnabled ? 'wake' : 'off'
   if (!input.pinned && input.wakeEnabled) return 'wake'
   if (input.pinned && input.commandEnabled) return 'command'
   return 'off'
@@ -99,6 +112,11 @@ export interface DeviceInput extends MicInput {
   readonly agentBusy: boolean
   /** A selection-toolbar translation is streaming; it asks for no decoder at all. */
   readonly translationBusy?: boolean
+  /**
+   * A finished translation is on screen and the user has not asked for anything since.
+   * Only the wake word can be reached, whatever the pin says.
+   */
+  readonly translationQuiet?: boolean
   /** A question card is waiting for a click. */
   readonly questionOpen: boolean
   /** queue.bodyBusy */
@@ -134,6 +152,10 @@ export function holdsDevice(input: DeviceInput): boolean {
     if (input.bodyBusy && !input.echoCancel) return false
     return true
   }
+  // A finished translation leaves the ball pinned on its answer, but only the wake word
+  // can reach it: holding the device for the command column would light the system
+  // microphone indicator for a decoder that is not listening.
+  if (input.translationQuiet === true) return wakeReady
   // 收起时只有唤醒可达，固定时只有语音输入可达。
   return input.pinned ? commandReady : wakeReady
 }

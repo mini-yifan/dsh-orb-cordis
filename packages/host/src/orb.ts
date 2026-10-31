@@ -2384,7 +2384,7 @@ export class OrbRuntime {
     this.transcriptEpoch += 1
     this.stopTranslation()
     this.translation = undefined
-    this.voice.setTranslationBusy(false)
+    this.voice.clearTranslation()
     this.pendingPrompt = undefined
     this.blocks.clear()
     this.blockOrder.length = 0

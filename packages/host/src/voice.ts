@@ -122,6 +122,13 @@ export class VoiceController {
    * paused idle clock.
    */
   private translationBusy = false
+  /**
+   * The last translation finished and the ball is still showing its answer. A translation
+   * is not a conversation, so the ball keeps its command decoder shut until the user asks
+   * for one on purpose — a wake word, a key, or a new prompt. Without this the pin that
+   * keeps the answer visible would reopen the microphone the moment the stream settled.
+   */
+  private translationQuiet = false
   private questionOpen = false
   private speechOpen = false
   private micOpen = false
@@ -203,6 +210,7 @@ export class VoiceController {
     this.device = false
     this.mode = 'off'
     this.hold = false
+    this.translationQuiet = false
     this.setSpeech(false)
     this.options.send({ type: 'voice-hold', hold: false })
     this.options.send({ type: 'voice-mode', mode: 'off' })
@@ -234,6 +242,7 @@ export class VoiceController {
       pinned: this.pinned,
       agentBusy: this.agentBusy,
       translationBusy: this.translationBusy,
+      translationQuiet: this.translationQuiet,
       questionOpen: this.questionOpen,
       bodyBusy: bodyBusy(this.queue),
       interjectEnabled: this.interjectEnabled(),
@@ -269,6 +278,12 @@ export class VoiceController {
     if (this.pinned === pinned) return
     this.pinned = pinned
     if (!pinned) this.idle = createIdle()
+    // Unpinning is the user dismissing the ball, and pinning it again is them asking for it
+    // back — that pair is one of the ways out of a finished translation's quiet. Only the
+    // unpin half lifts it: the host pins the ball itself when a turn or a translation shows
+    // its work, and that report arrives asynchronously, so reacting to a pin would let the
+    // translation's own auto-pin cancel the quiet it had just set.
+    if (!pinned) this.beginInteraction()
     this.pushListen(false)
     this.poll()
   }
@@ -285,6 +300,10 @@ export class VoiceController {
    *
    * The microphone shuts for its duration even though no agent turn is running. The ball is
    * pinned while it streams, and a pinned idle ball would otherwise listen for a command.
+   *
+   * Ending it does not hand the microphone back: the answer stays on a pinned ball, and a
+   * translation is not a conversation, so the ball drops to the wake word and waits for the
+   * user to start talking on purpose. {@link beginInteraction} lifts that state.
    * @param busy - whether a translation is now streaming.
    */
   setTranslationBusy(busy: boolean): void {
@@ -292,17 +311,54 @@ export class VoiceController {
     this.translationBusy = busy
     // The idle clock treats this like work: it must not unpin the ball mid-translation.
     if (busy) {
+      // A translation starting is itself the user asking for something, and any quiet from
+      // an earlier one must not outlive it — otherwise this answer would settle into a
+      // state the previous one had already left behind.
+      this.translationQuiet = false
       this.idle = createIdle()
       this.pushListen(false)
       this.poll()
       return
     }
+    this.translationQuiet = true
+    this.pushListen(false)
+    this.poll()
+  }
+
+  /**
+   * Drop the translation state without leaving the after-translation quiet behind.
+   *
+   * Resetting or switching the conversation is not a translation finishing: there is no
+   * answer on screen to protect from the microphone, so the ordinary pin rules apply again
+   * straight away. This is also why it does not go through {@link setTranslationBusy},
+   * whose whole point is to leave that quiet set.
+   */
+  clearTranslation(): void {
+    this.translationBusy = false
+    this.translationQuiet = false
+    this.pushListen(false)
+    this.poll()
+  }
+
+  /**
+   * The user asked for the ball's attention again.
+   *
+   * Any deliberate input lifts the quiet that a finished translation leaves behind: a wake
+   * word, or unpinning the ball and pinning it again. Nothing here opens the microphone by
+   * itself — it only stops the finished translation from holding the command decoder shut.
+   */
+  beginInteraction(): void {
+    if (!this.translationQuiet) return
+    this.translationQuiet = false
     this.pushListen(false)
     this.poll()
   }
 
   beginTurn(): void {
     debug('beginTurn')
+    // A real turn is the strongest sign the user started a conversation, so any quiet left
+    // by a finished translation ends here as well.
+    this.translationQuiet = false
     this.agentBusy = true
     this.muted = false
     this.stopping = false
@@ -541,6 +597,10 @@ export class VoiceController {
 
   private onWake(): void {
     if (this.mode !== 'wake') return
+    // The wake word is the user asking for a conversation, which is how they get one back
+    // after a finished translation. Drop the quiet before the reply, so the pin this is
+    // about to set opens the command decoder rather than being swallowed by it.
+    this.translationQuiet = false
     this.pinned = true
     this.options.send({ type: 'pin' })
     const reply = this.localReply(this.settings().wakeReply)
@@ -800,6 +860,7 @@ export class VoiceController {
       pinned: this.pinned,
       agentBusy: this.agentBusy,
       translationBusy: this.translationBusy,
+      translationQuiet: this.translationQuiet,
       questionOpen: this.questionOpen,
       bodyBusy: bodyBusy(this.queue),
       localBusy: localBusy(this.queue),

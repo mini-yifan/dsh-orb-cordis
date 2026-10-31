@@ -654,3 +654,24 @@ Host 由 `spawn(app 的可执行文件, [...desktop-host/lib/index.js])` 启动�
 - **验证**：真机重启后 `lsappinfo` 里 host 变成 `type="BackgroundOnly"`（修复前是 `Foreground`），Dock 磁贴 **1 个**；连续 60 秒采样（覆盖一次划词）始终 `Dock=1 host=BackgroundOnly`，不再回退。helper 正常启动（有球）。
 - **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-172105-dock-tile/`，只替换 `dist/host/index.js`（`cp` 到临时名再 `mv`，避免写穿 pnpm 留的硬链接）。Host 启动时加载，**需重启应用**生效。
 - **未做**：没在 Windows 复验（那边没有 NSApplication，函数在平台门控处直接返回）；也没有验证多显示器/全屏空间的组合。
+
+## 42. 翻译结束后不该顺手打开语音输入 (2026-10-31)
+
+用户反馈：点工具栏的翻译按钮后，如果语音输入是开着的，蓝色条会在翻译**结束后**重新亮起。球因为显示译文而固定着，所以那根条一出现就等于「现在可以直接说话」，但翻译是点按钮发起的，不是聊天——这个入口不该顺手把语音对话打开。期望：翻译完保持译文可见，语音不启动；想说就重新说唤醒词，或者取消固定再固定一次。
+
+- **根因是「翻译借了 turn 的外观」留下的副作用。** `startTranslation` 广播 `turn: true` 让球展开、固定、长按停止按钮，视觉上和真实 turn 一致；而 `listenMode()` 的末段只认固定状态：
+
+  ```
+  if (!input.pinned && input.wakeEnabled) return 'wake'
+  if (input.pinned && input.commandEnabled) return 'command'
+  ```
+
+  于是流一结束、`setTranslationBusy(false)` 清掉 `translationBusy`，固定的球立刻被判成 `command`，麦克风重开、蓝色条回来。翻译**进行中**其实是对的（`translationBusy` 让 `listenMode`/`holdsDevice` 都返回 off），错的只是「结束」这一步的落点。
+- **改法：把「结束」的语义从「流结束」推到「用户重新发起交互」。** 新增 `translationQuiet` 状态，`setTranslationBusy(false)` 不再直接放手，而是进入这个静默态；`listenMode()` 里它在 interjection 分支之后、普通 pin 规则之前判断，返回 `wake`（只听说唤醒词）而不是 `command`。这样蓝色条不出现，但唤醒词仍然有效——正是用户描述的恢复方式之一。
+- **设备占用跟着收窄**：`holdsDevice()` 在静默态下返回 `wakeReady`，而不是按 pin 走 `commandReady`。否则命令解码器明明没在听，系统麦克风指示还会为它亮着。
+- **两个恢复入口**：① 唤醒词——`onWake()` 里先清 `translationQuiet` 再设 pin，否则这次 pin 会被静默态吞掉；② 取消固定再固定——`setPinned(false)` 时解除。**只在 unpin 半边解除**，因为 host 自己也会固定球（`showWorkPanel` 是异步的，`turn: true` 的落点晚于 `setTranslationBusy`），若响应 pin 就会让翻译自己的自动固定把刚设好的静默冲掉。
+- **`beginTurn()` 也清一次**：真实 turn 是用户开始对话最确定的信号。`setTranslationBusy(true)` 同样清一次，避免上一轮翻译的静默态延续到下一轮。
+- **区分「翻译结束」和「清理翻译」**：`resetTranscript()`（切会话、清屏）原本调 `setTranslationBusy(false)`，但那是丢弃而非完成——屏幕上没有要保护的译文，普通 pin 规则应当立刻恢复。新增 `clearTranslation()` 专供这条路径，直接清两个标志并推一次 `listen`。
+- **测试**：`listen.test.ts` 补 2 例（静默态下 pinned 只听唤醒、命令列关闭时返回 off、流式状态仍然优先、真实 turn 接管；以及 `holdsDevice` 在静默态只按唤醒列判断的四种组合）。`host/tests/voice.test.ts` 补 1 例走真实子进程：pinned→command → 翻译中 off 且 `device=false` → 结束后 `wake` 且页面收到 `voice-mode: wake` → 唤醒词回到 command → 再次翻译后 unpin/repin 回到 command → 最后一次用 `clearTranslation()` 验证清理路径不走静默。全量 `pnpm typecheck` 通过，`pnpm test` 563 例（2 跳过 0 失败）+ vitest 322 例全过。
+- **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-202106-translation-quiet/`，走完整 `pnpm build` 让 `assemble.mjs` 重写 specifier（第 41 节那条坑），只替换 `dist/host/index.js`。Host 启动时加载，**需重启应用**生效。
+- **待真机确认**：纯逻辑与子进程级测试已覆盖，但「蓝色条真的消失」还需要在真机上点一次翻译按钮看——`voice-mode` 消息与页面 `renderVoiceMeter()` 的联动是既有实现，本次只改了发给它的 mode 值。
