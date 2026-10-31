@@ -13,3 +13,23 @@ body {
   width: 100%;
   height: 100%;
 }
+
+/* The grabbed satellite follows the cursor while it draws: its own window hides
+ * for the drag, and the trail alone leaves no handle under the pointer. */
+#cursor-ball {
+  position: absolute;
+  z-index: 1;
+  width: 26px;
+  height: 26px;
+  box-sizing: border-box;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  background: rgba(138, 138, 147, 0.8);
+  box-shadow: 0 2px 7px rgba(17, 17, 17, 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+#cursor-ball[hidden] {
+  display: none;
+}

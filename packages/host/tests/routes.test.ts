@@ -132,6 +132,13 @@ describe('settings routes', () => {
         sessionController: {
           modelCatalog: () => ({ groups: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-flash', name: 'Flash' }] }] }),
         },
+        get(name: string) {
+          if (name !== 'attachments') return undefined
+          return {
+            readImage: async (ref: { mediaType: string }) => ({ data: png, mediaType: ref.mediaType }),
+            readImageRequest: async () => ({ data: png, mediaType: 'image/png' }),
+          }
+        },
       },
       store,
       tcc: new TccMonitor(),
@@ -151,6 +158,19 @@ describe('settings routes', () => {
     await handler(request('GET', '/.dsh-orb/avatar?v=0', undefined, { 'x-dsh-orb-helper': 'helper-secret' }), avatar)
     assert.equal(avatar.status, 200)
     assert.equal(avatar.body.subarray(0, 6).toString('ascii'), 'GIF89a')
+
+    // Durable ids are content-addressed (`sha256:<hex>`): the colon must reach the store,
+    // or the chip, the transcript thumbnail, and their preview all 404.
+    const attachment = response()
+    const attachmentId = `sha256:${'a'.repeat(64)}`
+    await handler(request(
+      'GET',
+      `/.dsh-orb/attachment?id=${encodeURIComponent(attachmentId)}&mediaType=image%2Fjpeg&bytes=10&width=100&height=100&thumb=1`,
+      undefined,
+      { 'x-dsh-orb-helper': 'helper-secret' },
+    ), attachment)
+    assert.equal(attachment.status, 200)
+    assert.equal(attachment.body.subarray(0, 8).toString('hex'), png.subarray(0, 8).toString('hex'))
 
     const wrong = response()
     await handler(request('GET', '/.dsh-orb/avatar', undefined, { 'x-dsh-orb-helper': 'nope' }), wrong)

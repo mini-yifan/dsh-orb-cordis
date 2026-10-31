@@ -607,7 +607,9 @@ async function sendAttachment(
   const width = Number(url.searchParams.get('width'))
   const height = Number(url.searchParams.get('height'))
   const thumb = url.searchParams.get('thumb') === '1'
-  if (!/^[A-Za-z0-9_-]{1,120}$/.test(id) || !ALLOWED_IMAGE_TYPES.has(mediaType)) {
+  // Durable image ids carry the content-addressed form `sha256:<hex>`; the store
+  // validates the id again, so this only keeps path-like input out of the lookup.
+  if (!/^[A-Za-z0-9:_-]{1,120}$/.test(id) || !ALLOWED_IMAGE_TYPES.has(mediaType)) {
     res.writeHead(404)
     res.end()
     return

@@ -1,6 +1,9 @@
 const canvas = document.querySelector('#trail')
 const context = canvas.getContext('2d')
+const cursorBall = document.querySelector('#cursor-ball')
 const api = window.dshLasso?.trail
+/** Right-down offset so the ball never covers the system pointer it follows. */
+const CURSOR_BALL_OFFSET = 16
 let display = { x: 0, y: 0, width: 1, height: 1 }
 let points = []
 let opacity = 1
@@ -17,6 +20,17 @@ function resize() {
 
 function local(point) {
   return { x: point.x - display.x, y: point.y - display.y }
+}
+
+function placeCursorBall(point) {
+  if (point === null || typeof point !== 'object') {
+    cursorBall.hidden = true
+    return
+  }
+  const place = local(point)
+  cursorBall.style.left = `${place.x + CURSOR_BALL_OFFSET}px`
+  cursorBall.style.top = `${place.y + CURSOR_BALL_OFFSET}px`
+  cursorBall.hidden = false
 }
 
 function draw() {
@@ -62,6 +76,7 @@ function reset() {
   fading = false
   opacity = 1
   points = []
+  placeCursorBall(null)
   draw()
 }
 
@@ -71,6 +86,7 @@ api?.onShow((payload) => {
   reset()
   if (payload.point) {
     points = [{ x: payload.point.x, y: payload.point.y }]
+    placeCursorBall(payload.point)
     draw()
   }
 })
@@ -78,16 +94,19 @@ api?.onShow((payload) => {
 api?.onPoint((point) => {
   if (point === null || typeof point !== 'object') return
   points.push({ x: point.x, y: point.y })
+  placeCursorBall(point)
   draw()
 })
 
 api?.onFade((payload) => {
   if (Array.isArray(payload) && payload.length > 0) points = payload
+  placeCursorBall(null)
   fade()
 })
 
 api?.onReject((payload) => {
   if (Array.isArray(payload) && payload.length > 0) points = payload
+  placeCursorBall(null)
   context.save()
   context.globalAlpha = 1
   context.strokeStyle = '#ef4444'
