@@ -2594,7 +2594,12 @@ function main() {
   api.onVoicePrompt?.((text) => { void acceptVoicePrompt(text) })
   api.onAttach((text) => {
     if (typeof text !== 'string' || text === '') return
-    void setExpanded(true).then(() => {
+    // "Send to Agent" is the user asking to talk to it, so this must land where a turn does:
+    // expanded *and* pinned. Pinning is what opens voice input, so the user can speak straight
+    // away without touching the ball again; it also keeps the panel from collapsing as soon as
+    // the pointer leaves. showWorkPanel also lifts a docked ball off the screen edge, which a
+    // bare setExpanded would skip and leave the panel misplaced.
+    void showWorkPanel().then(() => {
       setAttachedSelection(text)
       prompt.focus()
     })

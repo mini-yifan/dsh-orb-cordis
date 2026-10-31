@@ -675,3 +675,25 @@ Host 由 `spawn(app 的可执行文件, [...desktop-host/lib/index.js])` 启动�
 - **测试**：`listen.test.ts` 补 2 例（静默态下 pinned 只听唤醒、命令列关闭时返回 off、流式状态仍然优先、真实 turn 接管；以及 `holdsDevice` 在静默态只按唤醒列判断的四种组合）。`host/tests/voice.test.ts` 补 1 例走真实子进程：pinned→command → 翻译中 off 且 `device=false` → 结束后 `wake` 且页面收到 `voice-mode: wake` → 唤醒词回到 command → 再次翻译后 unpin/repin 回到 command → 最后一次用 `clearTranslation()` 验证清理路径不走静默。全量 `pnpm typecheck` 通过，`pnpm test` 563 例（2 跳过 0 失败）+ vitest 322 例全过。
 - **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-202106-translation-quiet/`，走完整 `pnpm build` 让 `assemble.mjs` 重写 specifier（第 41 节那条坑），只替换 `dist/host/index.js`。Host 启动时加载，**需重启应用**生效。
 - **待真机确认**：纯逻辑与子进程级测试已覆盖，但「蓝色条真的消失」还需要在真机上点一次翻译按钮看——`voice-mode` 消息与页面 `renderVoiceMeter()` 的联动是既有实现，本次只改了发给它的 mode 值。
+
+## 43. 「发给 Agent」之后球应当展开并固定 (2026-10-31)
+
+用户反馈：划词后点工具栏的「发给 Agent」，球只是**展开**，并没有固定；因此得再点一下球才能说话或输入，否则面板一闪就收回去。
+
+- **根因是一个漏掉的副作用**。`orb:attach` 的页面处理只调了 `setExpanded(true)`：
+
+  ```
+  api.onAttach((text) => {
+    if (typeof text !== 'string' || text === '') return
+    void setExpanded(true).then(() => { setAttachedSelection(text); prompt.focus() })
+  })
+  ```
+
+  `setExpanded` 和 `pinBall` 是两件事：前者只展开窗口，后者才 `assignPinned(true)` → `reportPinned()` → host `setPinned(true)`。全仓 `pinBall()` 只有三处调用（`showWorkPanel`、输入框 click、composer 空白 click），都不在 attach 这条路径上，所以 `prompt.focus()` 只是代码里调用了一下焦点，不会触发 click 事件，固定一直没发生。
+- **后果两层**：① `listenMode()` 末段要求 `pinned` 才返回 `command`，不固定就等于语音输入没开；② `scheduleCollapse()` 在 `pinned` 为假时 180ms 后收起，所以鼠标一离开面板就没了。用户描述的「必须再点一下球」正是点进了 `prompt` 的 click 处理，被那里顺带固定上的。
+- **改法**：把这一次调用换成 `showWorkPanel()`——它已经封装好「解停靠 → 展开 → 固定」。顺带修掉一个边缘布局问题：球停靠在屏幕左/右边缘时，裸 `setExpanded` 不先 `unsnapDocked()`，展开的面板会贴边错位。其余一律不动，语音输入随固定自然打开。
+- **不改的部分**：「说完话直接上屏」本来就走得通——`acceptVoicePrompt` 调的是 `api.send(composeSend(text, attachedSelection))`，不是往输入框里填字，所以一句话说完就提交、Agent 直接播报，并且划词内容会随 `attachedSelection` 一起带出去。`prompt.focus()` 保留，方便用户改用打字。
+- **与第 42 节不冲突**：42 节是「翻译完不该自动开语音」，本节是「点了发给 Agent 就应该自动开」。区别在于用户是否明确表达了对话意图——点翻译按钮不算，点发给 Agent 算。
+- **测试**：`shell-render.test.ts` 补 1 例，钉住 `onAttach` 走 `showWorkPanel()` 而不是裸 `setExpanded`。这条断言做过反向验证：把实现改回 `setExpanded(true)` 后该例会红（18 过 1 挂），改回来即绿，确认它真的守着这个回归点。全量 `pnpm typecheck` 通过，`pnpm test` 566 例（564 过 2 跳过 0 失败）+ vitest 322 例全过。
+- **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-203556-attach-pin/`，走完整 `pnpm build` 后只替换 `dist/helper/assets/shell.js`。`shell.js` 是 helper 进程启动时加载，**需重启应用**生效。
+- **待真机确认**：「点按钮 → 固定 → 直接说话 → 自动上屏」这条端到端链路需要真机走一遍，测试只能钉住源码形状与 `listenMode` 的联动。

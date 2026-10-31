@@ -138,6 +138,18 @@ describe('agent work keeps the panel on screen', () => {
     assert.match(code, /async function showWorkPanel\(\) \{\n\s+if \(pageClosed\(\)\) return\n(?:\s*\/\/[^\n]*\n)*\s+if \(docked !== undefined\) await unsnapDocked\(\)\n\s+await setExpanded\(true\)\n\s+pinBall\(\)/)
   })
 
+  it('pins the panel when the selection toolbar sends text to the agent', () => {
+    // "Send to Agent" is the user asking to talk, so it has to land where a turn does. A bare
+    // setExpanded would leave the ball unpinned: voice input stays shut (it only opens for a
+    // pinned ball), so the user would have to click the ball again before speaking, and the
+    // panel would collapse 180ms after the pointer left. showWorkPanel also lifts a docked
+    // ball off the screen edge, which setExpanded alone skips.
+    assert.match(code, /api\.onAttach\(\(text\) => \{\n\s+if \(typeof text !== 'string' \|\| text === ''\) return\n(?:\s*\/\/[^\n]*\n)*\s+void showWorkPanel\(\)\.then\(\(\) => \{/)
+    assert.match(code, /void showWorkPanel\(\)\.then\(\(\) => \{\n\s+setAttachedSelection\(text\)\n\s+prompt\.focus\(\)/)
+    // And it must not go back to the expand-only call.
+    assert.doesNotMatch(code, /api\.onAttach[\s\S]{0,400}?void setExpanded\(true\)/)
+  })
+
   it('never collapses or docks while the turn is running', () => {
     // Every collapse path already consults `running`; the dock paths carry it to the main process
     // as `canDock`, which is what stops a release on a screen edge from docking.
