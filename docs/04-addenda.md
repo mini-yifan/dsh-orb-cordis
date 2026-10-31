@@ -575,3 +575,17 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - **测试补齐到能抓住它**：`overlay-geometry.test.ts` 现在断言 **菜单右/下边界不越出窗口**、**工具条屏幕位置等于入参**、**窗口不出工作区**，并新增"选区贴屏幕右缘时选左侧"一例。
 - **新增真机冒烟 `.zcode/smoke/orb-toolbar-layout-smoke.cjs`**：加载真实工具栏页面，用生产几何驱动真实的 `orb:selection-size` 处理器，在 y=40/560/700/748 与"工具条在选区上方"共五个位置打开菜单，逐次 `getBoundingClientRect()` 断言工具条与菜单都完整落在窗口内。**这一步才是关键**：它第一次跑就把 `syncToolbarLayout` 完全没调起 IPC 暴露了出来——冒烟用的 `smoke-toolbar-preload.cjs` 里 `setContentSize` 是空桩（返回 `Promise.resolve({ menuAbove: false })`），和上一轮的真机验证漏检是同一个原因。桩改成真的 `ipcRenderer.invoke` 后 SMOKE-PASS。
 - **验证**：`pnpm typecheck` 通过；`pnpm test` **543 例全过**；`pnpm build` 后两个冒烟（翻译渲染、工具栏布局）与原有的外观冒烟都是 SMOKE-PASS。
+
+## 38. Windows 划词读取改为常驻进程 (2026-10-31)
+
+划词在 Windows 上每次左键抬起都 `execFile('powershell.exe', ...)` 起一个新进程跑 UI Automation。冷启动本身就要一秒左右，加上 `Add-Type -AssemblyName UIAutomationClient/UIAutomationTypes` 每次重新加载，实测一次读取在 1 s 上下——全屏随便点十下就是十个进程。这是一条独立的性能缺陷，不在第 37 节的范围里，这次补上。
+
+- **新增 `packages/native-selection/src/windows-resident.js`**：一个 PowerShell 常驻进程，脚本用 `-NoProfile -NonInteractive -STA -Command -` 从 stdin 读脚本，`while ($true)` 循环 `[Console]::In.ReadLine()`，每次读一次选区、写一行 JSON。`-STA` 是 UI Automation 的硬性要求，`-Command -` 是让 PowerShell 从 stdin 读脚本的那种形式。程序集只在启动时 `Add-Type` 一次，之后每次读取不再付这笔钱。
+- **协议**：启动写一行 `{"ready":true}` 表明就绪（host 丢弃它，不当成读取结果），之后每个 `read` 请求对应一行答案；`quit` 退出。stdout 用 NDJSON 增量解析，畸形行丢弃继续读——一条噪声行不能让整条流停摆。
+- **并发与超时**：多个请求排队等待最近的一条答案（FIFO），每个请求独立计时（默认 1.5 s，与原 `execFile` 的 timeout 一致）。超时只摘掉自己，不影响后面的请求。
+- **进程死亡**：`exit`/`error`/`stdin` 出错时立刻把所有在途请求以 `undefined` 答掉，不让它们各自等满超时。
+- **兜底**：`readWindowsSelection` 优先走常驻；常驻起不来（`residentFailed`）或这次答空时，重置常驻并退回原来的一次性 `readWindowsSelectionOnce()`，所以一个坏掉的 PowerShell 环境是降级而不是彻底静默。一次性路径保留，`SELECTION_SCRIPT` 加了注释说明它现在的角色。
+- **生命周期**：`productionSelectionProbe` 增加 `close`，`startWindowsSelectionMonitor` 的 `stop()` 调用它——否则关掉悬浮球后那个 PowerShell 会留在后台。`close()` 先写 `quit`，500 ms 后还没退就 `kill`。
+- **测试**：新增 `packages/host/tests/windows-resident.test.ts` 8 例，用假子进程（`spawnImpl` 注入 + 三个 `PassThrough`）覆盖——一次进程服务多次读取、并发请求按序配对、就绪行不被当作答案、畸形行被忽略后仍能拿到真答案、沉默子进程按超时答空、子进程死亡时在途请求立刻返回、忽略 `quit` 的子进程被 kill、以及启动参数就是 `-NonInteractive -STA -Command -`。`selection.test.ts` 的源码钉桩补四条：走常驻、一次性路径只剩兜底角色、脚本确实循环读 stdin、monitor 停止时关闭 reader。
+- **验证**：`pnpm typecheck` 通过；`pnpm test` **551 例全过**；`pnpm build` 后确认 `dist/native-selection/src/windows-resident.js` 进了包，`windows-native.js` 里有两处 `startResidentSelection` 引用。
+- **未做**：没有 Windows 机器实测真实 PowerShell 的交互（`-Command -` 下 stdin 行读取的缓冲行为、`GetBoundingRectangles` 的返回节奏）。协议层由假子进程覆盖，端到端待真机。macOS 不受影响，走的仍是自己的 Swift 监控。

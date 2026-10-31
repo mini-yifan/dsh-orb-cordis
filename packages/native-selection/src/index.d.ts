@@ -65,6 +65,8 @@ export interface WindowsSelectionProbe {
     height?: number
   } | undefined>
   activatePid(pid: number): void
+  /** Release the resident reader, if the implementation keeps one. */
+  close?(): void
 }
 
 export function dispatchWindowsSelectionMessage(

@@ -55,7 +55,12 @@ export function startWindowsSelectionMonitor(handlers, probe, install) {
     console.error(`dsh-orb: selection hook failed: ${error instanceof Error ? error.message : String(error)}`)
   }
   return {
-    stop() { unhook() },
+    stop() {
+      unhook()
+      // The reader holds a PowerShell process and a UI Automation stack; leaving it behind
+      // would keep them alive after the ball is switched off.
+      probe.close?.()
+    },
     /**
      * Windows needs no visible-toolbar gate: dismissing a bar costs nothing there, because
      * no read is started until a left-click release actually asks for one. The method keeps

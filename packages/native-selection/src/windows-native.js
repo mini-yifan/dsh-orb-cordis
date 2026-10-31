@@ -3,7 +3,13 @@
 import { execFile } from 'node:child_process'
 import { Worker } from 'node:worker_threads'
 import { requireKoffi } from './koffi.js'
+import { startResidentSelection } from './windows-resident.js'
 
+/**
+ * The one-shot read, used only as a fallback when the resident reader cannot start.
+ * The resident script in `windows-resident.js` is the normal path; this exists so a broken
+ * PowerShell install degrades to the old behaviour instead of no selection at all.
+ */
 const SELECTION_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -99,7 +105,79 @@ function dipRect(x, y, width, height) {
   }
 }
 
+/**
+ * One selection read, on the resident process.
+ *
+ * The process is started on first use and reused for the rest of the host lifetime: the
+ * assemblies it loads (`UIAutomationClient`/`UIAutomationTypes`) are what made a per-click
+ * `powershell.exe` cost about 1.5 s. Falls back to a one-shot process when the resident one
+ * cannot start or has died, so a broken PowerShell install degrades instead of going silent.
+ */
 export function readWindowsSelection() {
+  const resident = residentSelection()
+  if (resident === undefined) return readWindowsSelectionOnce()
+  return resident.read().then((answer) => {
+    if (answer === undefined) {
+      // The reader died or timed out. Restart it for the next read and answer this one from a
+      // one-shot process, so a single failure does not cost the user their selection.
+      resetResidentSelection()
+      return readWindowsSelectionOnce()
+    }
+    return toSelection(answer)
+  })
+}
+
+let residentReader
+let residentFailed = false
+
+function residentSelection() {
+  if (residentReader !== undefined) return residentReader
+  if (residentFailed) return undefined
+  residentReader = startResidentSelection()
+  if (residentReader === undefined) residentFailed = true
+  return residentReader
+}
+
+/** Drop the resident reader so the next read starts a fresh one. */
+export function resetResidentSelection() {
+  residentReader?.close()
+  residentReader = undefined
+}
+
+/** Stop the resident reader. Called when the monitor stops. */
+export function closeResidentSelection() {
+  residentReader?.close()
+  residentReader = undefined
+  residentFailed = false
+}
+
+/** Turn one reader answer into the shape the dispatcher expects. */
+function toSelection(answer) {
+  if (answer.ok !== true || typeof answer.text !== 'string') return undefined
+  // The rectangle needs a koffi DPI probe, which can fail on its own (no shcore, no FFI).
+  // That must cost only the coordinates: the text and pid are already good.
+  let rect = {}
+  if (typeof answer.x === 'number' && typeof answer.y === 'number') {
+    try {
+      rect = dipRect(
+        answer.x,
+        answer.y,
+        typeof answer.width === 'number' ? answer.width : undefined,
+        typeof answer.height === 'number' ? answer.height : undefined,
+      )
+    } catch {
+      rect = {}
+    }
+  }
+  return {
+    text: answer.text,
+    ...typeof answer.pid === 'number' ? { pid: answer.pid } : {},
+    ...rect,
+  }
+}
+
+/** The pre-resident path: one process per read. Kept as the fallback and for the tests. */
+export function readWindowsSelectionOnce() {
   return new Promise((resolve) => {
     execFile('powershell.exe', ['-NoProfile', '-STA', '-Command', SELECTION_SCRIPT], {
       timeout: 1500,
@@ -115,21 +193,7 @@ export function readWindowsSelection() {
           resolve(undefined)
           return
         }
-        // The rectangle needs a koffi DPI probe, which can fail on its own (no shcore, no
-        // FFI). That must cost only the coordinates: the text and pid are already good.
-        let rect = {}
-        if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-          try {
-            rect = dipRect(parsed.x, parsed.y, parsed.width, parsed.height)
-          } catch {
-            rect = {}
-          }
-        }
-        resolve({
-          text: parsed.text,
-          ...typeof parsed.pid === 'number' ? { pid: parsed.pid } : {},
-          ...rect,
-        })
+        resolve(toSelection({ ok: true, ...parsed }))
       } catch {
         resolve(undefined)
       }
@@ -197,5 +261,6 @@ export function productionSelectionProbe() {
   return {
     readSelection: readWindowsSelection,
     activatePid: activateWindowsPid,
+    close: closeResidentSelection,
   }
 }

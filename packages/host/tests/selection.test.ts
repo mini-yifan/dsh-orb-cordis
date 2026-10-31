@@ -89,6 +89,18 @@ describe('selection lines', () => {
     // for it would pass physical pixels off as DIP. The rectangle is dropped instead.
     assert.equal(hooks.includes('if (status !== 0) return 1'), false)
     assert.match(hooks, /if \(status !== 0\) throw new Error\(/)
+    // Selection reads go through one resident PowerShell, not a process per left-click.
+    assert.match(hooks, /startResidentSelection/)
+    assert.match(hooks, /residentSelection\(\)/)
+    // The per-click one-shot survives only as the fallback for a reader that will not start.
+    assert.match(hooks, /readWindowsSelectionOnce/)
+    const resident = readFileSync(join(here, '../../native-selection/src/windows-resident.js'), 'utf8')
+    // `-Command -` is what makes PowerShell read its script from stdin; UI Automation needs STA.
+    assert.match(resident, /'-NonInteractive', '-STA', '-Command', '-'/)
+    assert.match(resident, /while \(\$true\)/)
+    assert.match(resident, /\[Console\]::In\.ReadLine\(\)/)
+    // The reader closes when the monitor stops, so the process does not outlive the ball.
+    assert.match(readFileSync(join(here, '../../native-selection/src/windows-dispatch.js'), 'utf8'), /probe\.close\?\.\(\)/)
   })
 })
 
