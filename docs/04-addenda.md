@@ -546,3 +546,11 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - 冒烟脚手架自身的两处：`smoke-preload.cjs` 的 `onBlock`/`onTurn`/`onReset` 原本是空实现，且漏了 `smoke:appearance` 的转发，看起来像产品缺陷。补齐后徽章才随语言切换。这不是产品问题，记下来免得下次误判。
 
 **验证**：`pnpm typecheck` 通过；`pnpm test` **541 例全过**；`pnpm build` 后真机冒烟 SMOKE-PASS。
+
+### 37.3 AX 坐标空间的判据（不依赖真机授权）
+
+`37.1` 里删掉 `electronRect` 的翻转，依据是「AX 与 CGWindowBounds 同一套坐标」。终端没有辅助功能授权时探针读不到 AX，这条判据改用**代码内部一致性**证明，更强也更可复现：
+
+`macos-selection.swift:220-238` 把 `CGEvent.location` 原样发成 `mouse-down`/`mouse-up` 的 `x`/`y`，一次翻转都不做；而 `orb.ts` 与 `overlays.ts` 拿这两个数直接进 `screen.getDisplayNearestPoint()`（Electron 的左上原点、y 向下空间）。也就是说：**鼠标点从不为 Electron 做转换**。若 AX 矩形走 `electronPoint` 翻到「y = 主屏高度 − y」，两个来源就会落在相反的半屏，工具条在「锚矩形」与「锚鼠标」之间跳动。现在两者都不转换，同一坐标系，`selectionToolbarBounds` 的上下判断才有意义。
+
+顺带说明这条在 `main` 上是潜伏的：旧代码一直发 `bounds`，但 helper 只读 `x`/`y`，`bounds` 从未被消费；本分支开始用它定位，坐标错误才变成可见缺陷。
