@@ -225,13 +225,10 @@ private final class SelectionMonitor: @unchecked Sendable {
     lock.lock()
     let visible = toolbarVisible
     lock.unlock()
-    guard visible || type == .leftMouseDown || type == .leftMouseUp else {
-      // Keep the press tracking honest so a drag that starts before the bar appears still
-      // reads as a drag when it finishes.
-      if type == .leftMouseDown {
-        press = location
-        dragged = false
-      }
+    // A hidden toolbar still needs the whole press-drag-release gesture: `dragged` is only
+    // ever set from a drag event, and it is what decides whether the release reads a
+    // selection at all. So the gesture is always tracked; only its *reports* are gated.
+    guard visible || type == .leftMouseDown || type == .leftMouseUp || type == .leftMouseDragged else {
       return
     }
     switch type {
@@ -245,6 +242,9 @@ private final class SelectionMonitor: @unchecked Sendable {
         let dy = location.y - origin.y
         if hypot(dx, dy) >= minDragPixels { dragged = true }
       }
+      // The drag itself is only bookkeeping: it exists so the release knows this was a drag
+      // rather than a click. A visible toolbar does not need it either — the pointer that
+      // dismisses the bar is a fresh mouse-down and a scroll reports itself.
     case .leftMouseUp:
       // A double- or triple-click selects a word or paragraph without moving the pointer,
       // so the click count counts as a selection too; a lone click still reads nothing.
@@ -384,17 +384,17 @@ private func readAccessibility() -> (text: String, bounds: CGRect?)? {
   return (trimmed, bounds)
 }
 
-private func electronPoint(_ cocoa: NSPoint) -> (x: Double, y: Double) {
-  let primary = NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.main
-  let maxY = primary?.frame.maxY ?? cocoa.y
-  return (Double(cocoa.x), Double(maxY - cocoa.y))
-}
-
+/**
+ * An accessibility bounds rectangle, unchanged.
+ *
+ * `kAXBoundsForRange` already speaks the same top-left, y-down screen space Electron and
+ * CGWindowBounds use — verified by reading both for the same window — so converting it a
+ * second time put the toolbar on the opposite half of the screen.
+ */
 private func electronRect(_ cocoa: CGRect) -> [String: Double] {
-  let topLeft = electronPoint(NSPoint(x: cocoa.origin.x, y: cocoa.maxY))
   return [
-    "x": topLeft.x,
-    "y": topLeft.y,
+    "x": Double(cocoa.origin.x),
+    "y": Double(cocoa.origin.y),
     "width": Double(cocoa.size.width),
     "height": Double(cocoa.size.height),
   ]

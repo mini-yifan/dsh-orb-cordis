@@ -45,6 +45,8 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
   const toolbar = openToolbar(preload)
   const frame = openFrame()
   let barOrigin = { x: 0, y: 0 }
+  /** Whether the bar was placed under the selection (as opposed to flipped above it). */
+  let barBelowSelection = true
   let language: 'zh' | 'en' = 'zh'
 
   toolbar.webContents.on('did-finish-load', () => {
@@ -54,7 +56,9 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
   ipcMain.handle('orb:selection-size', (event, size) => {
     if (!fromToolbar(event, toolbar) || !isSize(size) || toolbar.isDestroyed()) return { menuAbove: false }
     const work = workAreaOf(barOrigin)
-    const bounds = selectionToolbarMenuBounds(barOrigin, size, work)
+    // Opening the menu upward is only safe when the bar sits above the selection; otherwise
+    // it would unfold straight into the words the toolbar was moved clear of.
+    const bounds = selectionToolbarMenuBounds(barOrigin, size, work, barBelowSelection)
     toolbar.setBounds(bounds)
     return { menuAbove: bounds.y < barOrigin.y }
   })
@@ -141,6 +145,9 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
         const work = workAreaOf({ x: record.x, y: record.y })
         const bounds = selectionToolbarBounds(anchor, SELECTION_TOOLBAR_SIZE, work)
         barOrigin = { x: bounds.x, y: bounds.y }
+        // The bar hangs below the rectangle's bottom edge, or above its top edge when the
+        // screen runs out. Remembering which keeps the language menu out of the selection.
+        barBelowSelection = rect === undefined || bounds.y >= rect.y + rect.height
         if (!toolbar.isDestroyed()) {
           toolbar.setBounds(bounds)
           toolbar.showInactive()

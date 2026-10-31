@@ -1897,7 +1897,10 @@ describe('blank conversation sweep', () => {
 })
 
 describe('selection translation', () => {
-  /** A model that answers with the given deltas and records every request it was given. */
+  /**
+   * A model that answers with the given deltas and records every request it was given.
+   * `gate` holds the first delta back so a test can act while the answer is still streaming.
+   */
   function model(deltas: readonly string[], gate?: Promise<void>) {
     const requests: Record<string, unknown>[] = []
     return {
@@ -1915,43 +1918,50 @@ describe('selection translation', () => {
     }
   }
 
-  it('renders a translation in the ball without touching the session', async () => {
-    const fake = model(['你好', '，世界'])
+  /** Boot, connect, and hand the test the monitor feed the selection monitor would use. */
+  async function bootWithMonitor(llm: { stream(options: unknown): AsyncIterable<unknown> }) {
     let feed: ((event: unknown) => void) | undefined
-    const harness = boot({
-      llm: fake.service,
-      // The controller starts only when the helper reports in; capture what it subscribes to.
-      monitorHandlers: (handlers) => { feed = handlers.onEvent },
-    })
+    const harness = boot({ llm, monitorHandlers: (handlers) => { feed = handlers.onEvent } })
     const client = await connect(harness.runtime)
-    // The monitor starts once a helper connects and the switch is on (it ships on).
     await waitFor(() => feed !== undefined)
+    return { harness, client, feed: (event: unknown) => feed?.(event) }
+  }
 
-    feed?.({ type: 'selection', text: 'hello, world', pid: 9, x: 10, y: 20 })
-    client.send({ type: 'selection-action', action: 'translate' })
-
-    const blocks = () => client.messages.filter((message) => message.type === 'block') as {
+  function blocksOf(client: { messages: Record<string, unknown>[] }) {
+    return client.messages.filter((message) => message.type === 'block') as {
       key: string
       kind: string
       text: string
       running: boolean
       local?: true
+      response?: true
     }[]
-    await waitFor(() => blocks().some((block) => block.kind === 'assistant' && block.text.includes('世界')))
+  }
 
-    const answered = blocks().filter((block) => block.kind === 'assistant')
+  it('renders a translation in the ball without touching the session', async () => {
+    const fake = model(['你好', '，世界'])
+    const { harness, client, feed } = await bootWithMonitor(fake.service)
+
+    feed({ type: 'selection', text: 'hello, world', pid: 9, x: 10, y: 20 })
+    client.send({ type: 'selection-action', action: 'translate' })
+
+    await waitFor(() => blocksOf(client).some((block) => block.kind === 'assistant' && block.text.includes('世界')))
+    const answered = blocksOf(client).filter((block) => block.kind === 'assistant')
     assert.equal(answered.at(-1)?.text, '你好，世界')
-    // Every block the translation produced carries the local flag: the panel marks it as
-    // outside the conversation, and nothing in it ever reaches the model again.
-    assert.equal(blocks().every((block) => block.local === true), true)
 
-    // Nothing was prompted: the session never saw this exchange.
-    assert.equal(harness.calls.prompt.length, 0)
-    // One throwaway call, routed at the ball's model, with no tool schemas attached.
+    // The question and the answer need separate keys: the panel keys its DOM nodes by `key`
+    // alone, so one key for both would render the answer into the question's node and fail.
+    const keys = blocksOf(client).map((block) => block.key)
+    assert.equal(new Set(keys).size, keys.length, 'every block has its own key')
+    // The answer is the turn's final answer, so the fold keeps it on screen.
+    assert.equal(answered.every((block) => block.response === true), true)
+    // Everything produced here is display-only.
+    assert.equal(blocksOf(client).every((block) => block.local === true), true)
+
+    assert.equal(harness.calls.prompt.length, 0, 'the session never saw this exchange')
     assert.equal(fake.requests.length, 1)
     assert.equal('tools' in (fake.requests[0] ?? {}), false)
 
-    // The panel is told to look busy, then idle again, exactly like a real turn.
     const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
     assert.equal(client.messages.some((message) => message.type === 'turn' && message.running === true), true)
     await waitFor(() => lastTurn()?.running === false)
@@ -1961,22 +1971,74 @@ describe('selection translation', () => {
     let release = () => {}
     const gate = new Promise<void>((resolve) => { release = resolve })
     const fake = model(['一半', '的译文'], gate)
-    let feed: ((event: unknown) => void) | undefined
-    const harness = boot({ llm: fake.service, monitorHandlers: (handlers) => { feed = handlers.onEvent } })
-    const client = await connect(harness.runtime)
-    await waitFor(() => feed !== undefined)
+    const { harness, client, feed } = await bootWithMonitor(fake.service)
 
-    feed?.({ type: 'selection', text: 'source', pid: 9, x: 1, y: 2 })
+    feed({ type: 'selection', text: 'source', pid: 9, x: 1, y: 2 })
     client.send({ type: 'selection-action', action: 'translate' })
     await waitFor(() => fake.requests.length === 1)
 
-    // Stop reaches a translation before it can reach a session — there is no session turn.
     client.send({ type: 'stop' })
     release()
 
-    // The panel hears the turn close, so the composer comes back and the idle clock starts.
     const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
     await waitFor(() => lastTurn()?.running === false)
     assert.equal(harness.calls.cancel.length, 0, 'stopping a translation cancels no session')
+  })
+
+  it('keeps a superseded translation from unlocking the panel of the one replacing it', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    // The first answer is held mid-stream; the second finishes immediately.
+    const slow = model(['慢'], gate)
+    const fast = model(['快'])
+    let first = true
+    const service = {
+      stream(options: unknown) {
+        const picked = first ? slow.service : fast.service
+        first = false
+        return picked.stream(options)
+      },
+    }
+    const { client, feed } = await bootWithMonitor(service)
+
+    feed({ type: 'selection', text: 'one', pid: 9, x: 1, y: 2 })
+    client.send({ type: 'selection-action', action: 'translate' })
+    await waitFor(() => slow.requests.length === 1)
+
+    feed({ type: 'selection', text: 'two', pid: 9, x: 1, y: 2 })
+    client.send({ type: 'selection-action', action: 'translate' })
+    await waitFor(() => fast.requests.length === 1)
+    release()
+
+    const turns = () => client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]
+    await waitFor(() => turns().at(-1)?.running === false)
+    // Skip the state the panel is handed on connect: two opens and exactly one close. The
+    // superseded answer must not send a second `false` that would unlock the composer while
+    // the replacement was still streaming.
+    assert.deepEqual(turns().slice(1).map((turn) => turn.running), [true, true, false])
+    await waitFor(() => blocksOf(client).some((block) => block.text.includes('快')))
+  })
+
+  it('drops a translation in flight when the conversation is replaced', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const fake = model(['旧译文'], gate)
+    const { client, feed } = await bootWithMonitor(fake.service)
+
+    feed({ type: 'selection', text: 'one', pid: 9, x: 1, y: 2 })
+    client.send({ type: 'selection-action', action: 'translate' })
+    await waitFor(() => fake.requests.length === 1)
+
+    // New chat clears the transcript; a translation belongs to the one it was rendered into.
+    client.send({ type: 'new' })
+    await waitFor(() => client.messages.some((message) => message.type === 'reset'))
+    release()
+
+    const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
+    await waitFor(() => lastTurn()?.running === false)
+    // Nothing may arrive after the reset that belongs to the old transcript.
+    const resetAt = client.messages.findIndex((message) => message.type === 'reset')
+    const after = client.messages.slice(resetAt + 1).filter((message) => message.type === 'block')
+    assert.equal(after.some((block) => String(block.text).includes('旧译文')), false)
   })
 })

@@ -513,3 +513,19 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - **测试**：新增 `host/tests/translate.test.ts`（提示词、截断、流式增量、超长源文本在到达模型前就被裁、abort 后不再投递）；`runtime.test.ts` 新增 "selection translation" 组两例——完整一轮译文带 `local: true`、`prompt` 调用数为 0、请求里没有 `tools`、`turn: true`→`false`；以及"停止只 abort 译文、`cancel` 调用数为 0"。`selection.test.ts` 的 translate 用例改断新语义并新增矩形透传/零面积矩形被丢弃；`listen.test.ts` 新增"翻译时麦克风完全关闭"（pinned、agentBusy、bodyBusy 三种都压成 `off`）；`idle.test.ts` 把 `translationBusy` 加进暂停项。helper 的菜单与设置页断言从"不得出现划词"改为正向断言。
 - **验证**：`pnpm typecheck` 通过；`pnpm test` **537 例全过**；`pnpm build` 装配通过；`libmacos-selection.dylib` 重建，`nm` 确认 `_dsh_macos_selection_set_toolbar_visible` 在 x86_64 与 arm64 两个分片里都导出。
 - **未做**：没有真机跑工具条的出现位置、翻译的展开/固定/取消固定手感，也没有验证「发给 AI」在 macOS 上抓到的截图是不是原应用（`foreground.restore()` 只在 Windows 生效）。Windows 的读取仍按次起 `powershell.exe`，改常驻进程留待下一步。
+
+### 37.1 独立复核修掉的七处缺陷（同日）
+
+第 37 节提交后做了一次独立审查，下面的问题都在真机探针或代码路径上复现过。
+
+- **译文一个字都不显示（最重）**：用户气泡与译文块共用同一个 `key`，而渲染端 `upsertBlock` 只按 `key` 找节点——译文的更新落在了 `.user-row` 上，`querySelector('.am-body')` 为 null、`renderMarkdownBody` 抛错，被 `stage` 的 try/catch 吞掉，整帧丢弃。现在两个块用 `${key}:ask` 与 `${key}:say`。同时发现空文本会被 `block()` 的 `if (!next.trim() && kind !== 'tool') return` 提前挡掉，那个"占位块"从来没建出来。
+- **译文被折叠规则隐藏**：答案块晚于 `turn: true` 创建，落进 `.turn` 分组，而 `chat.css` 的 `.turn:not([data-open]) > .block[data-kind="assistant"]:not([data-response])` 会把它藏起来——流式期间和结束后都看不见。`BlockFlags` 新增 `response`，`block()` 里一并读取，译文块始终带这个标记。
+- **macOS 拖选彻底失效**：`toolbarVisible` 门控只放行 `leftMouseDown`/`leftMouseUp`，把 `leftMouseDragged` 丢了；而 `dragged` 只在拖拽事件里置 true，于是任何拖选都读不到选区，只剩双击三击能用。现在门控放行整个 press-drag-release 手势，只对*上报*做取舍。
+- **AX 矩形被二次翻转（`main` 上潜伏）**：`kAXBoundsForRange` 与 `CGWindowBounds` 本就是同一套左上原点坐标（用同一个窗口实测比对过），`electronRect` 又过了一次 `electronPoint`，选在屏幕上方 y≈171 的文字被算成 771，工具条跑到屏幕下半部。旧代码一直发这个 `bounds` 但没人用，本分支开始消费它才暴露。现在直接透传，`electronPoint` 一并删除。
+- **第二次翻译被第一次的 `finally` 复位**：`stopTranslation()` 之后旧任务的 `finally` 仍然无条件广播 `turn: false` 并把 `translationBusy` 清掉，于是新译文还在流时面板就解锁、麦克风重新打开。现在只有 `this.translation?.key === key` 的那个才碰共享状态，被顶替的只落定自己的块。实测 `turn` 序列从 `[false,true,true,false]` 收敛为一次开一次关。
+- **切会话时翻译泄漏到新对话**：`resetTranscript()` 既没 abort 也没清 `this.translation`，进行中的译文会继续往清空后的 transcript 里写；更隐蔽的是 `openSession` 的 `replaying = true; drain(); replaying = false` 会被 `drain` 的提前 return 整段吞掉，重开的历史里用户气泡凭空消失。现在 `resetTranscript` 先 `stopTranslation()` 并把状态清零。
+- **初始化异常会让转写永久停摆**：`this.translation = …` 到 `try` 之间还有 `store.models()` 和两次 `block()`，任一处抛出都会让 `translation` 永远留值，`drain()` 从此一直提前 return。这些调用已全部移进 `try`。
+- **停止按钮抢先吞掉真实轮次**：`stop` 分支原先在 `translation !== undefined` 时直接 return，真实轮次的停止被吃掉。改成两者都停——按钮的语义是"停下我看到的东西"。
+- **语言菜单盖住选区**：`selectionToolbarMenuBounds` 在下方放不下时向上生长，而工具条此时就在选区正下方，菜单正好压在选中的文字上。新增 `barBelowSelection` 参数：工具条在文字下方时，菜单不再向上翻，改为保持窗口锚在工具条上、裁掉菜单的溢出部分——把窗口上移会把工具条本身拖回去盖住文字。
+- **测试**：`runtime.test.ts` 的 "selection translation" 组扩到 4 例（各自的 key、`response` 标记、并发翻译的 `turn` 序列、切会话后旧译文不得落地）；`overlay-geometry.test.ts` 新增"菜单不翻进选区"；`selection.test.ts` 的源码钉桩补三条——剪贴板兜底已删、`leftMouseDragged` 必须放行、AX 矩形不得二次翻转。
+- **验证**：`pnpm typecheck` 通过；`pnpm test` **540 例全过**；dylib 重建，`nm` 确认新符号在两个架构分片里都在。

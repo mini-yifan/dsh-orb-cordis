@@ -64,6 +64,18 @@ describe('selection lines', () => {
     assert.match(swift, /@_cdecl\("dsh_macos_selection_start"\)/)
     assert.equal(swift.includes('setActivationPolicy'), false)
     assert.equal(swift.includes('DispatchQueue.main.sync'), false)
+    // The clipboard fallback is gone for good: it posted a synthetic ⌘C into whatever had
+    // focus and restored the pasteboard as plain text, destroying images and rich text.
+    assert.equal(swift.includes('readClipboardFallback'), false)
+    assert.equal(swift.includes('postCommandC'), false)
+    // A drag must still be tracked while the toolbar is hidden: `dragged` is what decides
+    // whether the release reads a selection, so gating the drag event away would make every
+    // drag-to-select on macOS silently do nothing.
+    assert.match(swift, /type == \.leftMouseDragged/)
+    // `kAXBoundsForRange` already speaks the top-left screen space Electron uses; converting
+    // it again put the toolbar on the opposite half of the screen.
+    assert.equal(swift.includes('electronRect(NSPoint'), false)
+    assert.match(swift, /@_cdecl\("dsh_macos_selection_set_toolbar_visible"\)/)
     assert.match(worker, /GetMessageW/)
     assert.match(worker, /SetWindowsHookExW/)
     assert.match(hooks, /worker_threads/)

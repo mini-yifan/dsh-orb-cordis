@@ -293,6 +293,8 @@ interface BlockFlags {
   readonly interrupted?: boolean
   /** Display-only content: never sent to the model, never in the session log. */
   readonly local?: boolean
+  /** The turn's final answer, which the fold keeps on screen when the turn is collapsed. */
+  readonly response?: boolean
 }
 
 interface PendingQuestion {
@@ -1481,6 +1483,7 @@ export class OrbRuntime {
       ...(this.turnInterrupted && kind === 'assistant' && !running ? { interrupted: true } : {}),
       ...flags?.interrupted === true ? { interrupted: true as const } : {},
       ...flags?.local === true ? { local: true as const } : {},
+      ...flags?.response === true ? { response: true as const } : {},
       ...(this.responseKeys.includes(key) ? { response: true as const } : {}),
       ...(merged === undefined ? {} : { detail: merged }),
       ...(mergedUsage === undefined ? {} : { usage: mergedUsage }),
@@ -2043,12 +2046,11 @@ export class OrbRuntime {
     }
     if (record.type === 'stop') {
       this.voice.haltSpeech()
-      // A translation looks like a turn on screen, so the stop button reaches it here. It
-      // has no session to cancel: abort the stream and keep what already arrived.
-      if (this.translation !== undefined) {
-        this.stopTranslation()
-        return
-      }
+      // A translation looks like a turn on screen, so the stop button reaches it here. It has
+      // no session to cancel: abort the stream and keep what already arrived. A real turn
+      // that happens to be running is stopped too — the button means "stop what I see", and
+      // a translation started on top of a turn leaves both on screen.
+      this.stopTranslation()
       if (this.turnRunning) {
         const epoch = this.turnEpoch
         this.run('stop', () => this.stopTurn(epoch))
@@ -2146,8 +2148,8 @@ export class OrbRuntime {
       this.status('翻译不可用：当前宿主没有模型服务。')
       return
     }
-    // A second selection replaces the first: one answer streaming at a time keeps the stop
-    // button unambiguous.
+    // A second selection replaces the first: the previous stream is aborted, and its
+    // `finally` sees a different key and therefore leaves the new one's state alone.
     this.stopTranslation()
     const key = `translate:${randomUUID()}`
     const abort = new AbortController()
@@ -2155,19 +2157,24 @@ export class OrbRuntime {
 
     const clipped = clipTranslationText(text)
     const userText = translationUserText(clipped.text, target, clipped.truncated, LOCAL_TRUNCATED_MARK)
-    this.block(key, 'user', userText, false, 'set', undefined, undefined, { local: true })
-    // The answer block exists before the first token so the panel can lay out the turn and
-    // show its busy state; `append` grows it in place as deltas arrive.
-    this.block(key, 'assistant', '', true, 'set', undefined, undefined, { local: true })
-
-    // The ball reads exactly like an agent turn from here: expanded, pinned, stop button up,
-    // composer locked. `turn: true` is the same broadcast a real turn sends.
-    this.broadcast({ type: 'turn', running: true })
-    this.voice.setTranslationBusy(true)
 
     const route = this.store.models().overlay
     let answer = ''
     try {
+      // The question and the answer are separate blocks under separate keys. The panel keys
+      // its nodes by `key` alone, so sharing one would land the answer's updates on the
+      // question's DOM node and fail to render at all.
+      this.block(`${key}:ask`, 'user', userText, false, 'set', undefined, undefined, { local: true })
+      // The answer is marked `response` so the turn fold keeps it visible: it is created after
+      // `turn: true` below, which puts it inside the foldable process group.
+      this.block(`${key}:say`, 'assistant', '', true, 'set', undefined, undefined, {
+        local: true,
+        response: true,
+      })
+      // The ball reads exactly like an agent turn from here: expanded, pinned, stop button up,
+      // composer locked. `turn: true` is the same broadcast a real turn sends.
+      this.broadcast({ type: 'turn', running: true })
+      this.voice.setTranslationBusy(true)
       answer = await runTranslation({
         source: clipped.text,
         target,
@@ -2176,9 +2183,13 @@ export class OrbRuntime {
         llm,
         signal: abort.signal,
         onText: (soFar) => {
-          // The panel ignores a frame for a transcript it has already replaced.
+          // The panel ignores a frame for a transcript it has already replaced, and a
+          // superseded translation must not paint over the one that replaced it.
           if (this.translation?.key !== key) return
-          this.block(key, 'assistant', soFar, true, 'set', undefined, undefined, { local: true })
+          this.block(`${key}:say`, 'assistant', soFar, true, 'set', undefined, undefined, {
+            local: true,
+            response: true,
+          })
         },
       })
     } catch (error) {
@@ -2189,19 +2200,28 @@ export class OrbRuntime {
         this.status(message)
       }
     } finally {
-      if (this.translation?.key === key) this.translation = undefined
+      // Only the newest translation owns the shared state. A superseded one settles its own
+      // blocks and stops there, so it cannot unlock the panel or reopen the microphone while
+      // its replacement is still streaming.
+      const current = this.translation?.key === key
+      if (current) this.translation = undefined
       // Settle whether the answer finished, failed, or was stopped: the panel drops its
       // busy look either way, and the idle clock starts counting down to the unpin.
       this.block(
-        key,
+        `${key}:say`,
         'assistant',
         answer,
         false,
         'set',
         undefined,
         undefined,
-        { local: true, ...abort.signal.aborted ? { interrupted: true as const } : {} },
+        {
+          local: true,
+          response: true,
+          ...abort.signal.aborted ? { interrupted: true as const } : {},
+        },
       )
+      if (!current) return
       this.broadcast({ type: 'turn', running: false })
       this.voice.setTranslationBusy(false)
       // The transcript poll stood aside while the translation held the view. Catch up now
@@ -2338,6 +2358,11 @@ export class OrbRuntime {
   }
 
   private resetTranscript(): void {
+    // A translation belongs to the transcript it was rendered into. Switching or clearing the
+    // conversation must cancel it, or its late deltas would paint into the new transcript.
+    this.stopTranslation()
+    this.translation = undefined
+    this.voice.setTranslationBusy(false)
     this.pendingPrompt = undefined
     this.blocks.clear()
     this.blockOrder.length = 0

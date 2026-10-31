@@ -49,6 +49,23 @@ describe('overlay geometry', () => {
     assert.equal(above.y + above.height <= work.height, true)
   })
 
+  it('does not unfold the language menu into the selection it was moved clear of', () => {
+    // A bar under a low selection has no room below for the whole menu. Opening upward would
+    // cover the words the toolbar was deliberately placed clear of, so the window stays
+    // anchored on the bar and is clipped instead.
+    const selection = { x: 480, y: 700, width: 40, height: 20 }
+    const bar = selectionToolbarBounds(selection, SELECTION_TOOLBAR_SIZE, work)
+    assert.equal(bar.y >= selection.y + selection.height, true, 'the bar is below the text')
+    const menu = selectionToolbarMenuBounds(bar, { width: 280, height: 100 }, work, true)
+    assert.equal(menu.y, bar.y, 'the window stays where the bar is')
+    assert.equal(menu.y >= selection.y + selection.height, true, 'so the bar itself never covers the text')
+    assert.equal(menu.y + menu.height <= work.y + work.height, true)
+    assert.equal(menu.y + menu.height, work.y + work.height, 'the menu takes what room is left')
+    // A bar above the text may open upward freely: there is nothing under it to cover.
+    const up = selectionToolbarMenuBounds({ x: 20, y: 760 }, { width: 280, height: 120 }, work, false)
+    assert.equal(up.y < 760, true)
+  })
+
   it('keeps the observation hole on the rectangle and clips a flush edge', () => {
     assert.equal(OBSERVATION_FRAME_OUTSET, 36)
     const placed = observationFramePlacement({ x: 100, y: 80, width: 200, height: 150 }, work)

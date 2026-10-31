@@ -77,18 +77,23 @@ export function selectionToolbarBounds(
 
 /**
  * Grow the toolbar window for the language menu.
- * The menu hangs below the bar when it fits, and above when it would leave the work area.
+ *
+ * The menu hangs below the bar when that fits, and above it otherwise. `barBelowSelection`
+ * says which side of the selected text the bar itself was placed on: when the bar sits
+ * *under* the text, the menu must not unfold upward into the text it was moved clear of.
  */
 export function selectionToolbarMenuBounds(
   barOrigin: { readonly x: number; readonly y: number },
   contentSize: { readonly width: number; readonly height: number },
   workArea: OverlayRect,
+  barBelowSelection = false,
 ): OverlayRect {
   const width = Math.max(1, Math.round(contentSize.width))
   const height = Math.max(1, Math.round(contentSize.height))
   const x = clamp(barOrigin.x, workArea.x, workArea.x + workArea.width - width)
   const fitsBelow = barOrigin.y + height <= workArea.y + workArea.height
-  if (fitsBelow || height <= SELECTION_TOOLBAR_SIZE.height) {
+  const barHeight = SELECTION_TOOLBAR_SIZE.height
+  if (fitsBelow || height <= barHeight) {
     return {
       x,
       y: clamp(barOrigin.y, workArea.y, workArea.y + workArea.height - height),
@@ -96,10 +101,23 @@ export function selectionToolbarMenuBounds(
       height,
     }
   }
+  // No room below the bar. Opening upward would cover the selection whenever the bar is
+  // itself under the text, so in that case the menu stays below and the window is clipped
+  // instead. The window must stay anchored on the bar: moving it up would drag the bar
+  // itself back over the words it was just placed clear of.
+  if (barBelowSelection) {
+    const room = Math.max(barHeight, workArea.y + workArea.height - barOrigin.y)
+    return {
+      x,
+      y: barOrigin.y,
+      width,
+      height: Math.min(height, room),
+    }
+  }
   return {
     x,
     y: clamp(
-      barOrigin.y + SELECTION_TOOLBAR_SIZE.height - height,
+      barOrigin.y + barHeight - height,
       workArea.y,
       workArea.y + workArea.height - height,
     ),
