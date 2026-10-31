@@ -71,6 +71,7 @@ await chmod(join(dist, 'computer-use', 'macos-sck-capture'), 0o755)
 await copyFrom('helper', 'lib', join(dist, 'helper', 'lib'))
 await copyFrom('helper', 'preload.cjs', join(dist, 'helper', 'preload.cjs'))
 await copyFrom('helper', 'selection-preload.cjs', join(dist, 'helper', 'selection-preload.cjs'))
+await copyFrom('helper', 'lasso-preload.cjs', join(dist, 'helper', 'lasso-preload.cjs'))
 await copyFrom('helper', 'assets', join(dist, 'helper', 'assets'))
 
 await copyFrom('native-selection', 'src', join(dist, 'native-selection', 'src'))

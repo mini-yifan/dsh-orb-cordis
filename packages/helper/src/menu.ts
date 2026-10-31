@@ -7,6 +7,7 @@ export interface ContextMenuState {
   readonly overlay: MenuSelection
   readonly background: MenuSelection
   readonly selectionEnabled: boolean
+  readonly lassoEnabled: boolean
   readonly millifractionEnabled: boolean
   readonly openMain: boolean
   /** Newer published version, or null when the ball has nothing to offer. */
@@ -19,6 +20,7 @@ export interface ContextMenuActions {
   setOverlay(selection: MenuSelection): void
   setBackground(selection: MenuSelection): void
   setSelection(enabled: boolean): void
+  setLasso(enabled: boolean): void
   setMillifraction(enabled: boolean): void
   update(): void
   disable(): void
@@ -56,6 +58,12 @@ export function contextMenuTemplate(state: ContextMenuState, zh: boolean, action
       type: 'checkbox',
       checked: state.selectionEnabled,
       click: (item) => { actions.setSelection(item.checked) },
+    },
+    {
+      label: zh ? '圈选截图' : 'Lasso screenshot',
+      type: 'checkbox',
+      checked: state.lassoEnabled,
+      click: (item) => { actions.setLasso(item.checked) },
     },
     {
       label: zh ? '千分比坐标' : 'Millifraction coordinates',

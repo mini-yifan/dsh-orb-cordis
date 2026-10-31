@@ -29,6 +29,7 @@ interface ChromeState {
   overlay: MenuSelection
   background: MenuSelection
   selectionEnabled: boolean
+  lassoEnabled: boolean
   millifractionEnabled: boolean
   openMain: boolean
   catalog: MenuCatalog
@@ -47,6 +48,7 @@ let chrome: ChromeState = {
   background: noSelection,
   // The toolbar ships on; the host's first publish corrects this either way.
   selectionEnabled: true,
+  lassoEnabled: true,
   millifractionEnabled: false,
   openMain: false,
   catalog: { groups: [] },
@@ -72,6 +74,10 @@ let overlays: {
   appearance(payload: { dark: boolean; locale: 'zh' | 'en' }): void
   deliver(message: unknown): boolean
   chromeWindows(): readonly (NativeHandleWindow | undefined)[]
+  lassoStart(point: { x: number; y: number }, display: { x: number; y: number; width: number; height: number; scale: number }): void
+  lassoPoint(point: { x: number; y: number }): void
+  lassoEnd(): void
+  lassoCancel(): void
 } | undefined
 let placement: FloatingPlacement | undefined
 let live: Socket | undefined
@@ -110,6 +116,7 @@ void app.whenReady().then(async () => {
     // The page may have loaded after the last appearance or bookmark change.
     pushAppearance()
     if (win && !win.isDestroyed()) {
+      win.webContents.send('orb:lasso-enabled', chrome.lassoEnabled)
       // A fresh page holds none of the expansion or strip classes while this window keeps
       // the width the strip reserved: re-apply the geometry before the chips come back,
       // or the panel would sit over them until the next expand.
@@ -160,6 +167,60 @@ ipcMain.on('orb:drag-move', (event, canDock) => {
   placement.dragTo(cursorPoint(), canDock !== false)
 })
 
+// Lasso drawing. The renderer reports movement only; every point comes from the
+// OS cursor, the same DIP space the overlay windows and their bounds use.
+ipcMain.on('orb:lasso-start', (event) => {
+  if (!fromBall(event) || !overlays) return
+  const point = cursorPoint()
+  const display = screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) })
+  overlays.lassoStart(point, {
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    scale: display.scaleFactor,
+  })
+})
+
+ipcMain.on('orb:lasso-point', (event) => {
+  if (!fromBall(event) || !overlays) return
+  overlays.lassoPoint(cursorPoint())
+})
+
+ipcMain.on('orb:lasso-end', (event) => {
+  if (!fromBall(event) || !overlays) return
+  overlays.lassoEnd()
+})
+
+ipcMain.on('orb:lasso-cancel', (event) => {
+  if (!fromBall(event) || !overlays) return
+  overlays.lassoCancel()
+})
+
+ipcMain.on('orb:lasso-dismiss', (event, id) => {
+  if (!fromBall(event)) return
+  if (typeof id === 'string' && id !== '') write({ type: 'lasso-dismiss', id })
+})
+
+ipcMain.handle('orb:load-image', async (event, ref, thumb) => {
+  if (!fromBall(event)) return undefined
+  if (!isImageRef(ref)) return undefined
+  const image = await fetchAttachment(ref, thumb === true)
+  if (image === undefined) return undefined
+  return `data:${image.mime};base64,${image.body.toString('base64')}`
+})
+
+ipcMain.handle('orb:preview-image', async (event, ref) => {
+  if (!fromBall(event) || !isImageRef(ref)) return false
+  const image = await fetchAttachment(ref, false)
+  if (image === undefined) return false
+  return overlays?.deliver({
+    type: 'lasso-preview',
+    src: `data:${image.mime};base64,${image.body.toString('base64')}`,
+    locale: uiLanguage(),
+  }) === true
+})
+
 ipcMain.handle('orb:drag-end', async (event, canDock) => {
   if (!fromBall(event) || !placement) return { docked: undefined }
   const cursor = cursorPoint()
@@ -178,9 +239,13 @@ ipcMain.handle('orb:unsnap', async (event) => {
   return placement.unsnap()
 })
 
-ipcMain.on('orb:prompt', (event, text) => {
+ipcMain.on('orb:prompt', (event, text, lassoId) => {
   if (!fromBall(event)) return
-  write({ type: 'prompt', text })
+  write({
+    type: 'prompt',
+    text,
+    ...typeof lassoId === 'string' && lassoId !== '' ? { lassoId } : {},
+  })
 })
 
 ipcMain.on('orb:question-answer', (event, payload) => {
@@ -406,6 +471,9 @@ function deliver(message: unknown): void {
     return
   }
   if (record.type === 'turn') {
+    // A turn starting while the lasso frame is still open would let the agent capture
+    // this chrome; close it first. Sending is already past the frame at this point.
+    if ((record as { running?: unknown }).running === true) overlays?.lassoCancel()
     win.webContents.send('orb:turn', message)
     return
   }
@@ -482,6 +550,7 @@ function deliver(message: unknown): void {
   }
   if (record.type === 'chrome') {
     chrome = readChrome(record)
+    if (win && !win.isDestroyed()) win.webContents.send('orb:lasso-enabled', chrome.lassoEnabled)
     return
   }
   if (record.type === 'appearance') {
@@ -642,6 +711,7 @@ function readChrome(value: unknown): ChromeState {
     overlay?: MenuSelection
     background?: MenuSelection
     selectionEnabled?: unknown
+    lassoEnabled?: unknown
     millifractionEnabled?: unknown
     openMain?: unknown
     update?: unknown
@@ -651,6 +721,7 @@ function readChrome(value: unknown): ChromeState {
     overlay: selectionOr(record.overlay, chrome.overlay),
     background: selectionOr(record.background, chrome.background),
     selectionEnabled: record.selectionEnabled === true,
+    lassoEnabled: record.lassoEnabled !== false,
     millifractionEnabled: record.millifractionEnabled === true,
     openMain: record.openMain === true,
     update: typeof record.update === 'string' && record.update !== '' ? record.update : null,
@@ -670,6 +741,7 @@ async function showMenu(window: BrowserWindow): Promise<void> {
     setOverlay: (selection) => { write({ type: 'set-overlay', selection }) },
     setBackground: (selection) => { write({ type: 'set-background', selection }) },
     setSelection: (enabled) => { write({ type: 'set-selection', enabled }) },
+    setLasso: (enabled) => { write({ type: 'set-lasso', enabled }) },
     setMillifraction: (enabled) => { void confirmMillifraction(window, enabled) },
     update: () => { write({ type: 'update' }) },
     disable: () => { write({ type: 'disable' }) },
@@ -781,6 +853,76 @@ function fetchAvatar(version: number): Promise<{ mime: string; body: Buffer } | 
       })
     })
     req.setTimeout(5000, () => {
+      req.destroy()
+      resolve(undefined)
+    })
+    req.on('error', () => resolve(undefined))
+    req.end()
+  })
+}
+
+const MAX_ATTACHMENT_RESPONSE_BYTES = 16 * 1024 * 1024
+
+interface ImageRef {
+  attachmentId: string
+  mediaType: string
+  bytes: number
+  width: number
+  height: number
+  name?: string
+}
+
+function isImageRef(value: unknown): value is ImageRef {
+  if (typeof value !== 'object' || value === null) return false
+  const record = value as Record<string, unknown>
+  if (typeof record.attachmentId !== 'string' || record.attachmentId === '' || record.attachmentId.length > 120) return false
+  if (typeof record.mediaType !== 'string' || record.mediaType === '') return false
+  for (const field of ['bytes', 'width', 'height'] as const) {
+    if (typeof record[field] !== 'number' || !Number.isFinite(record[field]) || record[field] <= 0) return false
+  }
+  return true
+}
+
+function fetchAttachment(ref: ImageRef, thumb: boolean): Promise<{ mime: string; body: Buffer } | undefined> {
+  const port = Number(webPort)
+  if (!Number.isInteger(port) || port <= 0 || !token) return Promise.resolve(undefined)
+  const query = new URLSearchParams({
+    id: ref.attachmentId,
+    mediaType: ref.mediaType,
+    bytes: String(Math.trunc(ref.bytes)),
+    width: String(Math.trunc(ref.width)),
+    height: String(Math.trunc(ref.height)),
+    ...thumb ? { thumb: '1' } : {},
+  })
+  return new Promise((resolve) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: `/.dsh-orb/attachment?${query.toString()}`,
+      method: 'GET',
+      headers: { 'x-dsh-orb-helper': token },
+    }, (res) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      res.on('data', (chunk: Buffer) => {
+        size += chunk.length
+        if (size > MAX_ATTACHMENT_RESPONSE_BYTES) {
+          req.destroy()
+          resolve(undefined)
+          return
+        }
+        chunks.push(chunk)
+      })
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          resolve(undefined)
+          return
+        }
+        const mime = typeof res.headers['content-type'] === 'string' ? res.headers['content-type'].split(';')[0] : 'image/png'
+        resolve({ mime: mime ?? 'image/png', body: Buffer.concat(chunks) })
+      })
+    })
+    req.setTimeout(8000, () => {
       req.destroy()
       resolve(undefined)
     })

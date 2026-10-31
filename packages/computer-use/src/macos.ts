@@ -1016,7 +1016,7 @@ export function createMacosDesktopBackend(
       return screen === undefined ? [] : [screen]
     },
 
-    async capture(screen, signal) {
+    async capture(screen, signal, options) {
       const dir = await mkdtemp(join(tmpdir(), 'dsh-computer-use-'))
       const file = join(dir, 'screen.jpg')
       const excludeWindowIds = activeCaptureExcludeWindowIds()
@@ -1047,7 +1047,8 @@ export function createMacosDesktopBackend(
           // scale, and `-C` bakes the system cursor in so the agent sees where its clicks land.
           // A bare `screencapture` would write the main display only and the observed window
           // of a secondary display would come back as main-display pixels.
-          await run(SCREENCAPTURE, ['-x', '-C', '-R', region, '-t', 'jpg', file], { signal })
+          const cursor = options?.cursor === false ? [] : ['-C']
+          await run(SCREENCAPTURE, ['-x', ...cursor, '-R', region, '-t', 'jpg', file], { signal })
         } else {
           await overlayCapture(region, excludeWindowIds)
         }

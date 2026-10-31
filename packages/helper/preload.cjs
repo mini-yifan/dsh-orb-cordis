@@ -23,8 +23,8 @@ contextBridge.exposeInMainWorld('dshOrb', {
   syncStrip() {
     return ipcRenderer.invoke('orb:sync-strip')
   },
-  send(text) {
-    ipcRenderer.send('orb:prompt', text)
+  send(text, lassoId) {
+    ipcRenderer.send('orb:prompt', text, typeof lassoId === 'string' ? lassoId : undefined)
   },
   answerQuestion(id, answers) {
     ipcRenderer.send('orb:question-answer', { id, answers })
@@ -58,6 +58,27 @@ contextBridge.exposeInMainWorld('dshOrb', {
   },
   reportActivity() {
     ipcRenderer.send('orb:activity')
+  },
+  lassoStart() {
+    ipcRenderer.send('orb:lasso-start')
+  },
+  lassoPoint() {
+    ipcRenderer.send('orb:lasso-point')
+  },
+  lassoEnd() {
+    ipcRenderer.send('orb:lasso-end')
+  },
+  lassoCancel() {
+    ipcRenderer.send('orb:lasso-cancel')
+  },
+  lassoDismiss(id) {
+    ipcRenderer.send('orb:lasso-dismiss', id)
+  },
+  loadImage(ref, thumb) {
+    return ipcRenderer.invoke('orb:load-image', ref, thumb === true)
+  },
+  previewImage(ref) {
+    return ipcRenderer.invoke('orb:preview-image', ref)
   },
   copy(text) {
     ipcRenderer.send('orb:copy', text)
@@ -118,6 +139,18 @@ contextBridge.exposeInMainWorld('dshOrb', {
   },
   onAttach(callback) {
     ipcRenderer.on('orb:attach', (_event, text) => callback(text))
+  },
+  onLassoAttach(callback) {
+    ipcRenderer.on('orb:lasso-attach', (_event, payload) => callback(payload))
+  },
+  onLassoDone(callback) {
+    ipcRenderer.on('orb:lasso-done', () => callback())
+  },
+  onLassoReject(callback) {
+    ipcRenderer.on('orb:lasso-reject', () => callback())
+  },
+  onLassoEnabled(callback) {
+    ipcRenderer.on('orb:lasso-enabled', (_event, enabled) => callback(enabled === true))
   },
   onAppearance(callback) {
     ipcRenderer.on('orb:appearance', (_event, appearance) => callback(appearance))

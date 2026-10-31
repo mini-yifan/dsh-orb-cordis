@@ -39,6 +39,9 @@ declare module 'electron' {
     once(event: 'ready-to-show', listener: () => void): void
     on(event: 'closed', listener: () => void): void
     webContents: WebContents
+    focus(): void
+    show(): void
+    destroy(): void
   }
 
   interface BrowserWindowOptions {
@@ -116,11 +119,13 @@ declare module 'electron' {
     /** Absolute cursor position in DIPs, the same space `BrowserWindow` bounds use. */
     getCursorScreenPoint(): { x: number; y: number }
     screenToDipRect(window: null, rect: Rectangle): Rectangle
+    dipToScreenRect?(window: null, rect: Rectangle): Rectangle
   }
 
   export const ipcMain: {
     on(channel: string, listener: (event: unknown, ...args: unknown[]) => void): void
     handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void
+    removeListener(channel: string, listener: (event: unknown, ...args: unknown[]) => void): void
   }
 
   export const shell: {
@@ -130,6 +135,11 @@ declare module 'electron' {
   export const clipboard: {
     writeText(text: string): void
     readText(): string
+  }
+
+  export const globalShortcut: {
+    register(accelerator: string, callback: () => void): boolean
+    unregister(accelerator: string): void
   }
 
   export const nativeTheme: {

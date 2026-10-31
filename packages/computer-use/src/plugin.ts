@@ -58,6 +58,7 @@ import { assertImageCapableRoute, routeAcceptsImages } from './route.ts'
 import { withScreenLock } from './gui-lock.ts'
 import { BALL_PRESET, presetOf, screenOwnerId } from './screen-owner.ts'
 import { isDesktopSelectionTurn } from './selection-turn.ts'
+import { createLassoSeedStore, lassoFirstFrameNotice, type LassoSeedStore } from './lasso.ts'
 import { pairScreenshotFiles, writeDesktopScreenshots } from './screenshot.ts'
 import { delay } from './wait.ts'
 import { LONG_WAIT_SECONDS, WAIT_SECONDS, requireLongWaitSeconds } from './wait-args.ts'
@@ -262,6 +263,7 @@ export function applyComputerUse(
   config: ResolvedComputerUseConfig,
 ): void {
   installCoordinateMode(ctx)
+  ctx.provide('computerUseLassoSeed', createLassoSeedStore())
   ctx.systemPrompt.section({
     name: 'tool:computer-use',
     order: POLICY_SECTION_ORDER,
@@ -1121,6 +1123,45 @@ export function applyComputerUse(
     if (!await routeAcceptsImages(ctx, agent, signal)) return decision
     signal.throwIfAborted()
     const mode = coordinateModeOf(agent.session)
+    const seedStore = ctx.get('computerUseLassoSeed') as LassoSeedStore | undefined
+    const seed = seedStore?.take(agent.session.id)
+    if (seed !== undefined) {
+      // The lasso image is already durable; the first frame is this screenshot, not
+      // a fresh capture of whatever is frontmost after the user clicked the ball.
+      const screens: ObservedScreen[] = [{
+        screenIndex: 0,
+        logicalWidth: seed.screen.bounds.width,
+        logicalHeight: seed.screen.bounds.height,
+        scale: seed.screen.scale,
+        ...seed.screen.windowId === undefined ? {} : { windowId: seed.screen.windowId },
+        ...seed.screen.transientWindowIds === undefined ? {} : { transientWindowIds: [...seed.screen.transientWindowIds] },
+        ...seed.screen.appName === undefined ? {} : { appName: seed.screen.appName },
+        image: {
+          attachmentId: String(seed.image.attachmentId),
+          mediaType: seed.image.mediaType,
+          bytes: seed.image.bytes,
+          width: seed.image.width,
+          height: seed.image.height,
+          ...seed.image.name === undefined ? {} : { name: seed.image.name },
+          ...seed.image.originalDimensions === undefined
+            ? {}
+            : { originalDimensions: { ...seed.image.originalDimensions } },
+        },
+      }]
+      rememberObservation(agent.session, screens)
+      const notice = createUserMessage({
+        content: [
+          { type: 'text', text: lassoFirstFrameNotice(mode) },
+          ...observationContent(screens, seed.foreground, mode),
+        ],
+        source: {
+          kind: 'computer-use',
+          form: 'notice',
+          summary: 'Lasso selection attached',
+        },
+      })
+      return { ...decision, messages: [...decision.messages, notice] }
+    }
     const observation = await observeDesktop(ctx, backend, signal, { coordinateMode: mode })
     rememberObservation(agent.session, observation.screens)
     signal.throwIfAborted()

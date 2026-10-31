@@ -82,7 +82,7 @@ export function clipboardRestoreIncomplete(snapshot: ClipboardSnapshot, restored
 export interface WindowsDesktopOps {
   /** Z-order snapshot in physical pixels, including the foreground hwnd. */
   listWindows(): WindowsDesktopSnapshot
-  capturePng(bounds: WindowsRect): Uint8Array
+  capturePng(bounds: WindowsRect, options?: { readonly cursor?: boolean }): Uint8Array
   /**
    * True when the window `hwnd` is elevated above this process (UIPI), so posted input
    * would be dropped. `0` and windows that are no longer on screen are never blocked;
@@ -486,10 +486,10 @@ export function createWindowsDesktopBackend(ops?: WindowsDesktopOps): DesktopBac
       return [screenFromObservation(selected)]
     },
 
-    async capture(screen, signal): Promise<CapturedScreen> {
+    async capture(screen, signal, options): Promise<CapturedScreen> {
       signal?.throwIfAborted()
       try {
-        const data = (await use()).capturePng(screen.bounds)
+        const data = (await use()).capturePng(screen.bounds, options)
         return { data, mediaType: 'image/png' }
       } catch (error: unknown) {
         if (error instanceof Error && error.message.startsWith('computer-use:')) throw error

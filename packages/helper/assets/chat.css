@@ -45,6 +45,31 @@
   overflow-wrap: anywhere;
 }
 
+/* The lasso screenshot riding a user bubble. Hover is the affordance; the click
+ * opens the full-window preview through the helper. */
+.user-shot {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  align-self: flex-end;
+}
+
+.user-shot[hidden] {
+  display: none;
+}
+
+.user-shot img {
+  display: block;
+  max-width: 180px;
+  max-height: 120px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 14%, transparent);
+  box-shadow: 0 2px 8px rgba(17, 17, 17, 0.24);
+}
+
 /* Plugin notices (the code_agent completion report) render as a .block with
  * data-variant="think": the reasoning card's fold mechanics apply as-is —
  * a one-line summary until the user expands it. */

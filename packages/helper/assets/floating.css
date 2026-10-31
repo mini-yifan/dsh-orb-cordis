@@ -22,6 +22,8 @@
   --panel-shadow: 0 4px 8px rgba(17, 17, 17, 0.22);
   /* Bookmark strip: reserved window width and per-conversation attribution hues. */
   --strip-w: 0px;
+  /* Height of the screenshot attachment card above the composer. */
+  --lasso-chip: 60px;
   /* Offset of the panel's far edge: its own chrome plus the reserved strip. The panel
    * and the strip are both placed from this one value, so they cannot drift apart. */
   --panel-left: calc(var(--chrome) + var(--strip-w));
@@ -1037,6 +1039,186 @@ body.expand-up #ball {
 body.expand-down #ball {
   bottom: auto;
   top: var(--chrome);
+}
+
+body.expanded #ball {
+  cursor: default;
+}
+
+/* The lasso handle: a small badge on the ball's outer corner. It is a sibling
+ * of #ball so a press never reaches the ball's move/pin gesture. */
+#lasso-ball {
+  position: absolute;
+  z-index: 4;
+  right: calc(var(--chrome) + 2px);
+  bottom: calc(var(--chrome) + 2px);
+  width: 26px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  background: rgba(138, 138, 147, 0.8);
+  box-shadow: 0 2px 7px rgba(17, 17, 17, 0.35);
+  cursor: crosshair;
+  transition: transform 120ms ease, opacity 160ms ease;
+}
+
+#lasso-ball:hover {
+  transform: scale(1.1);
+}
+
+#lasso-ball.disabled,
+body.running #lasso-ball,
+body.asking #lasso-ball,
+body.tcc-gating #lasso-ball {
+  opacity: 0.42;
+  cursor: default;
+  transform: none;
+}
+
+body.expand-right #lasso-ball {
+  left: calc(var(--chrome) + 2px);
+  right: auto;
+}
+
+body.expand-down #lasso-ball {
+  top: calc(var(--chrome) + 2px);
+  bottom: auto;
+}
+
+body.docked #lasso-ball,
+body.lassoing #lasso-ball,
+body.lassoing #ball,
+body.lassoing #panel {
+  visibility: hidden;
+}
+
+/* Screenshot attachment above the composer. The selection chip, when both are
+ * present, sits above it so the newest attachment stays closest to the input. */
+#lasso-chip {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: var(--lasso-chip);
+  width: calc(100% - var(--ball) - 28px);
+  padding: 6px;
+  color: var(--pin);
+  background: var(--input-bg);
+  border-radius: 16px;
+}
+
+#lasso-chip[hidden] {
+  display: none;
+}
+
+body.running #lasso-chip,
+body.asking #lasso-chip,
+body.tcc-gating #lasso-chip {
+  visibility: hidden;
+}
+
+body.expand-left #lasso-chip {
+  left: 16px;
+}
+
+body.expand-right #lasso-chip {
+  right: 16px;
+}
+
+body.has-strip.strip-left #lasso-chip {
+  left: calc(var(--strip-w) + 16px);
+  width: calc(100% - var(--strip-w) - var(--ball) - 28px);
+}
+
+body.has-strip.strip-right #lasso-chip {
+  right: calc(var(--strip-w) + 16px);
+  width: calc(100% - var(--strip-w) - var(--ball) - 28px);
+}
+
+body.expand-up #lasso-chip {
+  bottom: var(--composer-height);
+}
+
+body.expand-down #lasso-chip {
+  top: var(--composer-height);
+}
+
+#lasso-chip-image {
+  flex: none;
+  width: 64px;
+  height: 46px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: color-mix(in srgb, var(--pin) 18%, transparent);
+  cursor: pointer;
+}
+
+#lasso-chip-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+#lasso-chip-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#lasso-chip-meta {
+  font-size: 11px;
+  color: var(--pin);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#lasso-chip-dismiss {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  color: var(--pin);
+  background: transparent;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+body.expand-up.has-lasso-chip.has-selection-chip #selection-chip {
+  bottom: calc(var(--composer-height) + var(--lasso-chip) + 6px);
+}
+
+body.expand-down.has-lasso-chip.has-selection-chip #selection-chip {
+  top: calc(var(--composer-height) + var(--lasso-chip) + 6px);
+}
+
+body.has-lasso-chip.expand-up #panel {
+  padding-bottom: calc(var(--composer-height) + var(--lasso-chip) + 10px);
+}
+
+body.has-lasso-chip.expand-down #panel {
+  padding-top: calc(var(--composer-height) + var(--lasso-chip) + 10px);
+}
+
+body.has-lasso-chip.has-selection-chip.expand-up #panel {
+  padding-bottom: calc(var(--composer-height) + var(--lasso-chip) + var(--selection-chip) + 16px);
+}
+
+body.has-lasso-chip.has-selection-chip.expand-down #panel {
+  padding-top: calc(var(--composer-height) + var(--lasso-chip) + var(--selection-chip) + 16px);
 }
 
 body.expanded #ball {

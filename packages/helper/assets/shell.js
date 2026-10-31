@@ -52,6 +52,10 @@ const zh = {
   tooLong: '最多 8000 个字符，已保留输入。',
   truncated: '已截断',
   chipDismiss: '移除',
+  lassoTitle: '圈选截图',
+  lassoMeta: '{w} × {h}',
+  lassoReject: '没有闭合，再画一圈',
+  lassoDismissed: '已取消圈选截图',
   workLocked: '悬浮球 Agent 执行期间不能切换对话',
   historyLocked: 'Agent 执行期间不能查看历史对话',
   newLocked: 'Agent 执行期间不能新建对话',
@@ -110,6 +114,10 @@ const en = {
   tooLong: 'Limit is 8000 characters. The text was kept.',
   truncated: 'truncated',
   chipDismiss: 'Remove',
+  lassoTitle: 'Screen selection',
+  lassoMeta: '{w} × {h}',
+  lassoReject: 'Stroke did not close — circle again',
+  lassoDismissed: 'Screen selection removed',
   workLocked: 'Cannot switch conversations while the floating-ball agent is working',
   historyLocked: 'History is unavailable while the agent is working',
   newLocked: 'A new conversation cannot start while the agent is working',
@@ -293,6 +301,12 @@ function main() {
   let workLocked = false
   let hintTimer
   let attachedSelection = ''
+  /** The lasso screenshot waiting to be sent with the next instruction. */
+  let attachedLasso
+  let lassoPressing = false
+  let lassoActive = false
+  let lassoPointerId
+  let lassoEnabled = true
   let tccGateVisible = false
   let processGroup
   let processClock
@@ -328,6 +342,9 @@ function main() {
   const blocks = new Map()
   // Last message per block key: the locale refresh re-renders from it.
   const blockData = new Map()
+  /** Image refs riding user bubbles, and their already-fetched thumbnails. */
+  const userImages = new Map()
+  const userImageSrc = new Map()
   let lastTccStatus
 
   /**
@@ -443,8 +460,9 @@ function main() {
 
   function syncGif() {
     if (pageClosed()) return
+    syncLassoBall()
     const gif = document.querySelector('#ball-gif')
-    const play = expanded || running || asking() || tccGateVisible || attachedSelection !== ''
+    const play = expanded || running || asking() || tccGateVisible || attachedSelection !== '' || attachedLasso !== undefined
     if (play) {
       if (gif.dataset.mode !== 'play') {
         gif.dataset.mode = 'play'
@@ -456,11 +474,15 @@ function main() {
     gif.dataset.mode = 'still'
     gif.src = avatarSrc
     freezeGif(gif)
+    syncLassoBall()
   }
 
   function setRunning(next, interrupted = false) {
     running = next
     if (pageClosed()) return
+    // A turn starting while the lasso confirm frame is still open must not let the
+    // agent's first screenshot include this chrome. Cancel the frame first.
+    if (next && document.body.classList.contains('lassoing')) api.lassoCancel?.()
     document.body.classList.toggle('running', running)
     stop.hidden = !stopShown()
     setWorkLocked(running)
@@ -574,6 +596,7 @@ function main() {
   // capture) must never leave the panel locked shut.
   window.addEventListener('blur', () => {
     if (pointerHeld) void finishGesture()
+    if (lassoPressing || lassoActive) finishLassoGesture(true)
   })
 
   /**
@@ -797,8 +820,10 @@ function main() {
       return
     }
     const payload = composeSend(text.trim(), attachedSelection)
+    const lassoId = attachedLasso?.selectionId
     setAttachedSelection('')
-    api.send(payload)
+    clearLassoChip()
+    api.send(payload, lassoId)
   }
 
   function draftOverflows() {
@@ -1748,6 +1773,37 @@ function main() {
     badge.title = messages.localBadgeTitle
   }
 
+  function userImageKey(image) {
+    return `${image.attachmentId}:${image.bytes}`
+  }
+
+  function syncUserImage(node, image) {
+    const shot = node.querySelector('.user-shot')
+    if (shot === null) return
+    if (image === null || typeof image !== 'object' || typeof image.attachmentId !== 'string') {
+      shot.hidden = true
+      userImages.delete(node)
+      return
+    }
+    userImages.set(node, image)
+    shot.hidden = false
+    const picture = shot.querySelector('img')
+    const key = userImageKey(image)
+    if (picture.dataset.imageKey === key) return
+    picture.dataset.imageKey = key
+    picture.removeAttribute('src')
+    const cached = userImageSrc.get(key)
+    if (cached !== undefined) {
+      picture.src = cached
+      return
+    }
+    void api.loadImage?.(image, true).then((src) => {
+      if (typeof src !== 'string' || src === '') return
+      userImageSrc.set(key, src)
+      if (picture.dataset.imageKey === key) picture.src = src
+    })
+  }
+
   function upsertBlock(block) {
     if (typeof block?.key !== 'string' || typeof block.text !== 'string') return
     blockData.set(block.key, block)
@@ -1757,12 +1813,23 @@ function main() {
         node = document.createElement('div')
         node.className = 'user-row'
         node.dataset.kind = 'user'
+        const shot = document.createElement('button')
+        shot.type = 'button'
+        shot.className = 'user-shot'
+        shot.hidden = true
+        const picture = document.createElement('img')
+        picture.alt = ''
+        shot.append(picture)
+        shot.addEventListener('click', () => {
+          const image = userImages.get(node)
+          if (image !== undefined) void api.previewImage?.(image)
+        })
         const bubble = document.createElement('div')
         bubble.className = 'user-bubble'
         const actions = document.createElement('div')
         actions.className = 'user-actions'
         actions.append(messageCopyButton(() => bubble.textContent ?? ''))
-        node.append(bubble, actions)
+        node.append(shot, bubble, actions)
       } else if (block.kind === 'notice') {
         node = document.createElement('article')
         node.className = 'block'
@@ -1814,6 +1881,7 @@ function main() {
     node.toggleAttribute('data-response', block.response === true)
     if (block.kind === 'user') {
       node.querySelector('.user-bubble').textContent = block.text
+      syncUserImage(node, block.image)
     } else if (block.kind === 'notice') {
       // Settled at creation; nothing per-update.
     } else if (block.kind === 'reasoning') {
@@ -2055,6 +2123,8 @@ function main() {
     blockData.clear()
     transcript.replaceChildren()
     pending = undefined
+    clearLassoChip(true)
+    setLassoing(false)
     syncQuestion()
     // A switch can land while the previous conversation's turn was still running: the host sends
     // `turn: false` right behind this, but the lock must not outlive the transcript it described.
@@ -2340,6 +2410,13 @@ function main() {
   const selectionChipText = document.querySelector('#selection-chip-text')
   const selectionChipDismiss = document.querySelector('#selection-chip-dismiss')
   selectionChipDismiss.textContent = '\u00d7'
+  const lassoBall = document.querySelector('#lasso-ball')
+  const lassoChip = document.querySelector('#lasso-chip')
+  const lassoChipImage = document.querySelector('#lasso-chip-image')
+  const lassoChipTitle = document.querySelector('#lasso-chip-title')
+  const lassoChipMeta = document.querySelector('#lasso-chip-meta')
+  const lassoChipDismiss = document.querySelector('#lasso-chip-dismiss')
+  lassoChipDismiss.textContent = '\u00d7'
   const tccGate = document.querySelector('#tcc-gate')
   const tccDismiss = document.querySelector('#tcc-dismiss')
   const tccTitle = document.querySelector('#tcc-title')
@@ -2360,6 +2437,51 @@ function main() {
     document.body.classList.toggle('has-selection-chip', show)
     selectionChipText.textContent = text
     syncGif()
+  }
+
+  function syncLassoBall() {
+    const button = document.querySelector('#lasso-ball')
+    if (button === null) return
+    const disabled = !lassoEnabled || running || asking() || tccGateVisible || lassoActive
+    button.classList.toggle('disabled', disabled)
+    button.setAttribute('aria-disabled', String(disabled))
+  }
+
+  function setLassoing(next) {
+    document.body.classList.toggle('lassoing', next)
+  }
+
+  function clearLassoChip(notifyHost = false) {
+    if (attachedLasso !== undefined && notifyHost && typeof api.lassoDismiss === 'function') {
+      api.lassoDismiss(attachedLasso.selectionId)
+    }
+    attachedLasso = undefined
+    lassoChip.hidden = true
+    lassoChipImage.removeAttribute('src')
+    document.body.classList.remove('has-lasso-chip')
+    syncGif()
+    syncLassoBall()
+  }
+
+  function setLassoChip(payload) {
+    if (payload === null || typeof payload !== 'object') return
+    if (typeof payload.selectionId !== 'string' || typeof payload.image !== 'object' || payload.image === null) return
+    attachedLasso = payload
+    lassoChip.hidden = false
+    document.body.classList.add('has-lasso-chip')
+    lassoChipTitle.textContent = messages.lassoTitle
+    const width = typeof payload.size?.width === 'number' ? Math.round(payload.size.width) : Math.round(payload.image.width ?? 0)
+    const height = typeof payload.size?.height === 'number' ? Math.round(payload.size.height) : Math.round(payload.image.height ?? 0)
+    lassoChipMeta.textContent = messages.lassoMeta.replace('{w}', String(width)).replace('{h}', String(height))
+    lassoChipImage.removeAttribute('src')
+    const selectionId = payload.selectionId
+    void api.loadImage?.(payload.image, true).then((src) => {
+      if (attachedLasso?.selectionId === selectionId && typeof src === 'string' && src !== '') {
+        lassoChipImage.src = src
+      }
+    })
+    syncGif()
+    syncLassoBall()
   }
 
   function tccReady(tccStatus) {
@@ -2440,11 +2562,13 @@ function main() {
       return
     }
     const payload = composeSend(text, attachedSelection)
+    const lassoId = attachedLasso?.selectionId
     clearPrompt()
     setAttachedSelection('')
+    clearLassoChip()
     setHistoryOpen(false)
     setPermissionOpen(false)
-    api.send(payload)
+    api.send(payload, lassoId)
   }
   prompt.addEventListener('input', () => {
     syncComposerHeight()
@@ -2605,6 +2729,100 @@ function main() {
     })
   })
   selectionChipDismiss.addEventListener('click', () => { setAttachedSelection('') })
+  api.onLassoAttach?.((payload) => {
+    setLassoing(false)
+    void showWorkPanel().then(() => {
+      setLassoChip(payload)
+      prompt.focus()
+    })
+  })
+  api.onLassoDone?.(() => {
+    setLassoing(false)
+    syncGif()
+    syncLassoBall()
+    if (!pinned && !pointerInside) scheduleCollapse()
+  })
+  api.onLassoReject?.(() => {
+    setLassoing(false)
+    showHint(messages.lassoReject)
+    syncGif()
+    syncLassoBall()
+    if (!pinned && !pointerInside) scheduleCollapse()
+  })
+  api.onLassoEnabled?.((enabled) => {
+    lassoEnabled = enabled === true
+    syncLassoBall()
+  })
+  lassoChipDismiss.addEventListener('click', () => { clearLassoChip(true) })
+  lassoChipImage.addEventListener('click', () => {
+    if (attachedLasso !== undefined && typeof api.previewImage === 'function') {
+      void api.previewImage(attachedLasso.image)
+    }
+  })
+
+  /**
+   * Lasso drag. The satellite owns the pointer capture; the main process draws the
+   * trail in its own overlay and runs the closure geometry. We keep the panel hidden
+   * from the moment the stroke passes the threshold until the confirm frame reports.
+   */
+  function finishLassoGesture(cancel = false) {
+    if (!lassoPressing && !lassoActive) return
+    const wasActive = lassoActive
+    lassoPressing = false
+    lassoActive = false
+    pointerHeld = false
+    pointerPointerId = undefined
+    lassoPointerId = undefined
+    if (wasActive) {
+      if (cancel) api.lassoCancel?.()
+      else api.lassoEnd?.()
+    }
+    syncGif()
+    syncLassoBall()
+  }
+
+  lassoBall.addEventListener('pointerdown', (event) => {
+    if (!isPrimaryButton(event)) return
+    if (!lassoEnabled || running || asking() || tccGateVisible || lassoActive) return
+    event.preventDefault()
+    event.stopPropagation()
+    lassoPressing = true
+    lassoActive = false
+    lassoPointerId = event.pointerId
+    beginPointer(lassoBall, event)
+  })
+  lassoBall.addEventListener('pointermove', (event) => {
+    if (!lassoPressing || event.pointerId !== lassoPointerId) return
+    if (!primaryButtonHeld(event)) {
+      finishLassoGesture()
+      return
+    }
+    if (!lassoActive) {
+      if (Math.hypot(event.clientX - pressAt.x, event.clientY - pressAt.y) <= 4) return
+      lassoActive = true
+      setLassoing(true)
+      syncGif()
+      syncLassoBall()
+      api.lassoStart?.()
+      return
+    }
+    // The main process reads the OS cursor for every point; the renderer only
+    // reports that the pointer moved, exactly like the ball drag.
+    api.lassoPoint?.()
+  })
+  lassoBall.addEventListener('pointerup', (event) => {
+    if (!lassoPressing) return
+    if (!isPrimaryButton(event)) {
+      finishLassoGesture()
+      return
+    }
+    finishLassoGesture()
+  })
+  lassoBall.addEventListener('pointercancel', () => finishLassoGesture(true))
+  lassoBall.addEventListener('lostpointercapture', () => {
+    if (lassoPressing) finishLassoGesture(true)
+  })
+  syncLassoBall()
   tccDismiss.addEventListener('click', () => { hideTccGate() })
   tccLater.addEventListener('click', () => { hideTccGate() })
   tccScreenOpen.addEventListener('click', () => { void openTccRight('screen') })

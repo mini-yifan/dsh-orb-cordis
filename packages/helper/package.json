@@ -15,6 +15,7 @@
     "lib",
     "preload.cjs",
     "selection-preload.cjs",
+    "lasso-preload.cjs",
     "assets"
   ],
   "scripts": {

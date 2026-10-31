@@ -45,6 +45,15 @@ export interface CapturedScreen {
   readonly mediaType: ImageMediaType
 }
 
+/** Per-capture rendering options. */
+export interface CaptureOptions {
+  /**
+   * Bake the system pointer into the raster. Default true, matching every observation.
+   * Lasso screenshots pass false so the stroke does not leave a cursor on the still.
+   */
+  readonly cursor?: boolean
+}
+
 /**
  * OS metadata attached once per observation, after skipping overlay window ids.
  * `windowTitle` is present when the remaining window has a nonempty title.
@@ -190,7 +199,7 @@ export interface DesktopBackend {
    * @param signal - cooperative cancellation.
    * @returns encoded image bytes and media type.
    */
-  capture(screen: ScreenInfo, signal?: AbortSignal): Promise<CapturedScreen>
+  capture(screen: ScreenInfo, signal?: AbortSignal, options?: CaptureOptions): Promise<CapturedScreen>
   /**
    * Report the frontmost app after skipping overlay window ids, plus Finder's
    * folder when that app is Finder. Query failures return {@link FOCUS_FALLBACK_FOREGROUND}.

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'">
+    <title>lasso</title>
+    <link rel="stylesheet" href="lasso-confirm.css">
+  </head>
+  <body>
+    <div id="stage">
+      <div id="dim-top" class="dim"></div>
+      <div id="dim-bottom" class="dim"></div>
+      <div id="dim-left" class="dim"></div>
+      <div id="dim-right" class="dim"></div>
+      <div id="selection">
+        <div id="border"></div>
+      </div>
+      <div class="handle handle-nw" data-corner="nw"></div>
+      <div class="handle handle-ne" data-corner="ne"></div>
+      <div class="handle handle-sw" data-corner="sw"></div>
+      <div class="handle handle-se" data-corner="se"></div>
+      <div id="bar">
+        <button id="send" type="button">发给 Agent</button>
+        <button id="translate" type="button">翻译</button>
+        <button id="copy" type="button">复制</button>
+      </div>
+      <p id="error" role="status" hidden></p>
+      <p id="hint">拖动调整 · Esc 取消</p>
+    </div>
+    <script src="lasso-confirm.js"></script>
+  </body>
+</html>

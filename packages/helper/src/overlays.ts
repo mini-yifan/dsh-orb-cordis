@@ -8,6 +8,8 @@ import { BrowserWindow, ipcMain, screen } from 'electron'
 import { fileURLToPath } from 'node:url'
 import type { NativeHandleWindow } from './chrome-windows.ts'
 import { createAgentCloak, scheduleCloakAck } from './cloak.ts'
+import { attachLasso, type LassoDisplay } from './lasso.ts'
+import type { Point } from './lasso-geometry.ts'
 import {
   observationFrameCssScript,
   observationFramePlacement,
@@ -38,12 +40,23 @@ export function denyWindowPermissions(created: BrowserWindow): void {
 export async function attachOverlays(deps: OverlayDeps): Promise<{
   appearance(payload: OverlayAppearance): void
   deliver(message: unknown): boolean
-  /** Toolbar and observation frame, for the host's capture exclusion list. */
+  /** Toolbar, observation frame, and lasso chrome, for the host's capture exclusion list. */
   chromeWindows(): readonly (NativeHandleWindow | undefined)[]
+  lassoStart(point: Point, display: LassoDisplay): void
+  lassoPoint(point: Point): void
+  lassoEnd(): void
+  lassoCancel(): void
 }> {
   const preload = fileURLToPath(new URL('../selection-preload.cjs', import.meta.url))
   const toolbar = openToolbar(preload)
   const frame = openFrame()
+  const lasso = await attachLasso({
+    write: deps.write,
+    sendToBall: (channel, payload) => {
+      const ball = deps.ball()
+      if (ball && !ball.isDestroyed()) ball.webContents.send(channel, payload)
+    },
+  })
   let barOrigin = { x: 0, y: 0 }
   /** Whether the bar was placed under the selection (as opposed to flipped above it). */
   let barBelowSelection = true
@@ -103,6 +116,7 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
       { window: () => deps.ball(), resting: false },
       { window: () => toolbar, resting: false },
       { window: () => frame, resting: process.platform === 'win32' },
+      ...lasso.cloakWindows().map((entry) => ({ window: entry.window, resting: false })),
     ],
     () => deps.ball(),
   )
@@ -115,15 +129,29 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
   }
 
   return {
-    /** Mirror the ball's theme and UI language onto the selection toolbar. */
+    /** Mirror the ball's theme and UI language onto the selection toolbar and lasso chrome. */
     appearance(payload: OverlayAppearance): void {
       if (!toolbar.isDestroyed()) toolbar.webContents.send('orb:appearance', payload)
+      lasso.appearance(payload)
     },
     chromeWindows(): readonly (NativeHandleWindow | undefined)[] {
-      return [toolbar, frame]
+      return [toolbar, frame, ...lasso.chromeWindows()]
+    },
+    lassoStart(point, target) {
+      lasso.start(point, target)
+    },
+    lassoPoint(point) {
+      lasso.addPoint(point)
+    },
+    lassoEnd() {
+      lasso.end()
+    },
+    lassoCancel() {
+      lasso.cancel()
     },
     deliver(message: unknown): boolean {
       if (typeof message !== 'object' || message === null) return false
+      if (lasso.deliver(message)) return true
       const record = message as {
         type?: unknown
         id?: unknown

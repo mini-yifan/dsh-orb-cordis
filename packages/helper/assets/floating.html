@@ -87,12 +87,21 @@
         <span id="selection-chip-text"></span>
         <button id="selection-chip-dismiss" type="button"></button>
       </div>
+      <div id="lasso-chip" hidden>
+        <img id="lasso-chip-image" alt="">
+        <div id="lasso-chip-copy">
+          <strong id="lasso-chip-title"></strong>
+          <span id="lasso-chip-meta"></span>
+        </div>
+        <button id="lasso-chip-dismiss" type="button"></button>
+      </div>
       <form id="composer">
         <label id="input-label"></label>
         <div id="voice-meter" aria-hidden="true"><span id="voice-meter-bar"></span><span id="voice-meter-dot"></span></div>
         <div id="prompt" class="prompt-empty" role="textbox" aria-multiline="true" aria-labelledby="input-label" contenteditable="true"></div>
       </form>
     </section>
+    <button id="lasso-ball" type="button" aria-label="圈选截图"></button>
     <button id="ball" type="button">
       <img id="ball-gif" src="deepseek-avatar-square.gif" alt="" draggable="false">
     </button>

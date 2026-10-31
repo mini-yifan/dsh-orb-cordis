@@ -64,13 +64,29 @@ export interface TranslationRoute {
   readonly reasoningEffort?: string
 }
 
+/** One saved screenshot the translation call can see. */
+export interface TranslationImage {
+  readonly attachmentId: string
+  readonly mediaType: string
+  readonly bytes: number
+  readonly width: number
+  readonly height: number
+  readonly name?: string
+}
+
 /** The slice of the official `llm` service this module needs. */
 export interface TranslationLlm {
   stream(options: {
     provider: string
     model: string
     reasoningEffort?: never
-    messages: readonly { readonly role: 'user'; readonly content: readonly { readonly type: 'text'; readonly text: string }[] }[]
+    messages: readonly {
+      readonly role: 'user'
+      readonly content: readonly (
+        | { readonly type: 'text'; readonly text: string }
+        | { readonly type: 'image'; readonly attachment: TranslationImage }
+      )[]
+    }[]
     system: string
     signal: AbortSignal
   }): AsyncIterable<unknown>
@@ -109,6 +125,60 @@ export async function runTranslation(request: TranslationRequest): Promise<strin
     const record = chunk as { type?: unknown; text?: unknown }
     // Only body text belongs in the bubble. Reasoning stays invisible on purpose: a
     // translation has nothing to think about that the reader wants to see.
+    if (record.type !== 'text-delta' || typeof record.text !== 'string') continue
+    out += record.text
+    request.onText(out)
+  }
+  return out
+}
+
+const IMAGE_SYSTEM_PROMPT_ZH = '你是一名翻译。读出用户截图中的文字，忠实翻译成中文，只输出译文本身，不要描述图片、不要解释、不要加引号、不要重复原文。保留原有换行、列表与 Markdown 结构。'
+const IMAGE_SYSTEM_PROMPT_EN = 'You are a translator. Read the text in the user screenshot and translate it faithfully into English. Output only the translation: no description of the image, no commentary, no quotation marks, no repetition of the source. Preserve line breaks, lists, and Markdown structure.'
+
+export const IMAGE_TRANSLATION_PROMPT_ZH = '把这张截图里的文字翻译成中文：'
+export const IMAGE_TRANSLATION_PROMPT_EN = 'Translate the text in this screenshot into English:'
+
+/** User bubble that heads an image translation. */
+export function imageTranslationPrompt(target: TranslationTarget): string {
+  return target === 'en' ? IMAGE_TRANSLATION_PROMPT_EN : IMAGE_TRANSLATION_PROMPT_ZH
+}
+
+/** System prompt for the throwaway image call. */
+export function imageTranslationSystemPrompt(target: TranslationTarget): string {
+  return target === 'en' ? IMAGE_SYSTEM_PROMPT_EN : IMAGE_SYSTEM_PROMPT_ZH
+}
+
+export interface ImageTranslationRequest {
+  readonly image: TranslationImage
+  readonly target: TranslationTarget
+  readonly route: TranslationRoute
+  readonly llm: TranslationLlm
+  readonly signal: AbortSignal
+  onText(text: string): void
+}
+
+/**
+ * Translate the text in one screenshot through the ball's overlay route.
+ * The image is an ordinary attachment; nothing here touches the session.
+ */
+export async function runImageTranslation(request: ImageTranslationRequest): Promise<string> {
+  const answer = request.llm.stream({
+    provider: request.route.provider,
+    model: request.route.model,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: imageTranslationPrompt(request.target) },
+        { type: 'image', attachment: request.image },
+      ],
+    }],
+    system: imageTranslationSystemPrompt(request.target),
+    signal: request.signal,
+  })
+  let out = ''
+  for await (const chunk of answer) {
+    if (request.signal.aborted) break
+    const record = chunk as { type?: unknown; text?: unknown }
     if (record.type !== 'text-delta' || typeof record.text !== 'string') continue
     out += record.text
     request.onText(out)

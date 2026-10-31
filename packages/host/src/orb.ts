@@ -42,6 +42,14 @@ import {
 import { tokensMatch } from './routes.ts'
 import { OVERLAY_GUARD_ACK_TIMEOUT_MS, createOverlayGuard } from './overlay-guard.ts'
 import {
+  LassoController,
+  readLassoAction,
+  type AttachmentStoreLike,
+  type ImageRef,
+  type LassoCaptureServiceLike,
+  type LassoSeedStoreLike,
+} from './lasso.ts'
+import {
   openSystemUrl,
   productionAccessibility,
   SelectionController,
@@ -50,6 +58,8 @@ import {
 import { pinSessionId } from './services.ts'
 import {
   clipTranslationText,
+  imageTranslationPrompt,
+  runImageTranslation,
   runTranslation,
   translationUserText,
   type TranslationLlm,
@@ -267,6 +277,16 @@ interface BlockUsage {
   readonly reasoningTokens?: number
 }
 
+/** A durable screenshot attached to one user bubble. */
+interface BlockImage {
+  readonly attachmentId: string
+  readonly mediaType: string
+  readonly bytes: number
+  readonly width: number
+  readonly height: number
+  readonly name?: string
+}
+
 interface BlockMessage {
   readonly type: 'block'
   readonly key: string
@@ -274,6 +294,8 @@ interface BlockMessage {
   readonly text: string
   readonly running: boolean
   readonly interrupted?: true
+  /** The lasso screenshot this user bubble carries, if any. */
+  readonly image?: BlockImage
   /**
    * Shown in the transcript but never part of the conversation.
    *
@@ -295,6 +317,8 @@ interface BlockFlags {
   readonly local?: boolean
   /** The turn's final answer, which the fold keeps on screen when the turn is collapsed. */
   readonly response?: boolean
+  /** A screenshot riding a user bubble, projected from the lasso observation. */
+  readonly image?: BlockImage
 }
 
 interface PendingQuestion {
@@ -330,7 +354,11 @@ export class OrbRuntime {
   /** Bumped every time a turn starts; stopTurn uses it to spot a turn that replaced its own. */
   private turnEpoch = 0
   /** The old turn is being stopped; send this text as a new task after its turn/end. */
-  private pendingPrompt: { text: string; key: string; sessionId?: string } | undefined
+  private pendingPrompt: { text: string; key: string; sessionId?: string; lassoId?: string } | undefined
+  /** Pending lasso screenshots waiting for their instruction. */
+  private readonly lasso: LassoController
+  /** The user block a lasso observation's thumbnail belongs to. */
+  private lastUserBlockKey: string | undefined
   /** Steps whose first tool-call delta already told voice that the preceding text was mid-turn. */
   private readonly toolVoiceSteps = new Set<string>()
   /**
@@ -479,6 +507,16 @@ export class OrbRuntime {
       log: (message) => console.error(`dsh-orb: ${message}`),
     })
     ctx.provide('computerUseOverlayGuard', this.overlay)
+    this.lasso = new LassoController({
+      capture: () => this.ctx.get('computerUseLassoCapture') as LassoCaptureServiceLike | undefined,
+      attachments: () => this.ctx.get('attachments') as AttachmentStoreLike | undefined,
+      seed: () => this.ctx.get('computerUseLassoSeed') as LassoSeedStoreLike | undefined,
+      broadcast: (message) => { this.broadcast(message) },
+      status: (text) => { this.status(text) },
+      currentSessionId: () => this.sessionId,
+      translate: (image) => { this.run('translate', () => this.startImageTranslation(image)) },
+      now: () => Date.now(),
+    })
     this.voice = new VoiceController({
       settings: () => this.store.voice(),
       presence: () => voicePresence({
@@ -815,7 +853,7 @@ export class OrbRuntime {
           this.accept(socket, message)
           continue
         }
-        if (isPrompt(message)) void this.onPrompt(message.text)
+        if (isPrompt(message)) void this.onPrompt(message.text, message.lassoId)
         else if (isQuestionAnswer(message)) this.onQuestionAnswer(message.id, message.answers)
         else if (isQuestionCancel(message)) this.onQuestionCancel(message.id)
         else this.onControl(message, socket)
@@ -880,18 +918,19 @@ export class OrbRuntime {
     this.pollAgents(true)
   }
 
-  private async onPrompt(text: string): Promise<void> {
+  private async onPrompt(text: string, lassoId?: string): Promise<void> {
     const trimmed = text.trim()
     if (!trimmed) return
     // A typed send (or the page's command-mode voice prompt) is the newest intent. It
     // preempts a running turn, or a previous voice command still waiting for its turn/end.
     const key = `user:${randomUUID()}`
+    this.lastUserBlockKey = key
     this.block(key, 'user', trimmed, false, 'set')
-    await this.preempt(trimmed, key)
+    await this.preempt(trimmed, key, lassoId)
   }
 
   /** Start one new turn on the current session. The caller owns the user bubble. */
-  private async submitPrompt(trimmed: string): Promise<void> {
+  private async submitPrompt(trimmed: string, lassoId?: string): Promise<void> {
     this.voice.activity()
     this.turnInterrupted = false
     this.beginTurn()
@@ -910,13 +949,22 @@ export class OrbRuntime {
       const sessionId = await this.ensureSession()
       if (!this.timer) this.syncWatermark()
       this.watch()
-      await this.ctx.sessionController.prompt({
-        requestId: randomUUID(),
-        sessionId,
-        mode: 'queue',
-        content: [{ type: 'text', text: trimmed }],
-        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      }, new AbortController().signal)
+      // Arm the lasso screenshot as this turn's first frame. It is set immediately before
+      // the prompt so no earlier turn can consume it.
+      const lassoArmed = lassoId !== undefined && this.lasso.takeForPrompt(lassoId, sessionId)
+      try {
+        await this.ctx.sessionController.prompt({
+          requestId: randomUUID(),
+          sessionId,
+          mode: 'queue',
+          content: [{ type: 'text', text: trimmed }],
+          clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }, new AbortController().signal)
+      } catch (error) {
+        // The turn never started, so a leftover seed would ride the next message instead.
+        if (lassoArmed) (this.ctx.get('computerUseLassoSeed') as LassoSeedStoreLike | undefined)?.clear(sessionId)
+        throw error
+      }
       this.drain()
     } catch (error) {
       this.finishTurn()
@@ -930,17 +978,17 @@ export class OrbRuntime {
    * 一句最新的用户命令：停掉旧轮和旧语音，等旧轮真正结束后，把这句话当成新消息另起一轮。
    * 打字、语音命令和插话都走这里；旧轮还在跑时不能立刻开始下一轮（官方要求同一会话只有一轮）。
    */
-  private async preempt(trimmed: string, key: string): Promise<void> {
+  private async preempt(trimmed: string, key: string, lassoId?: string): Promise<void> {
     // The latest command wins while the old turn is being stopped.
     this.settlePendingPrompt()
     this.voice.activity()
 
     if (!this.turnRunning || this.sessionId === undefined) {
-      await this.submitPrompt(trimmed)
+      await this.submitPrompt(trimmed, lassoId)
       return
     }
 
-    const pending = { text: trimmed, key, sessionId: this.sessionId }
+    const pending = { text: trimmed, key, sessionId: this.sessionId, ...lassoId === undefined ? {} : { lassoId } }
     this.pendingPrompt = pending
     // Stop the old speaker immediately, before cancel() and the eventual turn/end. The
     // remaining old-turn text stays muted until beginTurn rebuilds the queue.
@@ -966,6 +1014,7 @@ export class OrbRuntime {
     const trimmed = text.trim()
     if (!trimmed) return
     const key = `user:${randomUUID()}`
+    this.lastUserBlockKey = key
     this.block(key, 'user', trimmed, false, 'set')
     await this.preempt(trimmed, key)
   }
@@ -977,9 +1026,10 @@ export class OrbRuntime {
     this.pendingPrompt = undefined
     if (pending.sessionId !== this.sessionId) {
       this.dropBlock(pending.key)
+      if (pending.lassoId !== undefined) this.lasso.dismiss(pending.lassoId)
       return
     }
-    void this.submitPrompt(pending.text)
+    void this.submitPrompt(pending.text, pending.lassoId)
   }
 
   /** Drop a waiting command because a newer input or a stop replaced it. */
@@ -988,6 +1038,7 @@ export class OrbRuntime {
     if (!pending) return
     this.pendingPrompt = undefined
     this.dropBlock(pending.key)
+    if (pending.lassoId !== undefined) this.lasso.dismiss(pending.lassoId)
   }
 
   private async ensureSession(): Promise<string> {
@@ -1173,7 +1224,20 @@ export class OrbRuntime {
         if (!this.replaying) return
         const text = userText(data)
         if (!text.trim()) return
-        this.block(`user:${seq}`, 'user', text, false, 'set')
+        const key = `user:${seq}`
+        this.lastUserBlockKey = key
+        this.block(key, 'user', text, false, 'set')
+        return
+      }
+      // The lasso observation carries the screenshot the user just sent. The user bubble
+      // already exists; attach the durable image to it instead of showing a second notice.
+      if (asRecord(record?.source)?.summary === 'Lasso selection attached') {
+        const image = imageFromContent(record?.content)
+        const key = this.lastUserBlockKey
+        const item = key === undefined ? undefined : this.blocks.get(key)
+        if (key !== undefined && item !== undefined && image !== undefined) {
+          this.block(key, item.kind, item.text, item.running, 'set', item.detail, item.usage, { image })
+        }
         return
       }
       // The code_agent completion report is the only notice the ball shows as
@@ -1484,6 +1548,7 @@ export class OrbRuntime {
       ...(mergedDetail.error === undefined ? {} : { error: mergedDetail.error }),
     }
     const mergedUsage = usage === undefined ? previous?.usage : usage
+    const mergedImage = flags?.image ?? previous?.image
     const message: BlockMessage = {
       type: 'block', key, kind, text: next, running,
       ...(this.turnInterrupted && kind === 'assistant' && !running ? { interrupted: true } : {}),
@@ -1491,6 +1556,7 @@ export class OrbRuntime {
       ...flags?.local === true ? { local: true as const } : {},
       ...flags?.response === true ? { response: true as const } : {},
       ...(this.responseKeys.includes(key) ? { response: true as const } : {}),
+      ...(mergedImage === undefined ? {} : { image: mergedImage }),
       ...(merged === undefined ? {} : { detail: merged }),
       ...(mergedUsage === undefined ? {} : { usage: mergedUsage }),
     }
@@ -1759,6 +1825,7 @@ export class OrbRuntime {
       overlay: models.overlay,
       background: models.background,
       selectionEnabled: this.store.selectionEnabled(),
+      lassoEnabled: this.store.lassoEnabled(),
       millifractionEnabled: this.store.millifractionEnabled(),
       openMain: isDesktopHost(),
       update: this.updateAvailable,
@@ -1809,6 +1876,11 @@ export class OrbRuntime {
   async setSelectionEnabled(enabled: boolean): Promise<void> {
     this.store.setSelectionEnabled(enabled)
     this.selection.sync()
+    await this.publishChrome()
+  }
+
+  async setLassoEnabled(enabled: boolean): Promise<void> {
+    this.store.setLassoEnabled(enabled)
     await this.publishChrome()
   }
 
@@ -2025,6 +2097,19 @@ export class OrbRuntime {
       this.onSelectionAction(record)
       return
     }
+    if (record.type === 'lasso-action') {
+      const action = readLassoAction(record)
+      if (action !== undefined) this.run('lasso', () => this.lasso.action(action))
+      return
+    }
+    if (record.type === 'lasso-dismiss' && typeof record.id === 'string') {
+      this.lasso.dismiss(record.id)
+      return
+    }
+    if (record.type === 'lasso-active' && typeof record.active === 'boolean') {
+      this.selection.setLassoActive(record.active)
+      return
+    }
     if (record.type === 'history') {
       this.run('history', () => this.sendHistory())
       return
@@ -2088,6 +2173,10 @@ export class OrbRuntime {
       this.run('selection', () => this.setSelectionEnabled(record.enabled === true))
       return
     }
+    if (record.type === 'set-lasso' && typeof record.enabled === 'boolean') {
+      this.run('lasso-enabled', () => this.setLassoEnabled(record.enabled === true))
+      return
+    }
     if (record.type === 'set-millifraction' && typeof record.enabled === 'boolean') {
       this.run('millifraction', () => this.setMillifractionEnabled(record.enabled === true))
       return
@@ -2149,22 +2238,64 @@ export class OrbRuntime {
   private async startTranslation(source: string, target: TranslationTarget): Promise<void> {
     const text = source.trim()
     if (!text) return
+    const llm = this.translationLlm()
+    if (llm === undefined) return
+    const clipped = clipTranslationText(text)
+    const userText = translationUserText(clipped.text, target, clipped.truncated, LOCAL_TRUNCATED_MARK)
+    const route = this.store.models().overlay
+    await this.runLocalTranslation(userText, (signal, onText) => runTranslation({
+      source: clipped.text,
+      target,
+      route: toTranslationRoute(route),
+      truncatedMark: LOCAL_TRUNCATED_MARK,
+      llm,
+      signal,
+      onText,
+    }))
+  }
+
+  /**
+   * Translate the text inside a lasso crop without touching the conversation.
+   * The crop is already durable; the overlay route reads it as an image attachment.
+   */
+  private async startImageTranslation(image: ImageRef): Promise<void> {
+    const llm = this.translationLlm()
+    if (llm === undefined) return
+    const target = this.store.translateLanguage()
+    const route = this.store.models().overlay
+    await this.runLocalTranslation(imageTranslationPrompt(target), (signal, onText) => runImageTranslation({
+      image,
+      target,
+      route: toTranslationRoute(route),
+      llm,
+      signal,
+      onText,
+    }))
+  }
+
+  private translationLlm(): TranslationLlm | undefined {
     const llm = this.ctx.get('llm') as TranslationLlm | undefined
     if (llm === undefined || typeof llm.stream !== 'function') {
       this.status('翻译不可用：当前宿主没有模型服务。')
-      return
+      return undefined
     }
-    // A second selection replaces the first: the previous stream is aborted, and its
+    return llm
+  }
+
+  /**
+   * Shared local-translation display: a user instruction and a streaming answer that
+   * look exactly like a turn but never reach the session.
+   */
+  private async runLocalTranslation(
+    userText: string,
+    run: (signal: AbortSignal, onText: (text: string) => void) => Promise<string>,
+  ): Promise<void> {
+    // A second translation replaces the first: the previous stream is aborted, and its
     // `finally` sees a different key and therefore leaves the new one's state alone.
     this.stopTranslation()
     const key = `translate:${randomUUID()}`
     const abort = new AbortController()
     this.translation = { abort, key }
-
-    const clipped = clipTranslationText(text)
-    const userText = translationUserText(clipped.text, target, clipped.truncated, LOCAL_TRUNCATED_MARK)
-
-    const route = this.store.models().overlay
     /** The transcript this translation was rendered into. A reset invalidates it. */
     const epoch = this.transcriptEpoch
     let answer = ''
@@ -2185,23 +2316,15 @@ export class OrbRuntime {
       // composer locked. `turn: true` is the same broadcast a real turn sends.
       this.broadcast({ type: 'turn', running: true })
       this.voice.setTranslationBusy(true)
-      answer = await runTranslation({
-        source: clipped.text,
-        target,
-        route: toTranslationRoute(route),
-        truncatedMark: LOCAL_TRUNCATED_MARK,
-        llm,
-        signal: abort.signal,
-        onText: (soFar) => {
-          // The panel ignores a frame for a transcript it has already replaced, and a
-          // superseded translation must not paint over the one that replaced it.
-          if (this.transcriptEpoch !== epoch || this.translation?.key !== key) return
-          shown = soFar
-          this.block(`${key}:say`, 'assistant', soFar, true, 'set', undefined, undefined, {
-            local: true,
-            response: true,
-          })
-        },
+      answer = await run(abort.signal, (soFar) => {
+        // The panel ignores a frame for a transcript it has already replaced, and a
+        // superseded translation must not paint over the one that replaced it.
+        if (this.transcriptEpoch !== epoch || this.translation?.key !== key) return
+        shown = soFar
+        this.block(`${key}:say`, 'assistant', soFar, true, 'set', undefined, undefined, {
+          local: true,
+          response: true,
+        })
       })
     } catch (error) {
       // An abort is the user's own stop, not a failure: keep whatever was on screen.
@@ -2386,6 +2509,8 @@ export class OrbRuntime {
     this.translation = undefined
     this.voice.clearTranslation()
     this.pendingPrompt = undefined
+    this.lastUserBlockKey = undefined
+    this.lasso.clearSession()
     this.blocks.clear()
     this.blockOrder.length = 0
     this.watermark = 0
@@ -2666,10 +2791,12 @@ function helperDataDirectory(profileDir: string): string {
   return dshHomePath('dsh-orb', 'helper-data', id)
 }
 
-function isPrompt(message: unknown): message is { type: 'prompt'; text: string } {
+function isPrompt(message: unknown): message is { type: 'prompt'; text: string; lassoId?: string } {
   if (typeof message !== 'object' || message === null) return false
-  const record = message as { type?: unknown; text?: unknown }
-  return record.type === 'prompt' && typeof record.text === 'string' && record.text.length <= 8000
+  const record = message as { type?: unknown; text?: unknown; lassoId?: unknown }
+  if (record.type !== 'prompt' || typeof record.text !== 'string' || record.text.length > 8000) return false
+  return record.lassoId === undefined
+    || (typeof record.lassoId === 'string' && record.lassoId.length > 0 && record.lassoId.length <= 80)
 }
 
 /**
@@ -2914,6 +3041,30 @@ function textOf(content: unknown): string {
     if (block?.type === 'text' && typeof block.text === 'string') parts.push(block.text)
   }
   return parts.join('\n')
+}
+
+/** Read the first durable image out of one message's content. */
+function imageFromContent(content: unknown): BlockImage | undefined {
+  if (!Array.isArray(content)) return undefined
+  for (const part of content) {
+    const block = asRecord(part)
+    if (block?.type !== 'image') continue
+    const attachment = asRecord(block.attachment)
+    if (!attachment) continue
+    const { attachmentId, mediaType, bytes, width, height, name } = attachment
+    if (typeof attachmentId !== 'string' || attachmentId === '' || typeof mediaType !== 'string') continue
+    if (typeof bytes !== 'number' || bytes <= 0) continue
+    if (typeof width !== 'number' || width <= 0 || typeof height !== 'number' || height <= 0) continue
+    return {
+      attachmentId,
+      mediaType,
+      bytes,
+      width,
+      height,
+      ...typeof name === 'string' && name !== '' ? { name } : {},
+    }
+  }
+  return undefined
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

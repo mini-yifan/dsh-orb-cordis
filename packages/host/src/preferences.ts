@@ -20,6 +20,7 @@ const MODELS_FILE = 'orb-agent-models.json'
 const MILLIFRACTION_FILE = 'millifraction-coordinates.json'
 const OBSERVATION_FRAME_FILE = 'observation-frame.json'
 const SELECTION_FILE = 'selection-toolbar.json'
+const LASSO_FILE = 'lasso-capture.json'
 const BALL_FILE = 'ball-enabled.json'
 const AVATAR_FILE = 'orb-avatar'
 const AVATAR_META_FILE = 'orb-avatar.json'
@@ -187,6 +188,7 @@ export class ProfileStore {
   private observationFrameValue: boolean
   private selectionValue: boolean
   private selectionLanguage: 'zh' | 'en'
+  private lassoValue: boolean
   private ballValue: boolean
   private updateValue: UpdateRecord
   private historyValue: HistoryRecord
@@ -203,6 +205,7 @@ export class ProfileStore {
     const selection = readSelection(dir)
     this.selectionValue = selection.enabled
     this.selectionLanguage = selection.language
+    this.lassoValue = readLasso(dir)
     this.ballValue = readBall(dir)
     this.updateValue = readUpdate(dir)
     this.historyValue = readHistory(dir)
@@ -308,6 +311,15 @@ export class ProfileStore {
       enabled,
       translateTargetLanguage: this.selectionLanguage,
     })
+  }
+
+  lassoEnabled(): boolean {
+    return this.lassoValue
+  }
+
+  setLassoEnabled(enabled: boolean): void {
+    this.lassoValue = enabled
+    writeJson(join(this.dir, LASSO_FILE), { enabled })
   }
 
   /** Missing file means the ball is on. `autoStart: false` is a separate patch switch. */
@@ -529,6 +541,11 @@ function readBall(dir: string): boolean {
 
 function readObservationFrame(dir: string): boolean {
   const enabled = record(readJson(join(dir, OBSERVATION_FRAME_FILE)))?.enabled
+  return typeof enabled === 'boolean' ? enabled : true
+}
+
+function readLasso(dir: string): boolean {
+  const enabled = record(readJson(join(dir, LASSO_FILE)))?.enabled
   return typeof enabled === 'boolean' ? enabled : true
 }
 

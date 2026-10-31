@@ -842,7 +842,7 @@ export function createProductionWindowsOps(): WindowsDesktopOps {
 
   return {
     listWindows,
-    capturePng(bounds) {
+    capturePng(bounds, options) {
       return perMonitor(() => {
         const width = Math.max(1, Math.round(bounds.width))
         const height = Math.max(1, Math.round(bounds.height))
@@ -876,7 +876,7 @@ export function createProductionWindowsOps(): WindowsDesktopOps {
             throw new Error('computer-use: screen capture failed')
           }
           flipRows(pixels, width * 4, height)
-          drawCursor(api, memory, pixels, width, height, region)
+          if (options?.cursor !== false) drawCursor(api, memory, pixels, width, height, region)
           return encodeBgraPng(width, height, pixels, false)
         } finally {
           api.SelectObject(memory, previous)

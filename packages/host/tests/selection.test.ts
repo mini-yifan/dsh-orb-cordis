@@ -171,7 +171,7 @@ describe('selection actions', () => {
     assert.equal(payloads[1]?.bounds, undefined)
   })
 
-  it('hides the toolbar and skips reads while a turn or a click is in progress', () => {
+  it('hides the toolbar and skips reads while a turn, a click, or a lasso is in progress', () => {
     const shown: string[] = []
     const hidden: string[] = []
     const controller = new SelectionController(fakeHost({
@@ -183,8 +183,15 @@ describe('selection actions', () => {
     controller.setSessionRunning(false)
     controller.setHidInput(true)
     controller.onHelperEvent({ type: 'selection', text: 'click', x: 1, y: 2 })
+    controller.setLassoActive(true)
+    controller.onHelperEvent({ type: 'selection', text: 'stroke', x: 1, y: 2 })
     assert.deepEqual(shown, [])
-    assert.equal(hidden.length, 2)
+    assert.equal(hidden.length, 3)
+    // The stroke must not cost a dedupe slot either: the next real selection still shows.
+    controller.setLassoActive(false)
+    controller.setHidInput(false)
+    controller.onHelperEvent({ type: 'selection', text: 'stroke', x: 1, y: 2 })
+    assert.deepEqual(shown, ['stroke'])
   })
 
   it('opens a Bing URL for search, translates outside the session, and attaches for the agent', () => {

@@ -46,6 +46,8 @@ interface RouteContext {
   readonly sessionController: {
     modelCatalog(): unknown
   }
+  /** Optional service lookup; the desktop host exposes `attachments` this way. */
+  get?(name: string): unknown
 }
 
 /** Side effects that have to reach the live ball. */
@@ -166,8 +168,10 @@ export function orbSupported(platform: NodeJS.Platform = process.platform): bool
 async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = url.pathname
-  const helperAvatar = path === `${PREFIX}/avatar` && req.method === 'GET' && helperTokenOk(deps, req)
-  if (!helperAvatar) {
+  const helperAsset = req.method === 'GET'
+    && (path === `${PREFIX}/avatar` || path === `${PREFIX}/attachment`)
+    && helperTokenOk(deps, req)
+  if (!helperAsset) {
     const rejection = rejectionStatus(deps.ctx, req)
     if (rejection !== undefined) {
       res.writeHead(rejection)
@@ -333,6 +337,10 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
   }
   if ((method === 'GET' || method === 'HEAD') && path === `${PREFIX}/avatar`) {
     await sendAvatar(deps.store, method, res)
+    return
+  }
+  if ((method === 'GET' || method === 'HEAD') && path === `${PREFIX}/attachment`) {
+    await sendAttachment(deps, url, method, res)
     return
   }
   if ((method === 'GET' || method === 'HEAD') && path.startsWith(`${PREFIX}/avatar/preset/`)) {
@@ -565,6 +573,71 @@ async function catalog(deps: RouteDeps): Promise<ModelCatalog> {
 }
 
 /** The profile's avatar: a built-in preset, the uploaded bytes, or the shipped GIF. */
+interface AttachmentRefLike {
+  readonly attachmentId: string
+  readonly mediaType: string
+  readonly bytes: number
+  readonly width: number
+  readonly height: number
+}
+
+interface AttachmentReader {
+  readImage(ref: AttachmentRefLike): Promise<{ data: Uint8Array }>
+  readImageRequest?(
+    ref: AttachmentRefLike,
+    target: { width: number; height: number; maxBytes: number },
+  ): Promise<{ data: Uint8Array; mediaType: string }>
+}
+
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+
+/**
+ * Serve one durable image to the helper. The helper presents its socket token, so a
+ * hostile page cannot enumerate attachments; the bytes are verified by the store.
+ */
+async function sendAttachment(
+  deps: RouteDeps,
+  url: URL,
+  method: string,
+  res: ServerResponse,
+): Promise<void> {
+  const id = url.searchParams.get('id') ?? ''
+  const mediaType = url.searchParams.get('mediaType') ?? ''
+  const bytes = Number(url.searchParams.get('bytes'))
+  const width = Number(url.searchParams.get('width'))
+  const height = Number(url.searchParams.get('height'))
+  const thumb = url.searchParams.get('thumb') === '1'
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(id) || !ALLOWED_IMAGE_TYPES.has(mediaType)) {
+    res.writeHead(404)
+    res.end()
+    return
+  }
+  if (![bytes, width, height].every(value => Number.isSafeInteger(value) && value > 0)) {
+    res.writeHead(404)
+    res.end()
+    return
+  }
+  const reader = deps.ctx.get?.('attachments') as AttachmentReader | undefined
+  if (reader === undefined) {
+    res.writeHead(404)
+    res.end()
+    return
+  }
+  const ref: AttachmentRefLike = { attachmentId: id, mediaType, bytes, width, height }
+  try {
+    if (thumb && typeof reader.readImageRequest === 'function') {
+      const image = await reader.readImageRequest(ref, { width: 360, height: 240, maxBytes: 120_000 })
+      sendImage(res, method, Buffer.from(image.data), image.mediaType)
+      return
+    }
+    const image = await reader.readImage(ref)
+    sendImage(res, method, Buffer.from(image.data), mediaType)
+  } catch {
+    res.writeHead(404)
+    res.end()
+  }
+}
+
 async function sendAvatar(store: ProfileStore, method: string, res: ServerResponse): Promise<void> {
   const selection = store.avatarSelection()
   if (selection.kind === 'preset') {

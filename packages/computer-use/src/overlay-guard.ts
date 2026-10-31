@@ -124,10 +124,10 @@ export function wrapDesktopBackend(
       ),
       signal,
     ),
-    capture: (screen, signal) => guard.withCapture(
+    capture: (screen, signal, options) => guard.withCapture(
       session => runWithCaptureExcludeWindowIds(
         captureExcludeIds(session),
-        () => inner.capture(screen, signal),
+        () => inner.capture(screen, signal, options),
       ),
       signal,
     ),

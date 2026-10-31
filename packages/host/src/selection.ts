@@ -105,6 +105,7 @@ export class SelectionController {
   private restoreTimer: ReturnType<typeof setTimeout> | undefined
   private sessionRunning = false
   private hidInput = false
+  private lassoActive = false
   private promptedAccessibility = false
   private accessibilityPoll: ReturnType<typeof setInterval> | undefined
 
@@ -122,6 +123,8 @@ export class SelectionController {
 
   stop(): void {
     this.clearAccessibilityPoll()
+    // The helper that owned the lasso is gone, so a left-over pause would outlive it.
+    this.lassoActive = false
     this.monitor?.stop()
     this.monitor = undefined
     if (this.restoreTimer !== undefined) {
@@ -151,6 +154,15 @@ export class SelectionController {
 
   setHidInput(active: boolean): void {
     this.hidInput = active
+    if (active) this.hideToolbar()
+  }
+
+  /**
+   * A lasso stroke would read as a text selection, so the monitor must not report one while
+   * the helper owns the drag and the confirm frame.
+   */
+  setLassoActive(active: boolean): void {
+    this.lassoActive = active
     if (active) this.hideToolbar()
   }
 
@@ -217,7 +229,7 @@ export class SelectionController {
   }
 
   private pausedReads(): boolean {
-    return this.sessionRunning || this.hidInput || !this.host.enabled()
+    return this.sessionRunning || this.hidInput || this.lassoActive || !this.host.enabled()
   }
 
   private onSelection(event: Extract<SelectionHelperEvent, { type: 'selection' }>): void {
