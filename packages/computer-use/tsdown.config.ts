@@ -24,6 +24,7 @@ export default defineConfig({
     index: 'src/index.ts',
     'code-agent': 'src/code-agent.ts',
     'code-agent-registry': 'src/code-agent-registry.ts',
+    'lasso-service': 'src/lasso-service.ts',
   },
   outDir: 'lib',
   format: ['esm'],

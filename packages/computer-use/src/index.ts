@@ -8,7 +8,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createPlatformBackend } from './backend.ts'
 import type { OverlayExcludedRegionCapture } from './macos.ts'
 import { Config, resolveComputerUseConfig } from './config.ts'
-import { installLassoCapture } from './lasso.ts'
 import { wrapDesktopBackend } from './overlay-guard.ts'
 import { applyComputerUse, PLUGIN_NAME } from './plugin.ts'
 
@@ -113,6 +112,5 @@ export function apply(ctx: Context, config: Config = {}): void {
     return capture(region, signal)
   }
   const backend = createPlatformBackend(process.platform, excludedRegionCapture)
-  ctx.provide('computerUseLassoCapture', installLassoCapture(ctx, backend))
   applyComputerUse(ctx, desktopBackend(ctx, backend), resolveComputerUseConfig(config))
 }

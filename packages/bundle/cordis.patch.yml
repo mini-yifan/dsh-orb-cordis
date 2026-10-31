@@ -70,6 +70,11 @@
             name: 'dsh-orb/computer-use/code-agent'
     - id: orb-code-agent-registry
       name: 'dsh-orb/computer-use/code-agent-registry'
+    # Lasso capture and the lasso first-frame slot are read by the orb host and the
+    # Computer Use preset, so both must be published on this app-level row: a preset's
+    # provide is realm-private and the mount audit rejects it.
+    - id: orb-lasso
+      name: 'dsh-orb/computer-use/lasso-service'
     - id: orb-host
       name: 'dsh-orb/host'
       config:

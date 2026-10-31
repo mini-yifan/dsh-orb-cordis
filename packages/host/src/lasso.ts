@@ -124,6 +124,7 @@ export class LassoController {
     const capture = this.deps.capture()
     const attachments = this.deps.attachments()
     if (capture === undefined || attachments === undefined) {
+      console.error(`dsh-orb: lasso ${input.action} unavailable: ${capture === undefined ? 'capture' : 'attachments'} service is missing`)
       this.result(input.action, false, '截图服务不可用')
       return
     }

@@ -7,6 +7,7 @@ import {
   lassoFirstFrameNotice,
   type LassoSeed,
 } from '../src/lasso.ts'
+import { installLassoServices } from '../src/lasso-service.ts'
 import { FAKE_DESKTOP_PNG } from '../src/fake.ts'
 
 function seed(): LassoSeed {
@@ -22,6 +23,24 @@ function seed(): LassoSeed {
     },
   }
 }
+
+describe('lasso services', () => {
+  it('publishes capture and the first-frame slot on the app-level context', () => {
+    const provided = new Map<string, unknown>()
+    const ctx = {
+      get: (name: string) => provided.get(name),
+      provide: (name: string, value: unknown) => {
+        provided.set(name, value)
+        return () => { provided.delete(name) }
+      },
+    } as unknown as Context
+    installLassoServices(ctx, backend([]).fake)
+    // Both cross the preset boundary: the host reads the capture, the preset reads the
+    // seed, so neither may be provided inside the preset itself.
+    expect(provided.get('computerUseLassoCapture')).toBeDefined()
+    expect(provided.get('computerUseLassoSeed')).toBeDefined()
+  })
+})
 
 describe('lasso seed store', () => {
   it('takes a seed once and clears it', () => {

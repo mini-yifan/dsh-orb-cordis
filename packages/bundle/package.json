@@ -44,6 +44,10 @@
       "types": "./dist/computer-use/code-agent-registry.d.ts",
       "default": "./dist/computer-use/code-agent-registry.js"
     },
+    "./computer-use/lasso-service": {
+      "types": "./dist/computer-use/lasso-service.d.ts",
+      "default": "./dist/computer-use/lasso-service.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },

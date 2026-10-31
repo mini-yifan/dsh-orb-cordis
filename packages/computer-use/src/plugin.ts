@@ -58,7 +58,7 @@ import { assertImageCapableRoute, routeAcceptsImages } from './route.ts'
 import { withScreenLock } from './gui-lock.ts'
 import { BALL_PRESET, presetOf, screenOwnerId } from './screen-owner.ts'
 import { isDesktopSelectionTurn } from './selection-turn.ts'
-import { createLassoSeedStore, lassoFirstFrameNotice, type LassoSeedStore } from './lasso.ts'
+import { lassoFirstFrameNotice, type LassoSeedStore } from './lasso.ts'
 import { pairScreenshotFiles, writeDesktopScreenshots } from './screenshot.ts'
 import { delay } from './wait.ts'
 import { LONG_WAIT_SECONDS, WAIT_SECONDS, requireLongWaitSeconds } from './wait-args.ts'
@@ -263,7 +263,6 @@ export function applyComputerUse(
   config: ResolvedComputerUseConfig,
 ): void {
   installCoordinateMode(ctx)
-  ctx.provide('computerUseLassoSeed', createLassoSeedStore())
   ctx.systemPrompt.section({
     name: 'tool:computer-use',
     order: POLICY_SECTION_ORDER,
