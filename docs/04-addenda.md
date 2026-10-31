@@ -589,3 +589,16 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - **测试**：新增 `packages/host/tests/windows-resident.test.ts` 8 例，用假子进程（`spawnImpl` 注入 + 三个 `PassThrough`）覆盖——一次进程服务多次读取、并发请求按序配对、就绪行不被当作答案、畸形行被忽略后仍能拿到真答案、沉默子进程按超时答空、子进程死亡时在途请求立刻返回、忽略 `quit` 的子进程被 kill、以及启动参数就是 `-NonInteractive -STA -Command -`。`selection.test.ts` 的源码钉桩补四条：走常驻、一次性路径只剩兜底角色、脚本确实循环读 stdin、monitor 停止时关闭 reader。
 - **验证**：`pnpm typecheck` 通过；`pnpm test` **551 例全过**；`pnpm build` 后确认 `dist/native-selection/src/windows-resident.js` 进了包，`windows-native.js` 里有两处 `startResidentSelection` 引用。
 - **未做**：没有 Windows 机器实测真实 PowerShell 的交互（`-Command -` 下 stdin 行读取的缓冲行为、`GetBoundingRectangles` 的返回节奏）。协议层由假子进程覆盖，端到端待真机。macOS 不受影响，走的仍是自己的 Swift 监控。
+
+## 39. macOS 划词读不到选区：系统级焦点元素恒报 -25204 (2026-10-31)
+
+第 37 节装机、重启、打开划词开关之后，任意应用里划词仍然一个按钮都不弹。真机上把链路逐段验证下来：事件监听活着（host 里 `dsh-orb-selection` 线程停在 CFRunLoop，能收到 `mouse-down`/`mouse-up`，`shouldRead=true`）、工具条窗口已由 helper 创建、host 的广播与 helper 的 `deliver` 都在——断在**读取选中文字**这一步。
+
+- **根因**：`readAccessibility()` 用 `AXUIElementCreateSystemWide()` 的 `kAXFocusedUIElement` 找焦点元素。这台 macOS 26.4 上这个调用**恒定返回 `kAXErrorCannotComplete`（-25204）**：tap 线程、GCD 后台队列、点击后 100 ms / 300 ms / 800 ms / 2 s 全部一样，与 tap 是否存在、延时多长都无关。读不到就按"没有选区"静默返回，于是工具条一次都没弹过。
+- **判据**：对照实验。同一个进程里，问**前台应用自己的** `AXUIElementCreateApplication(pid)` 立刻成功（err=0，role=AXTextArea，selected="The"）；问系统级元素则失败。把"系统级 vs 应用级"这一项换掉，其余不动，行为就从"永远没有选区"变成"能读到"。
+- **两侧都验证过的一次性调试**：临时把带日志的 dylib 编出来替换装机副本（测完还原、SHA-1 核对），日志为 `mouse-up click=2 dragged=false press=true shouldRead=true` → `read start front=com.apple.TextEdit` → `focused err=-25204` → `readAccessibility nil`，把"读失败"而不是"事件没来"钉死。
+- **改法**：新增 `focusedElement(frontPid:)`——先问前台应用的 AX 元素，失败再退回系统级（保留兜底，个别应用只在系统级报焦点）；两处都设 0.5 s `AXUIElementSetMessagingTimeout`，目标应用挂起时不会把后面的读取排队堵死。`readAccessibility(frontPid:)` 接这个元素去读 `kAXSelectedText`/`kAXSelectedTextRange`。顺带把 `AXValue` 的强制转型前补上 `CFGetTypeID` 校验：畸形属性值原本能把 Host 直接打崩。
+- **Chromium 类应用**（Chrome / Electron）另有一条已知时序：它们的 AX 树要等有客户端查询后一两秒才自动打开，之前 `kAXFocusedUIElement` 返回 `kAXErrorNoValue`（-25212），`AXEnhancedUserInterface` 在本机返回 `-25208`（NotImplemented）、`AXManualAccessibility` 返回 `-25205`，所以不靠显式开关，靠查询自然热起来。实测 Chrome 155：预热后 `AXWebArea` 能正确返回选中的整句，说明应用级读取这条路对浏览器也成立；只是**启动后头一两次划词可能落空**。
+- **测试**：`selection.test.ts` 的源码钉桩补四条——走应用级元素、system-wide 只作兜底、有消息超时、不裸转 `AXValue`；该文件 17 例全过。
+- **验证**：`pnpm typecheck` 通过；`libmacos-selection.dylib` 重建（universal，含 `dsh_macos_selection_set_toolbar_visible`）；装进 profile 后用一个独立进程加载装机产物起监听、在 TextEdit 里双击选词，收到 `{"type":"selection","text":"The","bounds":{"x":478,"y":266,"width":20.7,"height":14},"pid":…,"bundle":"com.apple.TextEdit"}`——修复前同一套探针只收到 `mouse-down`/`mouse-up`。
+- **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-152010-ax-focus/`，`rsync -a --delete` 同步 `dist/` 进 `~/.dsh/profiles/desktop/node_modules/dsh-orb/`。dylib 由 Host 进程在启动时加载，**需重启应用**生效。

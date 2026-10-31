@@ -293,7 +293,7 @@ private final class SelectionMonitor: @unchecked Sendable {
     // nothing to offer and then restored the pasteboard by writing back a single string,
     // which silently destroyed any image or rich text the user had copied; it also fired
     // into password fields and terminals. Reporting no selection is the cheaper mistake.
-    guard let ax = readAccessibility() else { return }
+    guard let ax = readAccessibility(frontPid: front?.processIdentifier) else { return }
     emitSelection(
       text: ax.text,
       bounds: ax.bounds,
@@ -345,14 +345,41 @@ private final class SelectionMonitor: @unchecked Sendable {
   }
 }
 
-private func readAccessibility() -> (text: String, bounds: CGRect?)? {
+/**
+ * The element with keyboard focus, asked of the frontmost application itself.
+ *
+ * The system-wide element's `kAXFocusedUIElement` is not dependable: on macOS 26 it answers
+ * `kAXErrorCannotComplete` (-25204) for the whole machine, so every read returned nothing and
+ * the toolbar never appeared for a selection that was plainly there. Asking the application
+ * for its own focused element works on that machine and is what other selection tools do; the
+ * system-wide element stays as a fallback for an app that only reports focus there.
+ *
+ * The messaging timeout is short because this runs off the tap: a hung target must not make
+ * the next few selections queue behind it.
+ */
+private func focusedElement(frontPid: pid_t?) -> AXUIElement? {
+  if let pid = frontPid, pid > 0 {
+    let application = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(application, 0.5)
+    if let focused = copyFocusedElement(application) { return focused }
+  }
   let system = AXUIElementCreateSystemWide()
+  AXUIElementSetMessagingTimeout(system, 0.5)
+  return copyFocusedElement(system)
+}
+
+private func copyFocusedElement(_ root: AXUIElement) -> AXUIElement? {
   var focused: CFTypeRef?
-  let focusedError = AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused)
-  guard focusedError == .success, let element = focused else { return nil }
+  let error = AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focused)
+  guard error == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+  return (focused as! AXUIElement)
+}
+
+private func readAccessibility(frontPid: pid_t?) -> (text: String, bounds: CGRect?)? {
+  guard let element = focusedElement(frontPid: frontPid) else { return nil }
   var selected: CFTypeRef?
   let selectedError = AXUIElementCopyAttributeValue(
-    (element as! AXUIElement),
+    element,
     kAXSelectedTextAttribute as CFString,
     &selected,
   )
@@ -361,24 +388,27 @@ private func readAccessibility() -> (text: String, bounds: CGRect?)? {
   if trimmed.isEmpty { return nil }
   var rangeValue: CFTypeRef?
   let rangeError = AXUIElementCopyAttributeValue(
-    (element as! AXUIElement),
+    element,
     kAXSelectedTextRangeAttribute as CFString,
     &rangeValue,
   )
   var bounds: CGRect?
-  if rangeError == .success, let range = rangeValue {
+  // The range and its rectangle are casts into AXValue; check the type before casting so a
+  // misbehaving app cannot crash the Host with a bad attribute value.
+  if rangeError == .success, let raw = rangeValue, CFGetTypeID(raw) == AXValueGetTypeID() {
+    let range = raw as! AXValue
     var cfRange = CFRange()
-    if AXValueGetValue(range as! AXValue, .cfRange, &cfRange), cfRange.length <= 0 { return nil }
+    if AXValueGetValue(range, .cfRange, &cfRange), cfRange.length <= 0 { return nil }
     var boundsValue: CFTypeRef?
     let boundsError = AXUIElementCopyParameterizedAttributeValue(
-      (element as! AXUIElement),
+      element,
       kAXBoundsForRangeParameterizedAttribute as CFString,
       range,
       &boundsValue,
     )
-    if boundsError == .success, let raw = boundsValue {
+    if boundsError == .success, let rawBounds = boundsValue, CFGetTypeID(rawBounds) == AXValueGetTypeID() {
       var rect = CGRect.zero
-      if AXValueGetValue(raw as! AXValue, .cgRect, &rect) { bounds = rect }
+      if AXValueGetValue(rawBounds as! AXValue, .cgRect, &rect) { bounds = rect }
     }
   }
   return (trimmed, bounds)

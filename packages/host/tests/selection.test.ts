@@ -76,6 +76,15 @@ describe('selection lines', () => {
     // it again put the toolbar on the opposite half of the screen.
     assert.equal(swift.includes('electronRect(NSPoint'), false)
     assert.match(swift, /@_cdecl\("dsh_macos_selection_set_toolbar_visible"\)/)
+    // The system-wide `kAXFocusedUIElement` answers kAXErrorCannotComplete (-25204) on macOS 26,
+    // which silently zeroed every read while the selection was plainly on screen: ask the
+    // frontmost application for its own focused element, and keep the system-wide element only
+    // as a fallback. A short messaging timeout keeps a hung app from stalling later reads.
+    assert.match(swift, /AXUIElementCreateApplication/)
+    assert.match(swift, /readAccessibility\(frontPid: front\?\.processIdentifier\)/)
+    assert.match(swift, /AXUIElementSetMessagingTimeout/)
+    // Casts into AXValue are type-checked first: a malformed attribute value must not crash.
+    assert.equal(swift.includes('range as! AXValue'), false)
     assert.match(worker, /GetMessageW/)
     assert.match(worker, /SetWindowsHookExW/)
     assert.match(hooks, /worker_threads/)
