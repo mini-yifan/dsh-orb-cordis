@@ -4,6 +4,7 @@
  */
 
 import { TccMonitor } from './tcc.ts'
+import { suppressDockTile } from './dock-suppression.ts'
 import { profileDirectory, ProfileStore } from './preferences.ts'
 import { registerOrbRoutes } from './routes.ts'
 import { installOrbServices, watchOrbPermissions } from './services.ts'
@@ -36,6 +37,9 @@ export type { OrbContext }
  * @param config - patch config. `autoStart: false` skips the helper until settings turn it back on.
  */
 export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): void {
+  // Before any UI work: this process shares the app's bundle identity, so the first
+  // UI transaction (a selection) makes the Dock grow a second identical icon.
+  suppressDockTile()
   logWebPort(ctx)
   const own = ownPackage()
   const profile = profileDirectory(ctx)

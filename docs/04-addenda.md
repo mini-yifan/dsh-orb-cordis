@@ -623,3 +623,34 @@ monitor read-failed
 - **验证**：独立进程加载装机产物后真机拖选，TextEdit 收到 `pid=89093 bundle=com.apple.TextEdit`，Chrome 收到 `pid=6862 bundle=com.google.Chrome`（文本完整）；修复前同一套探针在 Host 里是 `front=com.deepseek.dsh` → 空。
 - **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-15*-selection-final/`，`rsync -a --delete` 同步 `dist/`。dylib 由 Host 启动时加载，**需重启应用**生效。
 - **未做**：没有在 Windows 上复验（那边走 PowerShell/UIA，与这条无关）；Chromium 预热的两秒等待没有做成进度提示。
+
+## 41. 一划词 Dock 就多出一个鲸鱼图标 (2026-10-31)
+
+用户反馈：划词功能可用，但**每次一划词 Dock 就出现两个一模一样的鲸鱼图标**，其中一个会跳；把多出来的那个关掉，整个应用报「应用无法启动或已意外停止」。关掉悬浮球插件再退出就没有这个问题。
+
+排查先排除了三个直觉假设（逐个做了隔离实验）：
+
+- **不是 helper 占 Dock**。helper 全程是 `type="UIElement"`，它的三个窗口（球 96×96、工具条 280×46、观察框 32×32）都 `skipTaskbar` + `type:'panel'`。单独起 panel 窗口的探针也不产生磁贴。
+- **不是划词 dylib**。在 `ELECTRON_RUN_AS_NODE=1` 进程里 `koffi.load` 并 `dsh_macos_selection_start()`，Dock 无变化。
+- **不是辅助功能授权弹窗**。`AXIsProcessTrusted()` 与 `AXIsProcessTrustedWithOptions(prompt:true)` 都试过，`ApplicationType` 不变。
+
+真正的原因是 **Host 进程借用了主 App 的可执行文件**：
+
+```
+114) "DeepSeek Harness"  pid = 62828  type="Foreground"   ← 主 App
+116) "DeepSeek Harness"  pid = 62852  type="Foreground"   ← Host（多余的磁贴）
+     bundleID = com.deepseek.dsh
+     ELECTRON_RUN_AS_NODE=1
+```
+
+Host 由 `spawn(app 的可执行文件, [...desktop-host/lib/index.js])` 启动，于是继承了 `com.deepseek.dsh` 这个 bundle 身份。它启动时本来是无 UI 的后台进程，但**只要参与一次 UI 事务**（划词要算工具条几何、要走 socket 广播），LaunchServices 就把它补登记成 `Foreground`，Dock 随即长出一个同身份的磁贴，且此后不再退回。这也解释了「关掉它整个应用就崩」—— 同一个 coalition 里的退出语义会波及 host。
+
+- **改法**：新增 `packages/host/src/dock-suppression.ts`，在 `apply()` 最开头调一次 `NSApplication.setActivationPolicy(.prohibited)`（值 2）。`prohibited` 是 WindowServer 永不激活的策略，Dock 在建磁贴前读的就是它。`NSApplication`/`objc_msgSend` 在 dyld shared cache 里，所以经 libobjc 的 `objc_getClass` + `sel_registerName` 按名字取，不用按路径加载 AppKit。
+- **只在 Desktop Host 上做**：`isDesktopHostProcess()` 认 `DSH_DESKTOP_NODE_EXECUTABLE` 或可执行路径含 `DeepSeek Harness`。`dsh web` 是终端里的普通 node 进程，没有 bundle 也没有 `NSApplication`——**主动去取 `sharedApplication` 反而会凭空创建一个**，所以这一步必须先门控。
+- **失败不影响主功能**：整个函数 best-effort，取不到 runtime、没有 `NSApplication`、AppKit 拒绝策略都只打一行日志返回 false，球/语音/划词照常启动。为一个 Dock 磁贴让插件 fail 不划算。
+- **`setActivationPolicy` 返回 NO 不是失败**：策略未发生变化时 AppKit 就返回 NO，所以重复调用（已是 prohibited）要以回读 `activationPolicy` 是否等于目标值来判定。
+- **踩到的坑（构建）**：只跑 `pnpm --filter @dsh-orb/host build` 产出的 `lib/index.js` 里，`@dsh-orb/native-selection` 仍是包名 import，而装机环境没有这条 workspace 链接——**helper 直接起不来，且 `apply()` 一次都没执行**（诊断文件为空）。必须走 `pnpm build` 让 `packages/bundle/scripts/assemble.mjs` 把 specifier 重写成 `"../native-selection/src/index.js"`。这是装配期重写，不是 tsdown 的事。
+- **测试**：新增 `packages/host/tests/dock-suppression.test.ts` 11 例——打包路径/启动器环境两种 host 识别、终端 node 拒绝、空值视为缺失、darwin 上请求值 2、非 darwin 不动、非 host 不动（不创建 NSApplication）、AppKit 拒绝、无 NSApplication、loader 抛错、setter 抛错。全量 `pnpm typecheck` 通过，`pnpm test` 562 例（560 过 2 跳过 0 失败）+ vitest 322 例全过。
+- **验证**：真机重启后 `lsappinfo` 里 host 变成 `type="BackgroundOnly"`（修复前是 `Foreground`），Dock 磁贴 **1 个**；连续 60 秒采样（覆盖一次划词）始终 `Dock=1 host=BackgroundOnly`，不再回退。helper 正常启动（有球）。
+- **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-172105-dock-tile/`，只替换 `dist/host/index.js`（`cp` 到临时名再 `mv`，避免写穿 pnpm 留的硬链接）。Host 启动时加载，**需重启应用**生效。
+- **未做**：没在 Windows 复验（那边没有 NSApplication，函数在平台门控处直接返回）；也没有验证多显示器/全屏空间的组合。
