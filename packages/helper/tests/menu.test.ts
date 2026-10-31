@@ -119,6 +119,7 @@ describe('ball menu', () => {
       background: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
       selectionEnabled: true,
       lassoEnabled: true,
+      lassoBall: { skin: 'classic', position: 'bottom-right', length: 26, balance: false },
       millifractionEnabled: false,
       openMain: true,
       update: '0.2.0',
@@ -129,6 +130,7 @@ describe('ball menu', () => {
       setBackground: () => { actions.push('background') },
       setSelection: (enabled) => { actions.push(`selection:${enabled}`) },
       setLasso: (enabled) => { actions.push(`lasso:${enabled}`) },
+      setLassoBall: (patch) => { actions.push(`ball:${JSON.stringify(patch)}`) },
       setMillifraction: (enabled) => { actions.push(`fraction:${enabled}`) },
       update: () => { actions.push('update') },
       disable: () => { actions.push('disable') },
@@ -140,6 +142,7 @@ describe('ball menu', () => {
       '后台 Agent 模型',
       '划词工具栏',
       '圈选截图',
+      '小卫星球',
       '千分比坐标',
       '更新到 0.2.0',
       'separator',
@@ -153,19 +156,45 @@ describe('ball menu', () => {
     template[1]?.click?.({ checked: false })
     selection?.click?.({ checked: false })
     template[5]?.click?.({ checked: false })
-    template[6]?.click?.({ checked: true })
-    template[7]?.click?.({ checked: false })
-    template[9]?.click?.({ checked: false })
+    template[7]?.click?.({ checked: true })
+    template[8]?.click?.({ checked: false })
+    template[10]?.click?.({ checked: false })
+    const lassoBall = template[6]?.submenu
+    assert.equal(lassoBall?.find((item) => item.label === '位置')?.submenu
+      ?.find((item) => item.label === '右下')?.checked, true)
+    lassoBall?.find((item) => item.label === '位置')?.submenu
+      ?.find((item) => item.label === '正上')?.click?.({ checked: true })
+    lassoBall?.find((item) => item.label === '皮肤')?.submenu
+      ?.find((item) => item.label === '主题蓝')?.click?.({ checked: true })
+    lassoBall?.find((item) => item.label === '长度')?.submenu
+      ?.find((item) => item.label === '长 · 46px')?.click?.({ checked: true })
+    lassoBall?.find((item) => item.label === '显示余额')?.click?.({ checked: true })
+    lassoBall?.find((item) => item.label === '小卫星球设置…')?.click?.({ checked: false })
     const background = template[3]?.submenu?.find((item) => item.label === '✓ Flash')
     assert.equal(background?.submenu?.find((item) => item.label === 'Max')?.checked, true)
     background?.submenu?.[0]?.click?.({ checked: true })
-    assert.deepEqual(actions, ['open', 'settings', 'selection:false', 'lasso:false', 'fraction:true', 'update', 'disable', 'background'])
+    assert.deepEqual(actions, [
+      'open',
+      'settings',
+      'selection:false',
+      'lasso:false',
+      'fraction:true',
+      'update',
+      'disable',
+      'ball:{"position":"top"}',
+      'ball:{"skin":"theme"}',
+      'ball:{"length":46}',
+      'ball:{"balance":true}',
+      'settings',
+      'background',
+    ])
     const english = contextMenuTemplate({
       catalog: { groups: [] },
       overlay: { provider: 'deepseek-official', model: 'plain' },
       background: { provider: 'deepseek-official', model: 'plain' },
       selectionEnabled: false,
       lassoEnabled: true,
+      lassoBall: { skin: 'classic', position: 'bottom-right', length: 26, balance: false },
       millifractionEnabled: false,
       openMain: false,
       update: null,
@@ -176,6 +205,7 @@ describe('ball menu', () => {
       setBackground() {},
       setSelection() {},
       setLasso() {},
+      setLassoBall() {},
       setMillifraction() {},
       update() {},
       disable() {},
@@ -187,6 +217,9 @@ describe('ball menu', () => {
     assert.equal(english[1]?.enabled, false)
     assert.equal(english.find((item) => item.label === 'Selection toolbar')?.checked, false)
     assert.equal(english.find((item) => item.label === 'Lasso screenshot')?.checked, true)
+    assert.ok(english.find((item) => item.label === 'Lasso ball')?.submenu
+      ?.find((item) => item.label === 'Position')?.submenu
+      ?.some((item) => item.label === 'Bottom right' && item.checked === true))
     // Without a version waiting there is no row to click, and no gap either.
     assert.equal(english.some((item) => String(item.label ?? '').startsWith('Update to')), false)
     assert.deepEqual(english.map((item) => item.label ?? item.type).slice(-2), ['separator', 'Disable floating ball'])

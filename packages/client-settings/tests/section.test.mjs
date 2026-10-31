@@ -41,6 +41,8 @@ function loadSection(hooks = {}) {
     overlay: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
     background: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
     selectionEnabled: true,
+    lassoSatellite: { enabled: true, skin: 'classic', position: 'bottom-right', length: 26, balance: false },
+    lassoBalance: { text: '¥12.34', full: '¥12.34', state: 'ready' },
     millifractionEnabled: false,
     observationFrameEnabled: true,
     voice: { voiceEnabled: true },
@@ -195,6 +197,10 @@ function loadSection(hooks = {}) {
         // The host drops the failure and arms a fresh attempt, exactly like a first launch.
         snapshot.helperError = ''
         snapshot.helperPhase = 'downloading'
+      }
+      if (options.method === 'POST' && path === '/.dsh-orb/lasso-satellite') {
+        snapshot.lassoSatellite = { ...snapshot.lassoSatellite, ...JSON.parse(options.body) }
+        return json(snapshot)
       }
       if (options.method === 'POST' && path === '/.dsh-orb/millifraction') snapshot.millifractionEnabled = JSON.parse(options.body).enabled
       if (options.method === 'POST' && path === '/.dsh-orb/observation-frame') snapshot.observationFrameEnabled = JSON.parse(options.body).enabled
@@ -473,6 +479,57 @@ describe('settings section', () => {
     assert.match(client, /\/\.dsh-orb\/selection/)
     assert.match(client, /selectionUnavailable/)
     assert.equal(client.includes('authenticatedUrl'), false)
+  })
+
+  it('customizes the lasso satellite and reflects the recharge balance', async () => {
+    const page = loadSection()
+    let view = page.render()
+    await page.flush()
+    view = page.render()
+    assert.ok(find(view, (node) => node.children?.includes('小卫星球')).length > 0)
+
+    const skin = find(view, (node) => (
+      node.props?.className === 'dsh-orb-set-lasso-skin' && node.children?.includes('主题蓝')
+    ))[0]
+    skin.props.onClick()
+    await settle()
+    let call = page.calls.filter((entry) => entry.path === '/.dsh-orb/lasso-satellite').at(-1)
+    assert.deepEqual(JSON.parse(call.options.body), { skin: 'theme' })
+
+    view = page.render()
+    const position = find(view, (node) => node.props?.['aria-label'] === '正上')[0]
+    position.props.onClick()
+    await settle()
+    call = page.calls.filter((entry) => entry.path === '/.dsh-orb/lasso-satellite').at(-1)
+    assert.deepEqual(JSON.parse(call.options.body), { position: 'top' })
+
+    view = page.render()
+    const slider = find(view, (node) => (
+      node.type === 'input' && node.props?.type === 'range' && node.props?.['aria-label'] === '长度'
+    ))[0]
+    slider.props.onChange({ target: { value: '40' } })
+    // The slider commits on release, so one drag is one host write.
+    slider.props.onPointerUp({ target: { value: '40' } })
+    await settle()
+    call = page.calls.filter((entry) => entry.path === '/.dsh-orb/lasso-satellite').at(-1)
+    assert.deepEqual(JSON.parse(call.options.body), { length: 40 })
+
+    view = page.render()
+    const balance = find(view, (node) => node.props?.['aria-label'] === '显示余额')[0]
+    assert.equal(balance.props.disabled, false)
+    balance.props.onClick()
+    await settle()
+    call = page.calls.filter((entry) => entry.path === '/.dsh-orb/lasso-satellite').at(-1)
+    assert.deepEqual(JSON.parse(call.options.body), { balance: true })
+    view = page.render()
+    const preview = find(view, (node) => node.props?.className === 'dsh-orb-set-lasso-preview-satellite')[0]
+    assert.ok(preview.children.includes('¥12.34'))
+
+    const lasso = find(view, (node) => node.props?.['aria-label'] === '启用圈选截图')[0]
+    lasso.props.onClick()
+    await settle()
+    call = page.calls.filter((entry) => entry.path === '/.dsh-orb/lasso-satellite').at(-1)
+    assert.deepEqual(JSON.parse(call.options.body), { enabled: false })
   })
 
   it('offers the GIF gallery on every host, under the interface language', async () => {
@@ -1122,7 +1179,8 @@ describe('settings section', () => {
     assert.deepEqual(titles.slice(0, 5), ['启用悬浮球', '悬浮球头像', '悬浮球 Agent', '后台 Agent', '语音'])
     assert.equal(titles[5], '千分比坐标', 'coordinate and frame cards stay below the voice panel')
     assert.equal(titles[7], '划词工具栏', 'the selection toolbar sits with the other behaviour toggles')
-    assert.equal(titles[8], '空闲后取消固定', 'idle unpin lives outside the voice card')
+    assert.equal(titles[8], '小卫星球', 'the lasso handle sits beside the other ball behaviours')
+    assert.equal(titles[9], '空闲后取消固定', 'idle unpin lives outside the voice card')
   })
 
   it('starts with voice collapsed and expands it from the master switch', async () => {

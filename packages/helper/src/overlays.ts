@@ -29,6 +29,7 @@ interface OverlayDeps {
 export interface OverlayAppearance {
   dark: boolean
   locale: 'zh' | 'en'
+  satellite: { skin: 'classic' | 'glass' | 'theme' | 'avatar'; length: number; avatarSrc: string }
 }
 
 export function denyWindowPermissions(created: BrowserWindow): void {

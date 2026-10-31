@@ -8,14 +8,18 @@ import { timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { AVATAR_PRESETS, avatarPresetPath, isAvatarPresetId } from './avatar-presets.ts'
+import { EMPTY_BALANCE, type BalanceSnapshot } from './balance.ts'
 import { normalizeCatalog, type ModelCatalog } from './catalog.ts'
 import { EMPTY_HISTORY_STATE, type HistoryPreview, type HistoryState } from './history.ts'
 import {
   isAgentModelSelection,
   isHistoryRetentionDays,
   MAX_AVATAR_BYTES,
+  parseLassoBallPatch,
   sniffAvatarMime,
   type AgentModelSelection,
+  type LassoBallPatch,
+  type LassoSatelliteState,
   type ProfileStore,
   type WorkspaceState,
 } from './preferences.ts'
@@ -57,6 +61,11 @@ export interface OrbControl {
   setOverlayModel(selection: AgentModelSelection): Promise<void>
   setBackgroundModel(selection: AgentModelSelection): Promise<void>
   setSelectionEnabled(enabled: boolean): Promise<void>
+  /** Apply the lasso satellite card in one round trip; absent falls back to the store. */
+  setLassoConfig?(patch: LassoBallPatch): Promise<LassoSatelliteState>
+  /** The current recharge balance, if the account widget has read one. */
+  lassoBalance?(): BalanceSnapshot
+  lassoBalanceError?(): string
   setMillifractionEnabled(enabled: boolean): Promise<void>
   setObservationFrameEnabled(enabled: boolean): Promise<void>
   setBallEnabled(enabled: boolean): Promise<void>
@@ -386,6 +395,20 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
     sendJson(res, 200, await snapshot(deps))
     return
   }
+  if (method === 'POST' && path === `${PREFIX}/lasso-satellite`) {
+    const patch = parseLassoBallPatch(await readJson(req))
+    if (patch === undefined) {
+      sendJson(res, 400, { error: 'invalid-lasso' })
+      return
+    }
+    if (deps.control.setLassoConfig !== undefined) await deps.control.setLassoConfig(patch)
+    else {
+      if (patch.enabled !== undefined) deps.store.setLassoEnabled(patch.enabled)
+      deps.store.setLassoBall(patch)
+    }
+    sendJson(res, 200, await snapshot(deps))
+    return
+  }
   if (method === 'POST' && path === `${PREFIX}/millifraction`) {
     const enabled = booleanField(await readJson(req))
     if (enabled === undefined) {
@@ -517,6 +540,9 @@ async function snapshot(deps: RouteDeps, voice: VoiceSettings = deps.store.voice
   overlay: AgentModelSelection
   background: AgentModelSelection
   selectionEnabled: boolean
+  lassoSatellite: LassoSatelliteState
+  lassoBalance: BalanceSnapshot
+  lassoBalanceError: string
   millifractionEnabled: boolean
   observationFrameEnabled: boolean
   tcc: TccStatus
@@ -549,6 +575,9 @@ async function snapshot(deps: RouteDeps, voice: VoiceSettings = deps.store.voice
     overlay: models.overlay,
     background: models.background,
     selectionEnabled: deps.store.selectionEnabled(),
+    lassoSatellite: deps.store.lassoSatellite(),
+    lassoBalance: deps.control.lassoBalance?.() ?? EMPTY_BALANCE,
+    lassoBalanceError: deps.control.lassoBalanceError?.() ?? '',
     millifractionEnabled: deps.store.millifractionEnabled(),
     observationFrameEnabled: deps.store.observationFrameEnabled(),
     tcc: deps.tcc.status(),

@@ -33,11 +33,57 @@ describe('profile preferences', () => {
     assert.equal(store.coordinateMode(), defaultMillifraction() ? 'millifraction' : 'pixel')
     // The toolbar ships on: a profile with no selection file has never turned it off.
     assert.equal(store.selectionEnabled(), true)
+    assert.deepEqual(store.lassoSatellite(), {
+      enabled: true,
+      skin: 'classic',
+      position: 'bottom',
+      length: 26,
+      balance: true,
+    })
     assert.equal(store.ballEnabled(), true)
     assert.equal(store.avatarVersion(), 0)
     assert.equal(store.readAvatar(), undefined)
     // Nothing has been checked yet: no remembered version, and the automatic check is on.
     assert.deepEqual(store.updateRecord(), { checkedAt: 0, latestVersion: '', notifiedVersion: '', autoCheck: true, lastError: '' })
+  })
+
+  it('starts the lasso ball at the bottom with the balance on, and keeps saved choices', () => {
+    const path = dir('lasso-defaults')
+    const store = new ProfileStore(path)
+    assert.deepEqual(store.lassoSatellite(), {
+      enabled: true,
+      skin: 'classic',
+      position: 'bottom',
+      length: 26,
+      balance: true,
+    })
+    store.setLassoEnabled(false)
+    store.setLassoBall({ skin: 'glass', position: 'top-left', length: 40, balance: false })
+    assert.deepEqual(new ProfileStore(path).lassoSatellite(), {
+      enabled: false,
+      skin: 'glass',
+      position: 'top-left',
+      length: 40,
+      balance: false,
+    })
+
+    // A file from before the customization keeps its switch and picks up the new defaults.
+    const legacy = dir('lasso-legacy')
+    writeFileSync(join(legacy, 'lasso-capture.json'), JSON.stringify({ enabled: true }))
+    assert.deepEqual(new ProfileStore(legacy).lassoSatellite(), {
+      enabled: true,
+      skin: 'classic',
+      position: 'bottom',
+      length: 26,
+      balance: true,
+    })
+
+    // An explicit balance-off choice survives while the other new fields default.
+    const quiet = dir('lasso-balance-off')
+    writeFileSync(join(quiet, 'lasso-capture.json'), JSON.stringify({ enabled: true, balance: false }))
+    const quietStore = new ProfileStore(quiet)
+    assert.equal(quietStore.lassoSatellite().balance, false)
+    assert.equal(quietStore.lassoSatellite().position, 'bottom')
   })
 
   it('follows the shared fallback on both tracks until the ball picks one', () => {

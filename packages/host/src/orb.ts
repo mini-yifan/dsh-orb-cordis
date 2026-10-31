@@ -13,6 +13,12 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { Appearance, ThemePreference } from './appearance.ts'
 import { avatarPresetSrc } from './avatar-presets.ts'
 import type { ModelCatalog } from './catalog.ts'
+import {
+  BALANCE_REFRESH_MS,
+  BalanceMonitor,
+  type BalanceAccount,
+  type BalanceSnapshot,
+} from './balance.ts'
 import { cancelRuntimeDownload, isRuntimeDownloadCancelled, purgeRuntimeArtifacts, resolveElectronBinary } from './electron-runtime.ts'
 import { helperMain } from './helper-path.ts'
 import {
@@ -34,7 +40,10 @@ import {
   defaultWorkspaceDirectory,
   isAgentModelSelection,
   isPermissionPreset,
+  parseLassoBallPatch,
   type AgentModelSelection,
+  type LassoBallPatch,
+  type LassoSatelliteState,
   type PermissionPreset,
   type ProfileStore,
   type WorkspaceState,
@@ -357,6 +366,9 @@ export class OrbRuntime {
   private pendingPrompt: { text: string; key: string; sessionId?: string; lassoId?: string } | undefined
   /** Pending lasso screenshots waiting for their instruction. */
   private readonly lasso: LassoController
+  /** The signed-in account's recharge balance, read only while the satellite asks for it. */
+  private readonly balance: BalanceMonitor
+  private balanceTimer: ReturnType<typeof setInterval> | undefined
   /** The user block a lasso observation's thumbnail belongs to. */
   private lastUserBlockKey: string | undefined
   /** Steps whose first tool-call delta already told voice that the preceding text was mid-turn. */
@@ -507,6 +519,17 @@ export class OrbRuntime {
       log: (message) => console.error(`dsh-orb: ${message}`),
     })
     ctx.provide('computerUseOverlayGuard', this.overlay)
+    this.balance = new BalanceMonitor({
+      account: () => this.ctx.get('deepseekAccount') as BalanceAccount | undefined,
+      client: () => ({
+        // The platform uses these only as client-identity headers; the version is not
+        // checked. The locale mirrors the app; the offset matches the account UI's client.
+        version: '0.0.0',
+        locale: this.appearance.locale === 'en' ? 'en-US' : 'zh-CN',
+        timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+      }),
+      log: (message) => console.error(`dsh-orb: ${message}`),
+    })
     this.lasso = new LassoController({
       capture: () => this.ctx.get('computerUseLassoCapture') as LassoCaptureServiceLike | undefined,
       attachments: () => this.ctx.get('attachments') as AttachmentStoreLike | undefined,
@@ -769,6 +792,7 @@ export class OrbRuntime {
     this.retry = undefined
     this.stopWatch()
     this.stopAgentPoll()
+    this.stopBalancePoll()
     this.clearDirty()
     this.handQuestionBack()
     this.server?.close()
@@ -891,6 +915,10 @@ export class OrbRuntime {
     const pid = asRecord(hello)?.pid
     if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) this.helperPid = pid
     this.sockets.add(socket)
+    if (this.store.lassoSatellite().enabled && this.store.lassoBall().balance) {
+      this.startBalancePoll()
+      void this.refreshBalance()
+    }
     if (this.sessionId) this.send(socket, { type: 'session', sessionId: this.sessionId })
     if (this.blockOrder.length === 0 && this.sessionId) {
       this.replaying = true
@@ -1505,6 +1533,8 @@ export class OrbRuntime {
     const reply = [...this.blockOrder].reverse().map((key) => this.blocks.get(key)).find((item) => item?.kind === 'assistant')
     console.error(`dsh-orb: turn done reply=${reply?.text.length ?? 0}`)
     this.voice.endTurn()
+    // A finished turn is when the balance actually moved; reading now beats the next poll.
+    void this.refreshBalance(true)
   }
 
   /** Flip one leftover running block to settled, bypassing the empty-text guard in {@link block}. */
@@ -1819,13 +1849,16 @@ export class OrbRuntime {
       console.error(`dsh-orb: model catalog failed: ${error instanceof Error ? error.message : String(error)}`)
     }
     const models = this.store.models()
+    const satellite = this.store.lassoSatellite()
     this.broadcast({ type: 'permission', preset: this.store.permission() })
     this.broadcast({
       type: 'chrome',
       overlay: models.overlay,
       background: models.background,
       selectionEnabled: this.store.selectionEnabled(),
-      lassoEnabled: this.store.lassoEnabled(),
+      lassoEnabled: satellite.enabled,
+      lassoSatellite: satellite,
+      lassoBalance: this.balance.current(),
       millifractionEnabled: this.store.millifractionEnabled(),
       openMain: isDesktopHost(),
       update: this.updateAvailable,
@@ -1880,8 +1913,68 @@ export class OrbRuntime {
   }
 
   async setLassoEnabled(enabled: boolean): Promise<void> {
-    this.store.setLassoEnabled(enabled)
+    await this.setLassoConfig({ enabled })
+  }
+
+  /**
+   * Apply one settings-card change to the satellite and push it to the ball.
+   * @param patch - any of the master switch and the four look fields.
+   * @returns the state after the change, including the switch.
+   */
+  async setLassoConfig(patch: LassoBallPatch): Promise<LassoSatelliteState> {
+    const previous = this.store.lassoSatellite()
+    if (patch.enabled !== undefined) this.store.setLassoEnabled(patch.enabled)
+    const next = this.store.setLassoBall(patch)
+    if (next.enabled && next.balance) {
+      this.startBalancePoll()
+      // Turning the number on, or opening the settings page with nothing cached, is the
+      // moment to spend a read; a skin or position change reuses the current value.
+      if (!previous.enabled || !previous.balance || this.balance.current().text === null) {
+        await this.balance.refresh(true)
+      }
+    } else {
+      this.stopBalancePoll()
+    }
     await this.publishChrome()
+    this.broadcastBalance()
+    return next
+  }
+
+  /** The current recharge balance, for the settings snapshot. */
+  lassoBalance(): BalanceSnapshot {
+    return this.balance.current()
+  }
+
+  /** Why the last balance read did not produce a number, for the settings card. */
+  lassoBalanceError(): string {
+    return this.balance.lastError() ?? ''
+  }
+
+  private startBalancePoll(): void {
+    if (this.balanceTimer !== undefined) return
+    const timer = setInterval(() => { void this.refreshBalance() }, BALANCE_REFRESH_MS)
+    timer.unref()
+    this.balanceTimer = timer
+  }
+
+  private stopBalancePoll(): void {
+    if (this.balanceTimer === undefined) return
+    clearInterval(this.balanceTimer)
+    this.balanceTimer = undefined
+  }
+
+  private broadcastBalance(): void {
+    const balance = this.balance.current()
+    this.broadcast({ type: 'lasso-balance', text: balance.text, state: balance.state })
+  }
+
+  /** Poll or post-turn refresh; a disabled or hidden number costs no account request. */
+  private async refreshBalance(force = false): Promise<void> {
+    const satellite = this.store.lassoSatellite()
+    if (!satellite.enabled || !satellite.balance) return
+    const before = JSON.stringify(this.balance.current())
+    const next = await this.balance.refresh(force)
+    if (JSON.stringify(next) !== before) this.broadcastBalance()
   }
 
   async setMillifractionEnabled(enabled: boolean): Promise<void> {
@@ -2175,6 +2268,13 @@ export class OrbRuntime {
     }
     if (record.type === 'set-lasso' && typeof record.enabled === 'boolean') {
       this.run('lasso-enabled', () => this.setLassoEnabled(record.enabled === true))
+      return
+    }
+    if (record.type === 'set-lasso-satellite') {
+      const patch = parseLassoBallPatch(record.patch)
+      if (patch !== undefined) {
+        this.run('lasso-satellite', async () => { await this.setLassoConfig(patch) })
+      }
       return
     }
     if (record.type === 'set-millifraction' && typeof record.enabled === 'boolean') {

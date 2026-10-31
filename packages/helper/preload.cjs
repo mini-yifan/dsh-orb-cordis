@@ -152,6 +152,9 @@ contextBridge.exposeInMainWorld('dshOrb', {
   onLassoEnabled(callback) {
     ipcRenderer.on('orb:lasso-enabled', (_event, enabled) => callback(enabled === true))
   },
+  onLassoSatellite(callback) {
+    ipcRenderer.on('orb:lasso-satellite', (_event, payload) => callback(payload))
+  },
   onAppearance(callback) {
     ipcRenderer.on('orb:appearance', (_event, appearance) => callback(appearance))
   },

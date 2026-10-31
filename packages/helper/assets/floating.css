@@ -1052,16 +1052,69 @@ body.expanded #ball {
   z-index: 4;
   right: calc(var(--chrome) + 2px);
   bottom: calc(var(--chrome) + 2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 26px;
   height: 26px;
   box-sizing: border-box;
   padding: 0;
   border: 2px solid rgba(255, 255, 255, 0.9);
-  border-radius: 50%;
+  border-radius: 999px;
   background: rgba(138, 138, 147, 0.8);
   box-shadow: 0 2px 7px rgba(17, 17, 17, 0.35);
   cursor: crosshair;
   transition: transform 120ms ease, opacity 160ms ease;
+}
+
+/* The four shipped skins. The avatar skin takes its image from #ball-gif's src,
+ * which the page sets inline; the others are pure CSS. */
+#lasso-ball[data-skin="glass"] {
+  background: rgba(28, 28, 34, 0.52);
+  border-color: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(10px) saturate(1.25);
+}
+
+#lasso-ball[data-skin="theme"] {
+  background: #3b82f6;
+  border-color: rgba(255, 255, 255, 0.92);
+}
+
+#lasso-ball[data-skin="avatar"] {
+  background-color: rgba(28, 28, 34, 0.4);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  border-color: rgba(255, 255, 255, 0.9);
+}
+
+/* With a balance on top of an avatar, a dark blend keeps the number readable. */
+#lasso-ball[data-skin="avatar"].has-balance {
+  background-color: rgba(0, 0, 0, 0.4);
+  background-blend-mode: multiply;
+}
+
+/* Balance mode grows the handle into a pill; the length is the floor, the text
+ * may widen it up to the window cap. */
+#lasso-ball.has-balance {
+  width: auto;
+  padding: 0 8px;
+}
+
+#lasso-balance {
+  display: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+#lasso-ball.has-balance #lasso-balance {
+  display: block;
 }
 
 #lasso-ball:hover {

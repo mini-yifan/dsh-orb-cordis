@@ -20,6 +20,45 @@ const webPort = process.env.DSH_ORB_WEB_PORT ?? ''
 /** Theme preference as stored by the official ui-theme settings section. */
 type ThemeSource = 'light' | 'dark' | 'system'
 
+type LassoSkin = 'classic' | 'glass' | 'theme' | 'avatar'
+type LassoPosition =
+  | 'top-left'
+  | 'top'
+  | 'top-right'
+  | 'left'
+  | 'right'
+  | 'bottom-left'
+  | 'bottom'
+  | 'bottom-right'
+
+interface LassoBallState {
+  readonly skin: LassoSkin
+  readonly position: LassoPosition
+  readonly length: number
+  readonly balance: boolean
+}
+
+const LASSO_SKINS: readonly LassoSkin[] = ['classic', 'glass', 'theme', 'avatar']
+const LASSO_POSITIONS: readonly LassoPosition[] = [
+  'top-left',
+  'top',
+  'top-right',
+  'left',
+  'right',
+  'bottom-left',
+  'bottom',
+  'bottom-right',
+]
+const LASSO_MIN_LENGTH = 26
+const LASSO_MAX_LENGTH = 56
+const DEFAULT_LASSO_BALL: LassoBallState = {
+  skin: 'classic',
+  position: 'bottom',
+  length: LASSO_MIN_LENGTH,
+  balance: true,
+}
+const DEFAULT_AVATAR = 'deepseek-avatar-square.gif'
+
 interface Appearance {
   theme?: ThemeSource
   locale?: string
@@ -30,6 +69,9 @@ interface ChromeState {
   background: MenuSelection
   selectionEnabled: boolean
   lassoEnabled: boolean
+  lassoBall: LassoBallState
+  /** Recharge balance for the satellite; null until the account widget has read one. */
+  lassoBalance: { readonly text: string | null; readonly state: string }
   millifractionEnabled: boolean
   openMain: boolean
   catalog: MenuCatalog
@@ -49,12 +91,16 @@ let chrome: ChromeState = {
   // The toolbar ships on; the host's first publish corrects this either way.
   selectionEnabled: true,
   lassoEnabled: true,
+  lassoBall: DEFAULT_LASSO_BALL,
+  lassoBalance: { text: null, state: 'unavailable' },
   millifractionEnabled: false,
   openMain: false,
   catalog: { groups: [] },
   update: null,
 }
 let avatarToken = 0
+/** The avatar src the page is showing, reused by the lasso follower's avatar skin. */
+let lastAvatarSrc = ''
 // Raw preferences as stored; `theme` resolves through nativeTheme, an absent
 // locale falls back to the system languages.
 let appearance: Appearance = readAppearanceEnv()
@@ -71,7 +117,11 @@ if (process.platform === 'darwin') app.setActivationPolicy?.('accessory')
 let win: BrowserWindow | undefined
 let tccWait: ((status: unknown) => void) | undefined
 let overlays: {
-  appearance(payload: { dark: boolean; locale: 'zh' | 'en' }): void
+  appearance(payload: {
+    dark: boolean
+    locale: 'zh' | 'en'
+    satellite: { skin: LassoSkin; length: number; avatarSrc: string }
+  }): void
   deliver(message: unknown): boolean
   chromeWindows(): readonly (NativeHandleWindow | undefined)[]
   lassoStart(point: { x: number; y: number }, display: { x: number; y: number; width: number; height: number; scale: number }): void
@@ -117,6 +167,7 @@ void app.whenReady().then(async () => {
     pushAppearance()
     if (win && !win.isDestroyed()) {
       win.webContents.send('orb:lasso-enabled', chrome.lassoEnabled)
+      sendLassoSatellite()
       // A fresh page holds none of the expansion or strip classes while this window keeps
       // the width the strip reserved: re-apply the geometry before the chips come back,
       // or the panel would sit over them until the next expand.
@@ -551,6 +602,19 @@ function deliver(message: unknown): void {
   if (record.type === 'chrome') {
     chrome = readChrome(record)
     if (win && !win.isDestroyed()) win.webContents.send('orb:lasso-enabled', chrome.lassoEnabled)
+    sendLassoSatellite()
+    // The follower ball carries the same skin and length; refresh its cached config now.
+    pushAppearance()
+    return
+  }
+  if (record.type === 'lasso-balance') {
+    const text = (record as { text?: unknown }).text
+    const state = (record as { state?: unknown }).state
+    chrome.lassoBalance = {
+      text: typeof text === 'string' && text !== '' ? text : null,
+      state: typeof state === 'string' ? state : 'unavailable',
+    }
+    sendLassoSatellite()
     return
   }
   if (record.type === 'appearance') {
@@ -700,8 +764,25 @@ function applyAppearance(): void {
   pushAppearance()
 }
 
+/** Push the idle satellite's look and balance to the page. */
+function sendLassoSatellite(): void {
+  if (!win || win.isDestroyed()) return
+  win.webContents.send('orb:lasso-satellite', {
+    ...chrome.lassoBall,
+    balanceText: chrome.lassoBalance.text,
+  })
+}
+
 function pushAppearance(): void {
-  const payload = { dark: nativeTheme.shouldUseDarkColors, locale: uiLanguage() }
+  const payload = {
+    dark: nativeTheme.shouldUseDarkColors,
+    locale: uiLanguage(),
+    satellite: {
+      skin: chrome.lassoBall.skin,
+      length: chrome.lassoBall.length,
+      avatarSrc: lastAvatarSrc || DEFAULT_AVATAR,
+    },
+  }
   if (win && !win.isDestroyed()) win.webContents.send('orb:appearance', payload)
   overlays?.appearance(payload)
 }
@@ -712,6 +793,8 @@ function readChrome(value: unknown): ChromeState {
     background?: MenuSelection
     selectionEnabled?: unknown
     lassoEnabled?: unknown
+    lassoSatellite?: unknown
+    lassoBalance?: unknown
     millifractionEnabled?: unknown
     openMain?: unknown
     update?: unknown
@@ -722,11 +805,42 @@ function readChrome(value: unknown): ChromeState {
     background: selectionOr(record.background, chrome.background),
     selectionEnabled: record.selectionEnabled === true,
     lassoEnabled: record.lassoEnabled !== false,
+    lassoBall: readLassoBall(record.lassoSatellite),
+    lassoBalance: readLassoBalance(record.lassoBalance),
     millifractionEnabled: record.millifractionEnabled === true,
     openMain: record.openMain === true,
     update: typeof record.update === 'string' && record.update !== '' ? record.update : null,
     catalog: record.catalog ?? { groups: [] },
   }
+}
+
+function readLassoBall(value: unknown): LassoBallState {
+  const record = value as { skin?: unknown; position?: unknown; length?: unknown; balance?: unknown } | undefined
+  const length = record?.length
+  return {
+    skin: isLassoSkin(record?.skin) ? record.skin : DEFAULT_LASSO_BALL.skin,
+    position: isLassoPosition(record?.position) ? record.position : DEFAULT_LASSO_BALL.position,
+    length: typeof length === 'number' && Number.isFinite(length)
+      ? Math.min(LASSO_MAX_LENGTH, Math.max(LASSO_MIN_LENGTH, Math.round(length)))
+      : DEFAULT_LASSO_BALL.length,
+    balance: typeof record?.balance === 'boolean' ? record.balance : DEFAULT_LASSO_BALL.balance,
+  }
+}
+
+function readLassoBalance(value: unknown): { text: string | null; state: string } {
+  const record = value as { text?: unknown; state?: unknown } | undefined
+  return {
+    text: typeof record?.text === 'string' && record.text !== '' ? record.text : null,
+    state: typeof record?.state === 'string' ? record.state : 'unavailable',
+  }
+}
+
+function isLassoSkin(value: unknown): value is LassoSkin {
+  return typeof value === 'string' && (LASSO_SKINS as readonly string[]).includes(value)
+}
+
+function isLassoPosition(value: unknown): value is LassoPosition {
+  return typeof value === 'string' && (LASSO_POSITIONS as readonly string[]).includes(value)
 }
 
 function selectionOr(value: MenuSelection | undefined, fallback: MenuSelection): MenuSelection {
@@ -742,6 +856,7 @@ async function showMenu(window: BrowserWindow): Promise<void> {
     setBackground: (selection) => { write({ type: 'set-background', selection }) },
     setSelection: (enabled) => { write({ type: 'set-selection', enabled }) },
     setLasso: (enabled) => { write({ type: 'set-lasso', enabled }) },
+    setLassoBall: (patch) => { write({ type: 'set-lasso-satellite', patch }) },
     setMillifraction: (enabled) => { void confirmMillifraction(window, enabled) },
     update: () => { write({ type: 'update' }) },
     disable: () => { write({ type: 'disable' }) },
@@ -809,16 +924,23 @@ async function loadAvatar(choice: AvatarChoice): Promise<void> {
   if (!win) return
   if (choice.kind === 'preset') {
     // A shipped GIF: the page loads the file itself, no socket payload involved.
+    lastAvatarSrc = choice.src
     win.webContents.send('orb:avatar', choice.src)
+    pushAppearance()
     return
   }
   if (choice.kind === 'default') {
+    lastAvatarSrc = ''
     win.webContents.send('orb:avatar', '')
+    pushAppearance()
     return
   }
   const image = await fetchAvatar(choice.version)
   if (tokenId !== avatarToken || !win || !image) return
-  win.webContents.send('orb:avatar', `data:${image.mime};base64,${image.body.toString('base64')}`)
+  const src = `data:${image.mime};base64,${image.body.toString('base64')}`
+  lastAvatarSrc = src
+  win.webContents.send('orb:avatar', src)
+  pushAppearance()
 }
 
 function fetchAvatar(version: number): Promise<{ mime: string; body: Buffer } | undefined> {

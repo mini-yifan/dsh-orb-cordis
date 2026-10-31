@@ -19,6 +19,8 @@ interface LassoDeps {
 export interface LassoAppearance {
   dark: boolean
   locale: 'zh' | 'en'
+  /** The idle satellite's look, so the cursor follower matches it while drawing. */
+  satellite: { skin: 'classic' | 'glass' | 'theme' | 'avatar'; length: number; avatarSrc: string }
 }
 
 export interface LassoDisplay {
@@ -58,6 +60,7 @@ export async function attachLasso(deps: LassoDeps): Promise<{
   let actionTimer: ReturnType<typeof setTimeout> | undefined
   let locale: 'zh' | 'en' = 'zh'
   let dark = false
+  let satellite: LassoAppearance['satellite'] = { skin: 'classic', length: 26, avatarSrc: '' }
   let fadeTimer: ReturnType<typeof setTimeout> | undefined
 
   await Promise.all([
@@ -157,7 +160,7 @@ export async function attachLasso(deps: LassoDeps): Promise<{
     display = nextDisplay
     setDisplayBounds(trail, nextDisplay)
     raise(trail)
-    sendTrail('lasso-trail-show', { point, display: nextDisplay, dark, locale })
+    sendTrail('lasso-trail-show', { point, display: nextDisplay, dark, locale, ball: satellite })
   }
 
   function addPoint(point: Point): void {
@@ -282,6 +285,7 @@ export async function attachLasso(deps: LassoDeps): Promise<{
     appearance(payload) {
       dark = payload.dark
       locale = payload.locale
+      if (payload.satellite !== undefined) satellite = payload.satellite
       sendConfirm('lasso-appearance', payload)
       sendTrail('lasso-appearance', payload)
       sendPreview('lasso-appearance', payload)

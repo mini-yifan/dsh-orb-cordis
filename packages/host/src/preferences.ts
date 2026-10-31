@@ -174,6 +174,119 @@ export function isAgentModelSelection(value: unknown): value is AgentModelSelect
   return parseSelection(value) !== undefined
 }
 
+/** The four shipped looks for the lasso satellite. */
+export const LASSO_BALL_SKINS = ['classic', 'glass', 'theme', 'avatar'] as const
+export type LassoBallSkin = (typeof LASSO_BALL_SKINS)[number]
+
+/** Where the satellite sits on the main ball's rim. */
+export const LASSO_BALL_POSITIONS = [
+  'top-left',
+  'top',
+  'top-right',
+  'left',
+  'right',
+  'bottom-left',
+  'bottom',
+  'bottom-right',
+] as const
+export type LassoBallPosition = (typeof LASSO_BALL_POSITIONS)[number]
+
+export const LASSO_BALL_MIN_LENGTH = 26
+export const LASSO_BALL_MAX_LENGTH = 56
+
+/** The lasso handle's look. Stored beside its master switch in `lasso-capture.json`. */
+export interface LassoBallConfig {
+  readonly skin: LassoBallSkin
+  readonly position: LassoBallPosition
+  readonly length: number
+  readonly balance: boolean
+}
+
+export const DEFAULT_LASSO_BALL: LassoBallConfig = {
+  skin: 'classic',
+  position: 'bottom',
+  length: LASSO_BALL_MIN_LENGTH,
+  balance: true,
+}
+
+/** What the settings card shows: the master switch beside the satellite's look. */
+export interface LassoSatelliteState extends LassoBallConfig {
+  readonly enabled: boolean
+}
+
+export function isLassoBallSkin(value: unknown): value is LassoBallSkin {
+  return typeof value === 'string' && (LASSO_BALL_SKINS as readonly string[]).includes(value)
+}
+
+export function isLassoBallPosition(value: unknown): value is LassoBallPosition {
+  return typeof value === 'string' && (LASSO_BALL_POSITIONS as readonly string[]).includes(value)
+}
+
+/** One settings-card or menu change; every field is optional and validated independently. */
+export interface LassoBallPatch {
+  enabled?: boolean
+  skin?: LassoBallSkin
+  position?: LassoBallPosition
+  length?: number
+  balance?: boolean
+}
+
+/**
+ * Validate one partial change from the settings page or the ball menu.
+ * @returns the accepted fields, or undefined when the payload has none or an invalid one.
+ */
+export function parseLassoBallPatch(value: unknown): LassoBallPatch | undefined {
+  const recordValue = record(value)
+  if (recordValue === undefined) return undefined
+  const patch: LassoBallPatch = {}
+  let fields = 0
+  if ('enabled' in recordValue) {
+    if (typeof recordValue.enabled !== 'boolean') return undefined
+    patch.enabled = recordValue.enabled
+    fields += 1
+  }
+  if ('skin' in recordValue) {
+    if (!isLassoBallSkin(recordValue.skin)) return undefined
+    patch.skin = recordValue.skin
+    fields += 1
+  }
+  if ('position' in recordValue) {
+    if (!isLassoBallPosition(recordValue.position)) return undefined
+    patch.position = recordValue.position
+    fields += 1
+  }
+  if ('length' in recordValue) {
+    const length = recordValue.length
+    if (typeof length !== 'number' || !Number.isFinite(length)) return undefined
+    const rounded = Math.round(length)
+    if (rounded < LASSO_BALL_MIN_LENGTH || rounded > LASSO_BALL_MAX_LENGTH) return undefined
+    patch.length = rounded
+    fields += 1
+  }
+  if ('balance' in recordValue) {
+    if (typeof recordValue.balance !== 'boolean') return undefined
+    patch.balance = recordValue.balance
+    fields += 1
+  }
+  return fields === 0 ? undefined : patch
+}
+
+/** One stored or patched configuration; absent or invalid fields keep the defaults. */
+export function parseLassoBallConfig(value: unknown): LassoBallConfig {
+  const recordValue = record(value)
+  const length = recordValue?.length
+  return {
+    skin: isLassoBallSkin(recordValue?.skin) ? recordValue.skin : DEFAULT_LASSO_BALL.skin,
+    position: isLassoBallPosition(recordValue?.position) ? recordValue.position : DEFAULT_LASSO_BALL.position,
+    length: typeof length === 'number' && Number.isFinite(length)
+      ? Math.min(LASSO_BALL_MAX_LENGTH, Math.max(LASSO_BALL_MIN_LENGTH, Math.round(length)))
+      : DEFAULT_LASSO_BALL.length,
+    // An explicit `false` survives; a file written before the balance existed (or a fresh
+    // profile) starts with the number on.
+    balance: typeof recordValue?.balance === 'boolean' ? recordValue.balance : DEFAULT_LASSO_BALL.balance,
+  }
+}
+
 /** In-memory view of the profile files. Writes update the cache and the disk together. */
 export class ProfileStore {
   private permissionValue: PermissionPreset
@@ -189,6 +302,7 @@ export class ProfileStore {
   private selectionValue: boolean
   private selectionLanguage: 'zh' | 'en'
   private lassoValue: boolean
+  private lassoBallValue: LassoBallConfig
   private ballValue: boolean
   private updateValue: UpdateRecord
   private historyValue: HistoryRecord
@@ -205,7 +319,9 @@ export class ProfileStore {
     const selection = readSelection(dir)
     this.selectionValue = selection.enabled
     this.selectionLanguage = selection.language
-    this.lassoValue = readLasso(dir)
+    const lasso = readLasso(dir)
+    this.lassoValue = lasso.enabled
+    this.lassoBallValue = lasso.ball
     this.ballValue = readBall(dir)
     this.updateValue = readUpdate(dir)
     this.historyValue = readHistory(dir)
@@ -319,7 +435,38 @@ export class ProfileStore {
 
   setLassoEnabled(enabled: boolean): void {
     this.lassoValue = enabled
-    writeJson(join(this.dir, LASSO_FILE), { enabled })
+    this.writeLasso()
+  }
+
+  /** The handle's look, without the master switch. */
+  lassoBall(): LassoBallConfig {
+    return { ...this.lassoBallValue }
+  }
+
+  /** Master switch and look together, for the settings card. */
+  lassoSatellite(): LassoSatelliteState {
+    return { enabled: this.lassoValue, ...this.lassoBallValue }
+  }
+
+  /**
+   * Apply one settings-card change. Invalid fields keep their current value, so a partial
+   * update from the page can never reset a choice it did not send.
+   */
+  setLassoBall(patch: Partial<LassoBallConfig>): LassoSatelliteState {
+    const current = this.lassoBallValue
+    const next = parseLassoBallConfig({
+      skin: patch.skin ?? current.skin,
+      position: patch.position ?? current.position,
+      length: patch.length ?? current.length,
+      balance: patch.balance ?? current.balance,
+    })
+    this.lassoBallValue = next
+    this.writeLasso()
+    return this.lassoSatellite()
+  }
+
+  private writeLasso(): void {
+    writeJson(join(this.dir, LASSO_FILE), { enabled: this.lassoValue, ...this.lassoBallValue })
   }
 
   /** Missing file means the ball is on. `autoStart: false` is a separate patch switch. */
@@ -544,9 +691,12 @@ function readObservationFrame(dir: string): boolean {
   return typeof enabled === 'boolean' ? enabled : true
 }
 
-function readLasso(dir: string): boolean {
-  const enabled = record(readJson(join(dir, LASSO_FILE)))?.enabled
-  return typeof enabled === 'boolean' ? enabled : true
+function readLasso(dir: string): { enabled: boolean; ball: LassoBallConfig } {
+  const value = record(readJson(join(dir, LASSO_FILE)))
+  return {
+    enabled: typeof value?.enabled === 'boolean' ? value.enabled : true,
+    ball: parseLassoBallConfig(value),
+  }
 }
 
 function readAvatarMime(dir: string): AvatarMime | undefined {

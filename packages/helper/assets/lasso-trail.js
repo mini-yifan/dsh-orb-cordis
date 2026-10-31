@@ -4,6 +4,26 @@ const cursorBall = document.querySelector('#cursor-ball')
 const api = window.dshLasso?.trail
 /** Right-down offset so the ball never covers the system pointer it follows. */
 const CURSOR_BALL_OFFSET = 16
+const LASSO_SKINS = ['classic', 'glass', 'theme', 'avatar']
+const LASSO_MIN_LENGTH = 26
+const LASSO_MAX_LENGTH = 56
+
+/** Match the idle satellite's skin and length; balance text stays on the idle handle. */
+function applyBall(config) {
+  const skin = config !== null && typeof config === 'object' && LASSO_SKINS.includes(config.skin)
+    ? config.skin
+    : 'classic'
+  const length = config !== null && typeof config === 'object'
+    && typeof config.length === 'number' && Number.isFinite(config.length)
+    ? Math.min(LASSO_MAX_LENGTH, Math.max(LASSO_MIN_LENGTH, Math.round(config.length)))
+    : LASSO_MIN_LENGTH
+  const avatar = config !== null && typeof config === 'object' && typeof config.avatarSrc === 'string'
+    ? config.avatarSrc.replaceAll('"', '%22')
+    : ''
+  cursorBall.dataset.skin = skin
+  cursorBall.style.width = `${length}px`
+  cursorBall.style.backgroundImage = skin === 'avatar' && avatar !== '' ? `url("${avatar}")` : ''
+}
 let display = { x: 0, y: 0, width: 1, height: 1 }
 let points = []
 let opacity = 1
@@ -83,6 +103,7 @@ function reset() {
 api?.onShow((payload) => {
   if (payload === null || typeof payload !== 'object') return
   display = payload.display ?? display
+  applyBall(payload.ball)
   reset()
   if (payload.point) {
     points = [{ x: payload.point.x, y: payload.point.y }]

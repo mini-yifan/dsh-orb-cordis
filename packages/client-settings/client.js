@@ -55,6 +55,30 @@ window.__ModuleLoader__.load({
       selectionTitle: '划词工具栏',
       selectionDescription: '打开后，在其他应用里选中文字会出现搜索、翻译和发给 AI。',
       selectionToggle: '启用划词工具栏',
+      lassoSatelliteTitle: '小卫星球',
+      lassoSatelliteDescription: '圈选截图的小手柄。选择皮肤、位置和长度，也可以显示 DeepSeek 账号余额。',
+      lassoEnabledToggle: '启用圈选截图',
+      lassoSkinLabel: '皮肤',
+      lassoSkinClassic: '经典灰',
+      lassoSkinGlass: '磨砂玻璃',
+      lassoSkinTheme: '主题蓝',
+      lassoSkinAvatar: '跟随头像',
+      lassoPositionLabel: '位置',
+      lassoPositionTopLeft: '左上',
+      lassoPositionTop: '正上',
+      lassoPositionTopRight: '右上',
+      lassoPositionLeft: '正左',
+      lassoPositionRight: '正右',
+      lassoPositionBottomLeft: '左下',
+      lassoPositionBottom: '正下',
+      lassoPositionBottomRight: '右下',
+      lassoLengthLabel: '长度',
+      lassoLengthValue: '{px}px',
+      lassoBalanceLabel: '显示余额',
+      lassoBalanceCurrent: '当前充值余额 {text}',
+      lassoBalanceSignedOut: '登录 DeepSeek 账号后可显示余额。',
+      lassoBalanceUnavailable: '余额暂时不可用。',
+      lassoPreviewLabel: '小卫星球预览',
       millifractionConfirm: '新编码只在新对话中生效。当前对话不变，仍可从历史记录打开。取消不写入、不新建。',
       frameTitle: '观察框彩带',
       frameDescription: 'Computer Use 操作某个窗口时，窗口周围显示这条彩带。关闭后不再显示。',
@@ -288,6 +312,30 @@ window.__ModuleLoader__.load({
       selectionTitle: 'Selection toolbar',
       selectionDescription: 'When on, selecting text in another app shows Search, Translate, and Send to AI.',
       selectionToggle: 'Enable the selection toolbar',
+      lassoSatelliteTitle: 'Lasso ball',
+      lassoSatelliteDescription: 'The lasso handle. Pick its skin, position, and length, and optionally show the DeepSeek account balance.',
+      lassoEnabledToggle: 'Enable lasso screenshots',
+      lassoSkinLabel: 'Skin',
+      lassoSkinClassic: 'Classic gray',
+      lassoSkinGlass: 'Frosted glass',
+      lassoSkinTheme: 'Theme blue',
+      lassoSkinAvatar: 'Follow avatar',
+      lassoPositionLabel: 'Position',
+      lassoPositionTopLeft: 'Top left',
+      lassoPositionTop: 'Top',
+      lassoPositionTopRight: 'Top right',
+      lassoPositionLeft: 'Left',
+      lassoPositionRight: 'Right',
+      lassoPositionBottomLeft: 'Bottom left',
+      lassoPositionBottom: 'Bottom',
+      lassoPositionBottomRight: 'Bottom right',
+      lassoLengthLabel: 'Length',
+      lassoLengthValue: '{px}px',
+      lassoBalanceLabel: 'Show balance',
+      lassoBalanceCurrent: 'Current top-up balance {text}',
+      lassoBalanceSignedOut: 'Sign in to DeepSeek to show the balance.',
+      lassoBalanceUnavailable: 'The balance is unavailable right now.',
+      lassoPreviewLabel: 'Lasso ball preview',
       millifractionConfirm: 'The new encoding takes effect in a new conversation. The current conversation stays unchanged and remains in History. Cancel leaves the default and this chat as they are.',
       frameTitle: 'Observation ribbon',
       frameDescription: 'Draws the coloured ribbon around the window Computer Use is working on. Turn it off to hide it.',
@@ -622,6 +670,179 @@ window.__ModuleLoader__.load({
       return text.tccMissing
     }
 
+    /**
+     * The lasso handle's card: skin, rim position, length, and the optional recharge
+     * balance. The preview is local maths, not the helper's DOM, so it updates while
+     * the slider moves and before the host answers.
+     */
+    function LassoSatelliteCard(props) {
+      const { text, snap, disabled, mutate } = props
+      const satellite = snap.lassoSatellite || {
+        enabled: true,
+        skin: 'classic',
+        position: 'bottom',
+        length: 26,
+        balance: true,
+      }
+      const balance = snap.lassoBalance || { text: null, full: null, state: 'unavailable' }
+      const [length, setLength] = React.useState(satellite.length)
+      React.useEffect(() => { setLength(satellite.length) }, [satellite.length])
+      const update = (patch) => { void mutate('/.dsh-orb/lasso-satellite', patch) }
+      const balanceText = typeof balance.text === 'string' ? balance.text : ''
+      const balanceFull = typeof balance.full === 'string' ? balance.full : balanceText
+      const balanceReady = balance.state === 'ready' && balanceFull !== ''
+      const showBalance = satellite.balance === true && balanceReady
+      const hint = balanceReady
+        ? text.lassoBalanceCurrent.replace('{text}', balanceFull)
+        : balance.state === 'signed-out'
+          ? text.lassoBalanceSignedOut
+          : text.lassoBalanceUnavailable
+      // A missing cached value is not a reason to block the switch: enabling it asks the
+      // host to read the account, and the hint below reports what came back.
+      const balanceDisabled = disabled
+      const skins = [
+        ['classic', text.lassoSkinClassic],
+        ['glass', text.lassoSkinGlass],
+        ['theme', text.lassoSkinTheme],
+        ['avatar', text.lassoSkinAvatar],
+      ]
+      const positions = [
+        ['top-left', '↖', text.lassoPositionTopLeft],
+        ['top', '↑', text.lassoPositionTop],
+        ['top-right', '↗', text.lassoPositionTopRight],
+        ['left', '←', text.lassoPositionLeft],
+        [null, null, null],
+        ['right', '→', text.lassoPositionRight],
+        ['bottom-left', '↙', text.lassoPositionBottomLeft],
+        ['bottom', '↓', text.lassoPositionBottom],
+        ['bottom-right', '↘', text.lassoPositionBottomRight],
+      ]
+      const directions = {
+        'top-left': [-1, -1],
+        top: [0, -1],
+        'top-right': [1, -1],
+        left: [-1, 0],
+        right: [1, 0],
+        'bottom-left': [-1, 1],
+        bottom: [0, 1],
+        'bottom-right': [1, 1],
+      }
+      const direction = directions[satellite.position] || directions['bottom-right']
+      const previewSize = 148
+      const previewCenter = previewSize / 2
+      const rim = 32
+      const previewHeight = 24
+      const previewLength = showBalance
+        ? Math.min(72, Math.max(length, 16 + balanceText.length * 6))
+        : length
+      const satelliteLeft = Math.max(2, Math.min(previewSize - previewLength - 2, previewCenter + direction[0] * rim - previewLength / 2))
+      const satelliteTop = Math.max(2, Math.min(previewSize - previewHeight - 2, previewCenter + direction[1] * rim - previewHeight / 2))
+      const avatarImage = `url("${snap.avatarUrl}")`
+      // Read the released input's own value: the preview state may be one render behind
+      // the pointer when a drag ends, and the DOM already holds the number the user chose.
+      const commitLength = (event) => {
+        const value = Number(event?.target?.value)
+        const next = Number.isFinite(value) ? value : length
+        if (next !== satellite.length) update({ length: next })
+      }
+      return h('section', { className: 'dsh-orb-set-card dsh-orb-set-lasso' },
+        h('header', { className: 'dsh-orb-set-head' },
+          h('span', { className: 'dsh-orb-set-head-icon', 'aria-hidden': 'true' }, orbIcon('orb')),
+          h('div', { className: 'dsh-orb-set-head-text' },
+            h('h3', null, text.lassoSatelliteTitle),
+            h('p', null, text.lassoSatelliteDescription)),
+          h('div', { className: 'dsh-orb-set-head-control' },
+            h('span', { className: 'dsh-orb-set-head-state' }, satellite.enabled ? text.voiceOn : text.voiceOff),
+            h(Toggle, {
+              checked: satellite.enabled === true,
+              label: text.lassoEnabledToggle,
+              disabled,
+              onChange: (enabled) => update({ enabled }),
+            }))),
+        h('div', { className: 'dsh-orb-set-card-body' },
+          h('div', { className: 'dsh-orb-set-lasso-layout' },
+            h('div', { className: 'dsh-orb-set-lasso-controls' },
+              h('div', { className: 'dsh-orb-set-lasso-group' },
+                h('span', { className: 'dsh-orb-set-lasso-label' }, text.lassoSkinLabel),
+                h('div', { className: 'dsh-orb-set-lasso-skins' },
+                  skins.map(([skin, label]) => h('button', {
+                    key: skin,
+                    type: 'button',
+                    className: 'dsh-orb-set-lasso-skin',
+                    'data-skin': skin,
+                    'aria-pressed': String(satellite.skin === skin),
+                    disabled,
+                    onClick: () => update({ skin }),
+                  },
+                    h('span', {
+                      className: 'dsh-orb-set-lasso-dot',
+                      style: skin === 'avatar' ? { backgroundImage: avatarImage } : undefined,
+                    }),
+                    label)))),
+              h('div', { className: 'dsh-orb-set-lasso-group' },
+                h('span', { className: 'dsh-orb-set-lasso-label' }, text.lassoPositionLabel),
+                h('div', { className: 'dsh-orb-set-lasso-grid', role: 'group', 'aria-label': text.lassoPositionLabel },
+                  positions.map(([position, glyph, label], index) => position === null
+                    ? h('span', { key: `center-${index}`, className: 'dsh-orb-set-lasso-center', 'aria-hidden': 'true' })
+                    : h('button', {
+                      key: position,
+                      type: 'button',
+                      className: 'dsh-orb-set-lasso-cell',
+                      'aria-pressed': String(satellite.position === position),
+                      'aria-label': label,
+                      title: label,
+                      disabled,
+                      onClick: () => update({ position }),
+                    }, glyph)))),
+              h('div', { className: 'dsh-orb-set-lasso-group' },
+                h('div', { className: 'dsh-orb-set-lasso-length' },
+                  h('span', { className: 'dsh-orb-set-lasso-label' }, text.lassoLengthLabel),
+                  h('span', { className: 'dsh-orb-set-lasso-length-value' }, text.lassoLengthValue.replace('{px}', String(length)))),
+                h('input', {
+                  type: 'range',
+                  className: 'dsh-orb-set-range',
+                  min: 26,
+                  max: 56,
+                  step: 2,
+                  value: length,
+                  disabled,
+                  'aria-label': text.lassoLengthLabel,
+                  onChange: (event) => setLength(Number(event.target.value)),
+                  onPointerUp: commitLength,
+                  onKeyUp: commitLength,
+                  onBlur: commitLength,
+                })),
+              h('div', { className: 'dsh-orb-set-lasso-group' },
+                h('div', { className: 'dsh-orb-set-lasso-balance-row' },
+                  h('span', { className: 'dsh-orb-set-lasso-label' }, text.lassoBalanceLabel),
+                  h(Toggle, {
+                    checked: satellite.balance === true,
+                    label: text.lassoBalanceLabel,
+                    disabled: balanceDisabled,
+                    onChange: (enabled) => update({ balance: enabled }),
+                  })),
+                h('p', { className: 'dsh-orb-set-lasso-hint' }, hint))),
+            h('div', { className: 'dsh-orb-set-lasso-preview-wrap' },
+              h('div', {
+                className: 'dsh-orb-set-lasso-preview',
+                role: 'img',
+                'aria-label': text.lassoPreviewLabel,
+              },
+                h('div', { className: 'dsh-orb-set-lasso-preview-ball' },
+                  h('img', { src: snap.avatarUrl, alt: '' })),
+                h('div', {
+                  className: 'dsh-orb-set-lasso-preview-satellite',
+                  'data-skin': satellite.skin,
+                  style: {
+                    left: `${satelliteLeft}px`,
+                    top: `${satelliteTop}px`,
+                    width: `${previewLength}px`,
+                    ...(satellite.skin === 'avatar' ? { backgroundImage: avatarImage } : {}),
+                  },
+                }, showBalance ? balanceText : '')),
+              h('span', { className: 'dsh-orb-set-lasso-preview-caption' }, text.lassoPreviewLabel)))))
+    }
+
     function OrbSettingsSection() {
       const text = copy()
       // Re-render when the app's locale changes (<html lang>), so every copy()
@@ -907,6 +1128,7 @@ window.__ModuleLoader__.load({
             control: toggleHead(text, snap.selectionEnabled === true, text.selectionToggle, disabled,
               (enabled) => { void mutate('/.dsh-orb/selection', { enabled }) }),
           }),
+          h(LassoSatelliteCard, { text, snap, disabled, mutate }),
           h(IdleCard, { text, snap, mutate }),
           snap.tcc && snap.tcc.applicable ? tccCard(text, snap, disabled, mutate) : null),
         h(WorkspaceCard, { text, snap, refreshSettings }),
@@ -2582,6 +2804,92 @@ window.__ModuleLoader__.load({
 .dsh-orb-set-avatar { display: block; width: 64px; height: 64px; border-radius: 50%; object-fit: cover; background: color-mix(in srgb, currentColor 8%, transparent); }
 .dsh-orb-set-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; justify-content: flex-end; }
 .dsh-orb-set-avatar-error { margin-top: 8px; }
+/* Lasso satellite */
+.dsh-orb-set-lasso-layout { display: grid; grid-template-columns: minmax(0, 1fr) 160px; gap: 18px; align-items: start; }
+.dsh-orb-set-lasso-controls { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.dsh-orb-set-lasso-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.dsh-orb-set-lasso-label { font-size: 12.5px; font-weight: 500; line-height: 1.4; color: color-mix(in srgb, currentColor 84%, transparent); }
+.dsh-orb-set-lasso-skins { display: flex; flex-wrap: wrap; gap: 6px; }
+.dsh-orb-set-lasso-skin {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 8px;
+  background: transparent; color: inherit; padding: 6px 9px;
+  font: inherit; font-size: 12px; line-height: 1.2; cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.dsh-orb-set-lasso-skin:hover:not(:disabled) { background: color-mix(in srgb, currentColor 4%, transparent); }
+.dsh-orb-set-lasso-skin[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--dsh-orb-accent) 48%, transparent);
+  background: color-mix(in srgb, var(--dsh-orb-accent) 9%, transparent);
+  color: var(--dsh-orb-accent); font-weight: 600;
+}
+.dsh-orb-set-lasso-skin:disabled { opacity: 0.5; cursor: default; }
+.dsh-orb-set-lasso-dot {
+  flex: none; width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  background: rgba(138, 138, 147, 0.8); background-position: center; background-size: cover;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+.dsh-orb-set-lasso-skin[data-skin="glass"] .dsh-orb-set-lasso-dot { background: rgba(28, 28, 34, 0.52); }
+.dsh-orb-set-lasso-skin[data-skin="theme"] .dsh-orb-set-lasso-dot { background: #3b82f6; }
+.dsh-orb-set-lasso-grid { display: grid; grid-template-columns: repeat(3, 30px); gap: 4px; width: max-content; }
+.dsh-orb-set-lasso-cell {
+  width: 30px; height: 30px; padding: 0;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 8px;
+  background: transparent; color: inherit; font: inherit; font-size: 14px; line-height: 1;
+  cursor: pointer; transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.dsh-orb-set-lasso-cell:hover:not(:disabled) { background: color-mix(in srgb, currentColor 4%, transparent); }
+.dsh-orb-set-lasso-cell[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--dsh-orb-accent) 52%, transparent);
+  background: color-mix(in srgb, var(--dsh-orb-accent) 10%, transparent);
+  color: var(--dsh-orb-accent);
+}
+.dsh-orb-set-lasso-cell:disabled { opacity: 0.5; cursor: default; }
+.dsh-orb-set-lasso-center {
+  width: 30px; height: 30px; border-radius: 50%; align-self: center; justify-self: center;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 10%, transparent);
+}
+.dsh-orb-set-lasso-length { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dsh-orb-set-lasso-length-value { font-size: 11.5px; color: color-mix(in srgb, currentColor 55%, transparent); font-variant-numeric: tabular-nums; }
+.dsh-orb-set-range { width: 100%; accent-color: var(--dsh-orb-accent); }
+.dsh-orb-set-lasso-balance-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dsh-orb-set-lasso-hint { font-size: 12px; line-height: 1.5; color: color-mix(in srgb, currentColor 58%, transparent); }
+.dsh-orb-set-lasso-preview-wrap { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.dsh-orb-set-lasso-preview {
+  position: relative; width: 148px; height: 148px; box-sizing: border-box;
+  border: 1px solid var(--dsh-orb-line-soft); border-radius: 14px;
+  background: var(--dsh-orb-panel); overflow: hidden;
+}
+.dsh-orb-set-lasso-preview-ball {
+  position: absolute; left: 50%; top: 50%; width: 64px; height: 64px;
+  transform: translate(-50%, -50%); border-radius: 50%; overflow: hidden;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  box-shadow: 0 3px 8px rgba(17, 17, 17, 0.28);
+}
+.dsh-orb-set-lasso-preview-ball img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dsh-orb-set-lasso-preview-satellite {
+  position: absolute; height: 24px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 8px; border: 2px solid rgba(255, 255, 255, 0.9); border-radius: 999px;
+  background: rgba(138, 138, 147, 0.8); color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 1; white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(17, 17, 17, 0.3);
+  background-position: center; background-size: cover;
+}
+.dsh-orb-set-lasso-preview-satellite[data-skin="glass"] { background: rgba(28, 28, 34, 0.52); }
+.dsh-orb-set-lasso-preview-satellite[data-skin="theme"] { background: #3b82f6; }
+.dsh-orb-set-lasso-preview-satellite[data-skin="avatar"] {
+  background-color: rgba(28, 28, 34, 0.4);
+  background-blend-mode: multiply;
+}
+.dsh-orb-set-lasso-preview-caption { font-size: 11px; color: color-mix(in srgb, currentColor 52%, transparent); }
+@media (max-width: 560px) {
+  .dsh-orb-set-lasso-layout { grid-template-columns: 1fr; }
+  .dsh-orb-set-lasso-preview-wrap { flex-direction: row; }
+}
+
 .dsh-orb-set-presets { margin-top: 12px; padding: 12px 13px 11px; border: 1px solid var(--dsh-orb-line-soft); border-radius: 12px; background: var(--dsh-orb-panel); }
 .dsh-orb-set-presets-title { margin: 0 0 7px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; color: color-mix(in srgb, currentColor 55%, transparent); }
 .dsh-orb-set-presets-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }

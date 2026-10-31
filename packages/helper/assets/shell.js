@@ -307,6 +307,31 @@ function main() {
   let lassoActive = false
   let lassoPointerId
   let lassoEnabled = true
+  const LASSO_SKINS = ['classic', 'glass', 'theme', 'avatar']
+  const LASSO_POSITIONS = [
+    'top-left', 'top', 'top-right', 'left', 'right', 'bottom-left', 'bottom', 'bottom-right',
+  ]
+  const LASSO_MIN_LENGTH = 26
+  const LASSO_MAX_LENGTH = 56
+  /** A balance needs more room than the length slider's cap; this still fits the ball window. */
+  const LASSO_BALANCE_MAX_WIDTH = 72
+  const LASSO_DIRECTIONS = {
+    'top-left': [-Math.SQRT1_2, -Math.SQRT1_2],
+    top: [0, -1],
+    'top-right': [Math.SQRT1_2, -Math.SQRT1_2],
+    left: [-1, 0],
+    right: [1, 0],
+    'bottom-left': [-Math.SQRT1_2, Math.SQRT1_2],
+    bottom: [0, 1],
+    'bottom-right': [Math.SQRT1_2, Math.SQRT1_2],
+  }
+  let lassoSatellite = {
+    skin: 'classic',
+    position: 'bottom',
+    length: LASSO_MIN_LENGTH,
+    balance: true,
+    balanceText: null,
+  }
   let tccGateVisible = false
   let processGroup
   let processClock
@@ -536,6 +561,7 @@ function main() {
     // On the root, not the body: `--panel-left` is declared there and computes with this
     // value, so the panel and the strip are placed from one number.
     document.documentElement.style.setProperty('--strip-w', `${strip}px`)
+    requestAnimationFrame(() => { syncLassoSatellitePosition() })
   }
 
   function clearDockHoverTimer() {
@@ -683,12 +709,15 @@ function main() {
     if (force) {
       panel.hidden = true
       await api.setExpanded(false)
+      requestAnimationFrame(() => { syncLassoSatellitePosition() })
       return
     }
     collapseFrame = setTimeout(() => {
       collapseFrame = undefined
       panel.hidden = true
-      void api.setExpanded(false)
+      void api.setExpanded(false).then(() => {
+        requestAnimationFrame(() => { syncLassoSatellitePosition() })
+      })
     }, ANIMATION_MS)
   }
 
@@ -2411,6 +2440,7 @@ function main() {
   const selectionChipDismiss = document.querySelector('#selection-chip-dismiss')
   selectionChipDismiss.textContent = '\u00d7'
   const lassoBall = document.querySelector('#lasso-ball')
+  const lassoBalance = document.querySelector('#lasso-balance')
   const lassoChip = document.querySelector('#lasso-chip')
   const lassoChipImage = document.querySelector('#lasso-chip-image')
   const lassoChipTitle = document.querySelector('#lasso-chip-title')
@@ -2445,6 +2475,69 @@ function main() {
     const disabled = !lassoEnabled || running || asking() || tccGateVisible || lassoActive
     button.classList.toggle('disabled', disabled)
     button.setAttribute('aria-disabled', String(disabled))
+  }
+
+  function readLassoSatellite(payload) {
+    if (payload === null || typeof payload !== 'object') return undefined
+    const length = payload.length
+    return {
+      skin: LASSO_SKINS.includes(payload.skin) ? payload.skin : 'classic',
+      position: LASSO_POSITIONS.includes(payload.position) ? payload.position : 'bottom-right',
+      length: typeof length === 'number' && Number.isFinite(length)
+        ? Math.min(LASSO_MAX_LENGTH, Math.max(LASSO_MIN_LENGTH, Math.round(length)))
+        : LASSO_MIN_LENGTH,
+      balance: typeof payload.balance === 'boolean' ? payload.balance : true,
+      balanceText: typeof payload.balanceText === 'string' && payload.balanceText !== '' ? payload.balanceText : null,
+    }
+  }
+
+  /** Apply the chosen skin, length, balance, and rim position to the lasso handle. */
+  function syncLassoSatellite() {
+    if (lassoBall === null) return
+    const showBalance = lassoSatellite.balance && lassoSatellite.balanceText !== null
+    lassoBall.dataset.skin = lassoSatellite.skin
+    lassoBall.classList.toggle('has-balance', showBalance)
+    lassoBalance.textContent = showBalance ? lassoSatellite.balanceText : ''
+    if (showBalance) {
+      lassoBall.style.width = ''
+      lassoBall.style.minWidth = `${lassoSatellite.length}px`
+      lassoBall.style.maxWidth = `${LASSO_BALANCE_MAX_WIDTH}px`
+      lassoBall.style.padding = ''
+    } else {
+      lassoBall.style.width = `${lassoSatellite.length}px`
+      lassoBall.style.minWidth = ''
+      lassoBall.style.maxWidth = ''
+      lassoBall.style.padding = '0'
+    }
+    lassoBall.style.backgroundImage = lassoSatellite.skin === 'avatar'
+      ? `url("${avatarSrc.replaceAll('"', '%22')}")`
+      : ''
+    lassoBall.setAttribute('aria-label', showBalance
+      ? `${messages.lassoTitle} · ${lassoSatellite.balanceText}`
+      : messages.lassoTitle)
+    syncLassoSatellitePosition()
+  }
+
+  /**
+   * Put the handle on the main ball's rim. The ball moves inside the window as the
+   * panel expands to one side, so this reads the live ball rect instead of relying
+   * on the static right/bottom corner rules.
+   */
+  function syncLassoSatellitePosition() {
+    if (lassoBall === null || ball === null) return
+    const width = lassoBall.offsetWidth || lassoSatellite.length
+    const height = lassoBall.offsetHeight || LASSO_MIN_LENGTH
+    const direction = LASSO_DIRECTIONS[lassoSatellite.position] ?? LASSO_DIRECTIONS['bottom-right']
+    const rect = ball.getBoundingClientRect()
+    const radius = rect.width / 2
+    const targetX = rect.left + rect.width / 2 + direction[0] * radius
+    const targetY = rect.top + rect.height / 2 + direction[1] * radius
+    const maxLeft = Math.max(2, window.innerWidth - width - 2)
+    const maxTop = Math.max(2, window.innerHeight - height - 2)
+    lassoBall.style.left = `${Math.min(maxLeft, Math.max(2, targetX - width / 2))}px`
+    lassoBall.style.top = `${Math.min(maxTop, Math.max(2, targetY - height / 2))}px`
+    lassoBall.style.right = 'auto'
+    lassoBall.style.bottom = 'auto'
   }
 
   function setLassoing(next) {
@@ -2753,6 +2846,12 @@ function main() {
     lassoEnabled = enabled === true
     syncLassoBall()
   })
+  api.onLassoSatellite?.((payload) => {
+    const next = readLassoSatellite(payload)
+    if (next === undefined) return
+    lassoSatellite = next
+    syncLassoSatellite()
+  })
   lassoChipDismiss.addEventListener('click', () => { clearLassoChip(true) })
   lassoChipImage.addEventListener('click', () => {
     if (attachedLasso !== undefined && typeof api.previewImage === 'function') {
@@ -2823,6 +2922,9 @@ function main() {
     if (lassoPressing) finishLassoGesture(true)
   })
   syncLassoBall()
+  syncLassoSatellite()
+  window.addEventListener('resize', () => { syncLassoSatellitePosition() })
+  requestAnimationFrame(() => { syncLassoSatellitePosition() })
   tccDismiss.addEventListener('click', () => { hideTccGate() })
   tccLater.addEventListener('click', () => { hideTccGate() })
   tccScreenOpen.addEventListener('click', () => { void openTccRight('screen') })
@@ -2833,6 +2935,7 @@ function main() {
     if (!gif) return
     delete gif.dataset.mode
     syncGif()
+    syncLassoSatellite()
   })
   api.onStatus((text) => { status.textContent = typeof text === 'string' ? text : '' })
   // The theme arrives as the helper's nativeTheme (the prefers-color-scheme

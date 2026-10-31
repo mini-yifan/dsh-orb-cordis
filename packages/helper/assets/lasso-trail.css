@@ -23,11 +23,29 @@ body {
   height: 26px;
   box-sizing: border-box;
   border: 2px solid rgba(255, 255, 255, 0.9);
-  border-radius: 50%;
+  border-radius: 999px;
   background: rgba(138, 138, 147, 0.8);
   box-shadow: 0 2px 7px rgba(17, 17, 17, 0.35);
   transform: translate(-50%, -50%);
   pointer-events: none;
+}
+
+#cursor-ball[data-skin="glass"] {
+  background: rgba(28, 28, 34, 0.52);
+  border-color: rgba(255, 255, 255, 0.72);
+}
+
+#cursor-ball[data-skin="theme"] {
+  background: #3b82f6;
+  border-color: rgba(255, 255, 255, 0.92);
+}
+
+#cursor-ball[data-skin="avatar"] {
+  background-color: rgba(28, 28, 34, 0.4);
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  border-color: rgba(255, 255, 255, 0.9);
 }
 
 #cursor-ball[hidden] {
