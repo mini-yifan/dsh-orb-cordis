@@ -143,7 +143,7 @@ The design documents this plugin was built from live in [docs/](docs/) — feasi
 
 ## Status and known limitations
 
-- The **selection toolbar** (search / translate / send-to-agent on text selection) is temporarily disabled while a defect is fixed; its code ships but every entry point is removed and the feature is forced off in preferences.
+- The **selection toolbar**: select text in any app to get Search / Translate / Send to AI. **Translate stays out of the conversation history** — it renders in the ball under a "not in the conversation" badge, survives collapse and reopen, and the model never sees it. See [docs/11-selection.md](docs/11-selection.md).
 - Built and tested against dsh `0.1.7-rc.2`; newer dsh versions within the compatibility range may require re-verification. dsh `0.2.1-rc.1` no longer registers the `cwd` prompt variable, so the Computer Use persona must not reference it — the working directory arrives as runtime context instead.
 - No floating ball on Linux; headless environments can still run background code sessions.
 - The macOS permission dialogs name DeepSeek Harness or your terminal, not this plugin — that is how the OS attributes permissions to the process that hosts the agent.
