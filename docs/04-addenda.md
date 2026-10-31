@@ -564,3 +564,14 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - **顺带修的判据错误**：`barBelowSelection` 原先在"没有 bounds 的纯指针锚点"上恒为 `true`，但 `selectionToolbarBounds` 对指针锚点同样会向上翻。改成 `rect === undefined ? bounds.y >= record.y : bounds.y >= rect.y + rect.height`。
 - **验证**：`pnpm typecheck` 通过；`pnpm test` **542 例全过**；`pnpm build` 后真机冒烟 SMOKE-PASS。
 - **未做**：横向菜单只验证了几何与 CSS 类切换，没有在真实 Electron 里截图确认视觉；`.menu-side` 下菜单与工具条的间距用的是 0，靠两个圆角边框自然区分，真机可能需要一两像素微调。
+
+### 37.5 第三轮复核：侧边菜单其实完全没显示（同日）
+
+第三轮审查证明 `37.4` 的侧边布局**一次都没真正生效**，而 542 项测试全绿——测试只断言了窗口尺寸，从没断言菜单盒子落在窗口里。
+
+- **根因**：`#language-menu` 的基线规则是 `position: absolute`，`placeMenu()` 还往里写内联 `style.left`。`37.4` 加的 `.menu-side { display: flex }` 只改了容器布局，绝对定位的菜单完全不参与 flex 排布，于是它停在 `left ≈ 275.7px` 处——窗口 280px 宽，菜单宽 71.4px，首开只见 4.3px，二次开变成 0。左分支更糟：`row-reverse` 下工具条是唯一在流内的 flex 项，被推到窗口右缘，屏幕位置漂移 62px，把 `barOffsetY` 的整套设计抵消掉。
+- **改法：不再用 CSS 猜布局。** `selectionToolbarMenuLayout` 改为一次算出**三个盒子**——窗口（屏幕坐标）、工具条在窗口内的偏移、菜单在窗口内的偏移——由 helper 独占几何知识（它才知道屏幕边缘和工具条相对选区在哪一侧），页面只测量两个盒子要多大、然后照抄偏移。`#bar` 与 `#language-menu` 都绝对定位，页面删掉 `.menu-above`/`.menu-side`/`.menu-left`/`--bar-offset` 那一整套 CSS 状态，`placeMenu()` 一并删除。
+- **顺带修的几何缺陷**：①窗口宽度原先取 `max(menuW, room)`，可能比工具条还窄，导致工具条溢出——改为堆叠方向取两盒较宽者、侧向取 `barWidth + menuW`；②`rightRoom` 为负（选区在行尾）时仍选右侧，菜单整个跑到窗口外——改为"能放下就优先放得下的一侧，都放不下取更宽的一侧，窗口随之只取可用宽度"；③普通下方展开时菜单的左偏移没夹在窗口内。
+- **测试补齐到能抓住它**：`overlay-geometry.test.ts` 现在断言 **菜单右/下边界不越出窗口**、**工具条屏幕位置等于入参**、**窗口不出工作区**，并新增"选区贴屏幕右缘时选左侧"一例。
+- **新增真机冒烟 `.zcode/smoke/orb-toolbar-layout-smoke.cjs`**：加载真实工具栏页面，用生产几何驱动真实的 `orb:selection-size` 处理器，在 y=40/560/700/748 与"工具条在选区上方"共五个位置打开菜单，逐次 `getBoundingClientRect()` 断言工具条与菜单都完整落在窗口内。**这一步才是关键**：它第一次跑就把 `syncToolbarLayout` 完全没调起 IPC 暴露了出来——冒烟用的 `smoke-toolbar-preload.cjs` 里 `setContentSize` 是空桩（返回 `Promise.resolve({ menuAbove: false })`），和上一轮的真机验证漏检是同一个原因。桩改成真的 `ipcRenderer.invoke` 后 SMOKE-PASS。
+- **验证**：`pnpm typecheck` 通过；`pnpm test` **543 例全过**；`pnpm build` 后两个冒烟（翻译渲染、工具栏布局）与原有的外观冒烟都是 SMOKE-PASS。

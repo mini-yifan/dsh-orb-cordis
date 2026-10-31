@@ -33,39 +33,45 @@ applyDark(darkQuery.matches)
 darkQuery.addEventListener('change', (event) => { applyDark(event.matches) })
 applyUiLanguage(uiZh)
 
-function placeMenu() {
-  const group = document.querySelector('#translate-group')
-  document.querySelector('#language-menu').style.left = `${String(group.offsetLeft)}px`
-}
+const bar = document.querySelector('#bar')
+const menu = document.querySelector('#language-menu')
 
-async function syncToolbarSize() {
-  const bar = document.querySelector('#bar').getBoundingClientRect()
-  const menu = document.querySelector('#language-menu')
-  const menuRect = menu.hidden ? bar : menu.getBoundingClientRect()
-  const left = Math.min(bar.left, menuRect.left)
-  const top = Math.min(bar.top, menuRect.top)
+/**
+ * Ask the helper where everything goes and place it there.
+ *
+ * The helper owns the geometry: it knows the screen edges and which side of the selection the
+ * bar was put on. The page only measures how big the two boxes want to be and then honours
+ * the offsets it gets back. Laying the menu out with CSS instead is what left it outside the
+ * window: an absolutely-positioned box that the stylesheet forgets to re-place does not follow
+ * the flex row it appears to be in.
+ */
+async function syncToolbarLayout() {
+  const barRect = bar.getBoundingClientRect()
+  const menuRect = menu.hidden ? barRect : menu.getBoundingClientRect()
+  // The union of both boxes: the helper turns this into a window plus two offsets.
   const layout = await api.selection.setContentSize({
-    width: Math.max(1, Math.ceil(Math.max(bar.right, menuRect.right) - left)),
-    height: Math.max(1, Math.ceil(Math.max(bar.bottom, menuRect.bottom) - top)),
+    width: Math.max(1, Math.ceil(menu.hidden ? barRect.width : Math.max(barRect.width, menuRect.width))),
+    height: Math.max(1, Math.ceil(barRect.height + (menu.hidden ? 0 : menuRect.height))),
   })
-  // The helper picks the direction, because only it knows where the screen edges are and
-  // which side the bar was placed on relative to the selected text.
-  const side = layout?.side ?? (layout?.menuAbove ? 'above' : 'below')
-  document.body.classList.toggle('menu-above', side === 'above')
-  document.body.classList.toggle('menu-side', side === 'right' || side === 'left')
-  document.body.classList.toggle('menu-left', side === 'left')
-  // A sideways layout may grow the window above the bar; shifting the bar down by the same
-  // amount is what keeps it on screen exactly where the user saw it.
-  const offset = Number(layout?.barOffsetY) || 0
-  document.body.style.setProperty('--bar-offset', `${offset}px`)
+  const windowBox = layout?.window
+  if (windowBox === undefined) return
+  document.documentElement.style.setProperty('--window-w', `${String(windowBox.width)}px`)
+  document.documentElement.style.setProperty('--window-h', `${String(windowBox.height)}px`)
+  bar.style.left = `${String(layout.bar?.left ?? 0)}px`
+  bar.style.top = `${String(layout.bar?.top ?? 0)}px`
+  if (layout.menu === null || menu.hidden) {
+    menu.style.removeProperty('left')
+    menu.style.removeProperty('top')
+    return
+  }
+  menu.style.left = `${String(layout.menu.left)}px`
+  menu.style.top = `${String(layout.menu.top)}px`
 }
 
 function closeMenu() {
-  const menu = document.querySelector('#language-menu')
   if (menu.hidden) return
   menu.hidden = true
-  document.body.classList.remove('menu-above', 'menu-side', 'menu-left')
-  void syncToolbarSize()
+  void syncToolbarLayout()
 }
 
 document.querySelector('#language-zh').textContent = '中文'
@@ -76,22 +82,18 @@ document.querySelector('#translate').addEventListener('click', () => { api.selec
 document.querySelector('#send-to-agent').addEventListener('click', () => { api.selection.sendToAgent() })
 document.querySelector('#translate-arrow').addEventListener('click', (event) => {
   event.stopPropagation()
-  const menu = document.querySelector('#language-menu')
   menu.hidden = !menu.hidden
-  if (!menu.hidden) placeMenu()
-  void syncToolbarSize()
+  void syncToolbarLayout()
 })
 document.querySelector('#language-zh').addEventListener('click', () => {
-  document.querySelector('#language-menu').hidden = true
-  document.body.classList.remove('menu-above', 'menu-side', 'menu-left')
+  menu.hidden = true
   api.selection.setLanguage('zh')
-  void syncToolbarSize()
+  void syncToolbarLayout()
 })
 document.querySelector('#language-en').addEventListener('click', () => {
-  document.querySelector('#language-menu').hidden = true
-  document.body.classList.remove('menu-above', 'menu-side', 'menu-left')
+  menu.hidden = true
   api.selection.setLanguage('en')
-  void syncToolbarSize()
+  void syncToolbarLayout()
 })
 document.addEventListener('click', (event) => {
   if (event.target.closest('#translate-group')) return

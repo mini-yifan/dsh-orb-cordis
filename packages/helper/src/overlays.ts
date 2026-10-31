@@ -54,16 +54,14 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
   })
 
   ipcMain.handle('orb:selection-size', (event, size) => {
-    if (!fromToolbar(event, toolbar) || !isSize(size) || toolbar.isDestroyed()) return { menuAbove: false, side: 'below', barOffsetY: 0 }
+    if (!fromToolbar(event, toolbar) || !isSize(size) || toolbar.isDestroyed()) return {}
     const work = workAreaOf(barOrigin)
-    // The menu's direction has to satisfy two things the page cannot see: staying off the
-    // selection the bar was moved clear of, and finding room at the screen edge.
+    // The helper owns this geometry: it is the only side that knows where the screen edges are
+    // and which side of the selection the bar was placed on. It hands back the window plus
+    // where each box sits inside it, so the page never has to guess with CSS.
     const layout = selectionToolbarMenuLayout(barOrigin, size, work, barBelowSelection)
-    const { side, barOffsetY, ...bounds } = layout
-    toolbar.setBounds(bounds)
-    // A sideways menu grows the window upward past the bar; `barOffsetY` is what keeps the bar
-    // itself on screen where the user left it.
-    return { menuAbove: side === 'above', side, barOffsetY }
+    toolbar.setBounds(layout.window)
+    return layout
   })
 
   ipcMain.on('orb:selection-action', (event, payload) => {

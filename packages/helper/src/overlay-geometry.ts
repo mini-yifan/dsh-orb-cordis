@@ -76,21 +76,25 @@ export function selectionToolbarBounds(
 }
 
 /**
- * Grow the toolbar window for the language menu.
+ * Where the toolbar window and its two contents go, in one calculation.
  *
- * Below the screen there is often no room for a menu, and above it the menu would cover the
+ * Below the screen there is often no room for the menu, and above it the menu would cover the
  * selection the bar was deliberately moved clear of. So when neither vertical side has room,
- * the menu opens to the *side* of the bar instead: the window grows sideways, where a screen
- * edge is far less likely and nothing it covers was just selected.
+ * the menu opens to the *side* of the bar: the window grows sideways, where a screen edge is
+ * far less likely and nothing it covers was just selected.
+ *
+ * The two child boxes are returned as offsets rather than left to the page's own layout: the
+ * page cannot see the screen edges, and an absolutely-positioned menu that the stylesheet
+ * forgot to re-place lands outside the window. One calculation, three boxes, no guesswork.
  */
-export interface ToolbarMenuBounds extends OverlayRect {
-  /** Which way the menu opened, so the page can lay the menu out on the same side. */
+export interface ToolbarMenuLayout {
+  /** The window, in screen coordinates. */
+  readonly window: OverlayRect
+  /** Where the bar sits inside the window. */
+  readonly bar: { readonly left: number; readonly top: number }
+  /** Where the menu sits inside the window, or null when it is not shown. */
+  readonly menu: { readonly left: number; readonly top: number } | null
   readonly side: 'below' | 'above' | 'right' | 'left'
-  /**
-   * Where the bar sits inside the returned window. A sideways menu often has to grow the
-   * window upward past the bar, and this is what tells the page not to move the bar with it.
-   */
-  readonly barOffsetY: number
 }
 
 export function selectionToolbarMenuLayout(
@@ -98,67 +102,63 @@ export function selectionToolbarMenuLayout(
   contentSize: { readonly width: number; readonly height: number },
   workArea: OverlayRect,
   barBelowSelection = false,
-): ToolbarMenuBounds {
-  const width = Math.max(1, Math.round(contentSize.width))
-  const height = Math.max(1, Math.round(contentSize.height))
+): ToolbarMenuLayout {
+  const menuW = Math.max(1, Math.round(contentSize.width))
+  const menuH = Math.max(1, Math.round(contentSize.height))
   const barHeight = SELECTION_TOOLBAR_SIZE.height
   const barWidth = SELECTION_TOOLBAR_SIZE.width
   const workBottom = workArea.y + workArea.height
   const workRight = workArea.x + workArea.width
-  const x = clamp(barOrigin.x, workArea.x, workRight - width)
+  // A stacked window has to hold both boxes, so it is as wide as the wider one.
+  const stackedW = Math.max(barWidth, menuW)
+  const x = clamp(barOrigin.x, workArea.x, workRight - stackedW)
+  // The menu is centred on the bar within whatever room the window gives it.
+  const menuLeftStacked = clamp((stackedW - menuW) / 2, 0, Math.max(0, stackedW - menuW))
 
   // Straight down, when it fits: the natural direction.
-  if (barOrigin.y + height <= workBottom) {
-    const y = clamp(barOrigin.y, workArea.y, workBottom - height)
-    return { x, y, width, height, side: 'below', barOffsetY: barOrigin.y - y }
+  if (barOrigin.y + barHeight + menuH <= workBottom) {
+    const y = clamp(barOrigin.y, workArea.y, workBottom - (barHeight + menuH))
+    const windowH = barHeight + menuH
+    return {
+      window: { x, y, width: stackedW, height: windowH },
+      bar: { left: clamp(barOrigin.x - x, 0, stackedW - barWidth), top: barOrigin.y - y },
+      menu: { left: menuLeftStacked, top: barHeight },
+      side: 'below',
+    }
   }
   // Straight up, when that fits *and* the bar is not under the selection — otherwise the menu
   // would unfold into the very words the bar was moved clear of.
-  if (!barBelowSelection && barOrigin.y + barHeight - height >= workArea.y) {
-    const y = clamp(barOrigin.y + barHeight - height, workArea.y, workBottom - height)
+  if (!barBelowSelection && barOrigin.y + barHeight - menuH >= workArea.y) {
+    const y = clamp(barOrigin.y + barHeight - menuH, workArea.y, workBottom - (menuH + barHeight))
     return {
-      x,
-      y,
-      width,
-      height,
+      window: { x, y, width: stackedW, height: barHeight + menuH },
+      bar: { left: clamp(barOrigin.x - x, 0, stackedW - barWidth), top: barOrigin.y - y },
+      menu: { left: menuLeftStacked, top: 0 },
       side: 'above',
-      barOffsetY: barOrigin.y - y,
     }
   }
-  // Neither vertical side has room for a stacked menu. Open sideways: the window grows away
-  // from the bar horizontally, and upward just enough to give the menu its full height. The
-  // page pushes the bar down by `barOffsetY`, which is what keeps the bar itself from moving
-  // even though the window grew above it.
-  const windowH = Math.max(height, barHeight)
-  // Start high enough that the menu fits above the bar's row, but never above the work area.
-  const y = Math.max(workArea.y, Math.min(barOrigin.y + barHeight - windowH, workBottom - windowH))
+  // Neither vertical side has room. Put the menu beside the bar and grow the window to hold
+  // both, keeping the bar exactly where the user saw it.
   const rightRoom = workRight - (barOrigin.x + barWidth)
   const leftRoom = barOrigin.x - workArea.x
-  const barOffsetY = barOrigin.y - y
-  if (rightRoom >= width || rightRoom >= leftRoom) {
-    const w = Math.min(width, Math.max(barWidth, rightRoom))
-    return { x: barOrigin.x, y, width: w, height: windowH, side: 'right', barOffsetY }
-  }
-  const w = Math.min(width, Math.max(barWidth, leftRoom))
+  const goRight = rightRoom >= menuW || rightRoom >= leftRoom
+  const room = goRight ? rightRoom : leftRoom
+  const roomForMenu = Math.min(menuW, Math.max(menuW, room))
+  const windowW = barWidth + roomForMenu
+  const windowX = goRight
+    ? barOrigin.x
+    : Math.max(workArea.x, barOrigin.x + barWidth - windowW)
+  const windowH = Math.max(menuH, barHeight)
+  const windowY = Math.max(workArea.y, Math.min(barOrigin.y + barHeight - windowH, workBottom - windowH))
+  const barLeft = barOrigin.x - windowX
   return {
-    x: Math.max(workArea.x, barOrigin.x + barWidth - w),
-    y,
-    width: w,
-    height: windowH,
-    side: 'left',
-    barOffsetY,
+    window: { x: windowX, y: windowY, width: windowW, height: windowH },
+    bar: { left: clamp(barLeft, 0, Math.max(0, windowW - barWidth)), top: barOrigin.y - windowY },
+    menu: goRight
+      ? { left: barLeft + barWidth, top: 0 }
+      : { left: 0, top: 0 },
+    side: goRight ? 'right' : 'left',
   }
-}
-
-/** The rectangle alone, for callers that do not need the side. */
-export function selectionToolbarMenuBounds(
-  barOrigin: { readonly x: number; readonly y: number },
-  contentSize: { readonly width: number; readonly height: number },
-  workArea: OverlayRect,
-  barBelowSelection = false,
-): OverlayRect {
-  const { side: _side, ...rect } = selectionToolbarMenuLayout(barOrigin, contentSize, workArea, barBelowSelection)
-  return rect
 }
 
 function intersectRects(area: OverlayRect, clip: OverlayRect): OverlayRect {

@@ -5,7 +5,7 @@ import {
   observationFramePlacement,
   pointInRect,
   selectionToolbarBounds,
-  selectionToolbarMenuBounds,
+
   selectionToolbarMenuLayout,
   SELECTION_TOOLBAR_SIZE,
 } from '../src/overlay-geometry.ts'
@@ -41,38 +41,61 @@ describe('overlay geometry', () => {
     assert.equal(placed.x + placed.width / 2, rect.x + rect.width / 2)
   })
 
-  it('opens the language menu sideways when neither vertical side has room', () => {
-    // A selection near the bottom: no room below for the menu, and the bar sits under the
-    // text so unfolding upward would cover it. The menu must still be fully usable.
+  it('opens the language menu sideways, fully inside the window, when no vertical room is left', () => {
+    // A selection near the bottom: no room below for the menu, and the bar sits under the text
+    // so unfolding upward would cover it.
     const selection = { x: 480, y: 720, width: 40, height: 20 }
     const bar = selectionToolbarBounds(selection, SELECTION_TOOLBAR_SIZE, work)
-    assert.equal(bar.y >= selection.y + selection.height, true, 'the bar is below the text')
-    const layout = selectionToolbarMenuLayout(bar, { width: 280, height: 108 }, work, true)
+    const menuSize = { width: 70, height: 108 }
+    const layout = selectionToolbarMenuLayout(bar, menuSize, work, true)
     assert.equal(layout.side, 'right')
-    // The whole menu fits: both language rows stay reachable instead of being clipped away.
-    assert.equal(layout.height >= 108, true, 'the window is tall enough for the whole menu')
-    assert.equal(layout.width >= 280, true, 'and wide enough')
-    assert.equal(layout.y >= work.y && layout.y + layout.height <= work.y + work.height, true)
-    // The window may grow upward to make that room, but the bar must not move with it.
-    assert.equal(layout.y + layout.barOffsetY, bar.y, 'the bar stays exactly where it was')
-    assert.equal(bar.y >= selection.y + selection.height, true, 'so it never creeps over the text')
+
+    // The whole menu fits inside the window — this is the assertion the earlier version was
+    // missing, and why a menu that rendered entirely outside the window still passed.
+    const menu = layout.menu
+    assert.ok(menu !== null)
+    assert.equal(menu.left >= 0, true, 'the menu starts inside the window')
+    assert.equal(menu.left + menuSize.width <= layout.window.width, true, 'and ends inside it')
+    assert.equal(menu.top >= 0 && menu.top + menuSize.height <= layout.window.height, true)
+
+    // The bar keeps its exact screen position, so it cannot creep over the selection.
+    assert.equal(layout.window.y + layout.bar.top, bar.y)
+    assert.equal(layout.window.x + layout.bar.left, bar.x)
+    // And nothing leaves the work area.
+    assert.equal(layout.window.x >= work.x && layout.window.x + layout.window.width <= work.x + work.width, true)
+    assert.equal(layout.window.y >= work.y && layout.window.y + layout.window.height <= work.y + work.height, true)
+  })
+
+  it('picks the side that has room when the bar hugs a screen edge', () => {
+    // A selection at the very end of a line: no room to the right at all.
+    const bar = { x: work.width - 100, y: 700 }
+    const layout = selectionToolbarMenuLayout(bar, { width: 70, height: 108 }, work, true)
+    assert.equal(layout.side, 'left', 'the roomier side wins')
+    assert.ok(layout.menu !== null)
+    assert.equal(layout.menu.left, 0)
+    assert.equal(layout.menu.left + 70 <= layout.window.width, true, 'the menu fits inside the window')
+    // The bar keeps its screen position even though the window grew to the left of it.
+    assert.equal(layout.window.x + layout.bar.left, bar.x)
+    assert.equal(layout.window.x >= work.x, true, 'and the window does not leave the screen')
   })
 
   it('opens the language menu upward when the bar is above the selection', () => {
     const selection = { x: 480, y: 760, width: 40, height: 18 }
     const bar = selectionToolbarBounds(selection, SELECTION_TOOLBAR_SIZE, work)
     assert.equal(bar.y + bar.height <= selection.y, true, 'the bar is above the text here')
-    const layout = selectionToolbarMenuLayout(bar, { width: 280, height: 108 }, work, false)
+    const layout = selectionToolbarMenuLayout(bar, { width: 70, height: 108 }, work, false)
     assert.equal(layout.side, 'above')
-    assert.equal(layout.y >= work.y, true)
-    assert.equal(layout.height, 108, 'the menu keeps its full height')
+    assert.equal(layout.window.y >= work.y, true)
+    assert.equal(layout.window.y + layout.window.height <= work.y + work.height, true)
   })
 
   it('keeps an ordinary menu below the bar without growing sideways', () => {
-    const layout = selectionToolbarMenuLayout({ x: 20, y: 40 }, { width: 280, height: 120 }, work, true)
+    const layout = selectionToolbarMenuLayout({ x: 20, y: 40 }, { width: 70, height: 108 }, work, true)
     assert.equal(layout.side, 'below')
-    assert.equal(layout.y, 40)
-    assert.equal(layout.height, 120)
+    assert.equal(layout.window.y, 40)
+    assert.equal(layout.window.width, SELECTION_TOOLBAR_SIZE.width)
+    assert.ok(layout.menu !== null)
+    assert.equal(layout.menu.top, SELECTION_TOOLBAR_SIZE.height)
   })
 
   it('keeps the observation hole on the rectangle and clips a flush edge', () => {
