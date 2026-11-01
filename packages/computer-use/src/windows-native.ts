@@ -938,6 +938,12 @@ export function createProductionWindowsOps(): WindowsDesktopOps {
         for (;;) {
           format = api.EnumClipboardFormats(format)
           if (format === 0) break
+          // Handle-valued formats (CF_BITMAP / CF_PALETTE / CF_ENHMETAFILE / CF_OWNERDISPLAY /
+          // CF_DSP*) are GDI or owner handles, not HGLOBAL. Passing them to GlobalSize() is
+          // undefined behaviour that corrupts the heap and later kills the host with
+          // 0xC0000374 (STATUS_HEAP_CORRUPTION) - see #76 and #77. CF_METAFILEPICT (3) and
+          // CF_DIB / CF_DIBV5 stay snapshot-able: those really are HGLOBALs.
+          if (format === 2 || format === 5 || format === 14 || format === 128 || format === 130 || format === 131 || format === 142 || (format >= 768 && format <= 1023)) continue
           const handle = api.GetClipboardData(format)
           if (isNull(handle)) continue
           const size = Number(api.GlobalSize(handle))
