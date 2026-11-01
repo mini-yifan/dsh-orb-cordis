@@ -12,6 +12,7 @@ import { AGENT_STRIP_WIDTH, FloatingPlacement, initialWindowBounds } from './geo
 import { contextMenuTemplate } from './menu.ts'
 import { attachOverlays, denyWindowPermissions } from './overlays.ts'
 import { type MenuCatalog, type MenuSelection } from './model-menu.ts'
+import { startZOrderGuard } from './zorder.ts'
 
 const socketAddress = process.env.DSH_ORB_SOCKET ?? ''
 const token = process.env.DSH_ORB_TOKEN ?? ''
@@ -93,6 +94,8 @@ app.on('window-all-closed', () => {
 void app.whenReady().then(async () => {
   if (process.platform === 'darwin') app.dock?.hide()
   win = openWindow()
+  // Windows only: stay out of a fullscreen window's way on the ball's display.
+  startZOrderGuard(win)
   try {
     overlays = await attachOverlays({ ball: () => win, write })
   } catch (error) {

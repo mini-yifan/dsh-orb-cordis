@@ -21,6 +21,9 @@
     "build": "tsdown && pnpm build:vendor",
     "build:vendor": "tsdown --config tsdown.vendor.config.ts && node ./scripts/vendor-katex-assets.mjs"
   },
+  "dependencies": {
+    "koffi": "^3.1.0"
+  },
   "devDependencies": {
     "@shikijs/langs": "^4.3.1",
     "katex": "^0.16.47",

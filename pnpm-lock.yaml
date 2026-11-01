@@ -161,6 +161,10 @@ importers:
         version: 5.0.2(@types/node@22.20.4)(vite@8.3.1(@types/node@22.20.4)(yaml@2.9.1))
 
   packages/helper:
+    dependencies:
+      koffi:
+        specifier: ^3.1.0
+        version: 3.3.1
     devDependencies:
       '@shikijs/langs':
         specifier: ^4.3.1

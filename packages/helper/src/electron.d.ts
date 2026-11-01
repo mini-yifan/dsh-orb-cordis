@@ -26,6 +26,7 @@ declare module 'electron' {
     loadFile(path: string): Promise<void>
     setContentProtection(enable: boolean): void
     setAlwaysOnTop(flag: boolean, level?: string): void
+    isAlwaysOnTop(): boolean
     setVisibleOnAllWorkspaces(flag: boolean, options?: { visibleOnFullScreen?: boolean; skipTransformProcessType?: boolean }): void
     setBounds(bounds: Rectangle): void
     getBounds(): Rectangle
