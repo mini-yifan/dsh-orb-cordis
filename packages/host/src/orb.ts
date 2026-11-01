@@ -40,7 +40,6 @@ import {
   defaultWorkspaceDirectory,
   isAgentModelSelection,
   isPermissionPreset,
-  parseLassoBallPatch,
   type AgentModelSelection,
   type LassoBallPatch,
   type LassoSatelliteState,
@@ -2268,13 +2267,6 @@ export class OrbRuntime {
     }
     if (record.type === 'set-lasso' && typeof record.enabled === 'boolean') {
       this.run('lasso-enabled', () => this.setLassoEnabled(record.enabled === true))
-      return
-    }
-    if (record.type === 'set-lasso-satellite') {
-      const patch = parseLassoBallPatch(record.patch)
-      if (patch !== undefined) {
-        this.run('lasso-satellite', async () => { await this.setLassoConfig(patch) })
-      }
       return
     }
     if (record.type === 'set-millifraction' && typeof record.enabled === 'boolean') {

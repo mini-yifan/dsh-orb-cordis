@@ -536,6 +536,16 @@ describe('settings section', () => {
       0,
       'the card stops previewing a handle the switch removed',
     )
+    assert.equal(
+      find(view, (node) => node.props?.className === 'dsh-orb-set-lasso-skin').length,
+      0,
+      'the skin controls collapse with the switch',
+    )
+    assert.equal(
+      find(view, (node) => node.type === 'input' && node.props?.['aria-label'] === '长度').length,
+      0,
+      'the length slider collapses with the switch',
+    )
   })
 
   it('offers the GIF gallery on every host, under the interface language', async () => {

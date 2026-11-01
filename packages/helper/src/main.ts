@@ -856,7 +856,6 @@ async function showMenu(window: BrowserWindow): Promise<void> {
     setBackground: (selection) => { write({ type: 'set-background', selection }) },
     setSelection: (enabled) => { write({ type: 'set-selection', enabled }) },
     setLasso: (enabled) => { write({ type: 'set-lasso', enabled }) },
-    setLassoBall: (patch) => { write({ type: 'set-lasso-satellite', patch }) },
     setMillifraction: (enabled) => { void confirmMillifraction(window, enabled) },
     update: () => { write({ type: 'update' }) },
     disable: () => { write({ type: 'disable' }) },

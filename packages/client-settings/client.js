@@ -760,7 +760,7 @@ window.__ModuleLoader__.load({
               disabled,
               onChange: (enabled) => update({ enabled }),
             }))),
-        h('div', { className: 'dsh-orb-set-card-body' },
+        satellite.enabled === true ? h('div', { className: 'dsh-orb-set-card-body' },
           h('div', { className: 'dsh-orb-set-lasso-layout' },
             h('div', { className: 'dsh-orb-set-lasso-controls' },
               h('div', { className: 'dsh-orb-set-lasso-group' },
@@ -841,7 +841,7 @@ window.__ModuleLoader__.load({
                     ...(satellite.skin === 'avatar' ? { backgroundImage: avatarImage } : {}),
                   },
                 }, showBalance ? balanceText : '') : null),
-              h('span', { className: 'dsh-orb-set-lasso-preview-caption' }, text.lassoPreviewLabel)))))
+              h('span', { className: 'dsh-orb-set-lasso-preview-caption' }, text.lassoPreviewLabel)))) : null)
     }
 
     function OrbSettingsSection() {
