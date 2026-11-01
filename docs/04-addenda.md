@@ -493,3 +493,12 @@ asr text          mode=command    text=啊，大飞就退着吧。           ←
 - **测试**:host 新增 `whats-new.test.ts` 覆盖平台/版本/已关闭;`preferences.test.ts` 覆盖写盘、重载、坏文件;`routes.test.ts` 覆盖 snapshot、dismiss、重复 GET、非法 id、旧版本。client 的 `section.test.mjs` 覆盖首次渲染、两个关闭入口、请求体、英文文案、Linux/缺失/错位 id 隐藏和样式表。
 - **验证/打包**:`pnpm typecheck` 通过;`whats-new.test.ts` 2 例、`preferences.test.ts` 新增 1 例、`routes.test.ts` 新增 1 例、`section.test.mjs` 新增 1 例全部通过;全量 `pnpm test` 527 例,524 过,3 个失败仍是既有环境问题(`deferred-install` 拉未发布的 `dsh-orb@0.2.0`、macOS `say`、voice EPIPE)。`pnpm build`、`pnpm --filter dsh-orb run pack` 通过;新包 `dsh-orb-0.2.0.tgz` 59,826,634 B,SHA-256 `cdf25778…28f4c72e`,解包确认 `client.js` 含 `dsh-orb-set-whats-new`、`dist/host/index.js` 含 `whats-new/dismiss` 与 `orb-whats-new.json`,版本仍为 0.2.0。本轮未做真机设置页截图,以 host/client 测试与解包校验为准;卡片渲染、两个关闭入口和请求体由 client 测试覆盖。
 - **边界/未做**:按 profile、按版本各一次;0.2.1 若有新公告,改 `WHATS_NEW_VERSION` 和 client 文案 id 即可,0.2.0 的关闭不影响。用户如果从不打开设置页就不会看到——这是「只在设置页显示」的直接结果。不做导航角标、toast、自动打开设置页。
+
+## 37. 全屏时悬浮球降到全屏窗口后面 (2026-11-01)
+
+- **现象/需求**:Windows 上球是 `alwaysOnTop` + `screen-saver` 层窗口,全屏游戏、浏览器全屏视频、无边框全屏应用都会被它压住。用户按 F11 看 B 站视频时球仍浮在最上层。
+- **实现**:新增 `packages/helper/src/zorder.ts`,helper 每 600 ms 采样前台窗口,同时满足才处理:窗口可见且不属于 helper 自己的进程;`GetWindowRect` 与所在显示器的 `rcMonitor` 四边都相差 ≤ 4 px;该显示器就是球当前所在显示器(`MonitorFromWindow(球)` 与前台窗口的监视器句柄相同),副屏全屏不影响主屏的球。命中后先 `setAlwaysOnTop(false)`,前台窗口在普通层时再用 `SetWindowPos(球, 前台窗口, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)` 插到它后面一档;前台窗口本身是 topmost 时只降级——Windows 会把插到 topmost 窗口后面的窗口重新变成 topmost。退出全屏后 `setAlwaysOnTop(true, 'screen-saver')` 恢复。koffi 从 host 放在包外的 `DSH_ORB_KOFFI_DIR` 加载,helper 不锁包内 `.node`,不挡插件更新。
+- **不能用 `IsZoomed`**:从最大化状态按 F11 进入全屏的浏览器,`rect` 已是整块显示器但 `IsZoomed()` 仍为 true(Edge 140 实测 `rect=0,0,2560,1440`、`zoomed=true`)。本地先做过一版用 `IsZoomed` 排除最大化窗口,正好把 F11 全屏漏掉。改判据为「四边近似相等」:最大化窗口要么止于工作区(任务栏可见时底边比显示器少 32 px),要么在任务栏自动隐藏时保留约 8 px 的 DWM 隐形边框,两种都不命中。
+- **测试**:新增 `packages/helper/tests/zorder.test.ts` 14 例——全屏/最大化/带 DWM 边框/负坐标副屏/容差边界;普通层与 topmost 前台的两种处理;跨屏不触发;退出恢复;窗口销毁、probe 抛错、停止后不再动作;非 Windows 平台启动为空操作。`pnpm typecheck` 通过;helper 全量 `node --test` 134 通过、0 失败、2 跳过;`pnpm --filter @dsh-orb/helper build` 通过。
+- **真机验证**(Windows,单屏 2560×1440,Edge 140):最大化 Edge 按 F11 后前台 `rect=0,0,2560,1440`、`zoomed=true`,球被清掉置顶并插到浏览器后面,退出全屏恢复;页面元素全屏(`requestFullscreen()`,隔离 Edge 实例)同样触发;最大化未全屏(`rect=-8,-8,2568,1408`)不触发,球保持置顶。
+- **边界/未做**:仅 Windows(macOS 的球是 panel,本来就靠 `visibleOnFullScreen` 在全屏空间保持可见,不动);浏览器「网页全屏」只是页面布局变化、窗口本身没全屏,系统层无法区分,不覆盖;独占全屏(DirectX exclusive)系统本来就会盖住球,这里只是顺手清掉 topmost;选择工具条与观测框不在守卫范围内;轮询固定 600 ms,不 hook 前台切换事件。
