@@ -1121,6 +1121,11 @@ body.expanded #ball {
   transform: scale(1.1);
 }
 
+/* The master switch removes the handle; temporary states only dim it. */
+#lasso-ball.is-hidden {
+  display: none;
+}
+
 #lasso-ball.disabled,
 body.running #lasso-ball,
 body.asking #lasso-ball,

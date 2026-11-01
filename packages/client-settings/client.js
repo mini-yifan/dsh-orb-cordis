@@ -700,6 +700,7 @@ window.__ModuleLoader__.load({
       // A missing cached value is not a reason to block the switch: enabling it asks the
       // host to read the account, and the hint below reports what came back.
       const balanceDisabled = disabled
+      const showSatellite = satellite.enabled === true
       const skins = [
         ['classic', text.lassoSkinClassic],
         ['glass', text.lassoSkinGlass],
@@ -830,7 +831,7 @@ window.__ModuleLoader__.load({
               },
                 h('div', { className: 'dsh-orb-set-lasso-preview-ball' },
                   h('img', { src: snap.avatarUrl, alt: '' })),
-                h('div', {
+                showSatellite ? h('div', {
                   className: 'dsh-orb-set-lasso-preview-satellite',
                   'data-skin': satellite.skin,
                   style: {
@@ -839,7 +840,7 @@ window.__ModuleLoader__.load({
                     width: `${previewLength}px`,
                     ...(satellite.skin === 'avatar' ? { backgroundImage: avatarImage } : {}),
                   },
-                }, showBalance ? balanceText : '')),
+                }, showBalance ? balanceText : '') : null),
               h('span', { className: 'dsh-orb-set-lasso-preview-caption' }, text.lassoPreviewLabel)))))
     }
 

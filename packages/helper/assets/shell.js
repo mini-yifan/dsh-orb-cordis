@@ -2472,9 +2472,15 @@ function main() {
   function syncLassoBall() {
     const button = document.querySelector('#lasso-ball')
     if (button === null) return
-    const disabled = !lassoEnabled || running || asking() || tccGateVisible || lassoActive
+    const hidden = !lassoEnabled
+    const disabled = hidden || running || asking() || tccGateVisible || lassoActive
+    const wasHidden = button.classList.contains('is-hidden')
+    button.classList.toggle('is-hidden', hidden)
+    button.setAttribute('aria-hidden', String(hidden))
     button.classList.toggle('disabled', disabled)
     button.setAttribute('aria-disabled', String(disabled))
+    // A re-enabled handle may have missed a window resize while it was display:none.
+    if (wasHidden && !hidden) requestAnimationFrame(() => { syncLassoSatellitePosition() })
   }
 
   function readLassoSatellite(payload) {

@@ -530,6 +530,12 @@ describe('settings section', () => {
     await settle()
     call = page.calls.filter((entry) => entry.path === '/.dsh-orb/lasso-satellite').at(-1)
     assert.deepEqual(JSON.parse(call.options.body), { enabled: false })
+    view = page.render()
+    assert.equal(
+      find(view, (node) => node.props?.className === 'dsh-orb-set-lasso-preview-satellite').length,
+      0,
+      'the card stops previewing a handle the switch removed',
+    )
   })
 
   it('offers the GIF gallery on every host, under the interface language', async () => {
