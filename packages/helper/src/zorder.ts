@@ -4,9 +4,15 @@
  * The ball is an ordinary always-on-top window on Windows, so a fullscreen game, a
  * browser video or a borderless fullscreen app would otherwise be covered by it.
  * Every {@link ZORDER_POLL_MS} the guard samples the foreground window; when that
- * window fills the monitor the ball is on, the ball leaves the topmost band and — for
- * a foreground window of the normal band — is inserted directly below it, then the
- * topmost band is restored as soon as fullscreen ends.
+ * window fills the monitor the ball is on, the ball leaves the topmost band and is
+ * sent to the bottom of the z-order, then the topmost band is restored as soon as
+ * fullscreen ends.
+ *
+ * Inserting the ball below the fullscreen window is not used: placing a normal window
+ * after another process's window can be refused (UIPI, anti-cheat drivers), which
+ * leaves the ball at the top of the normal band and still over the game — measured on
+ * Delta Force, ball z 64 vs game z 67. Sending our own window to `HWND_BOTTOM` needs
+ * no reference to the other window and always lands under a monitor-covering window.
  *
  * `IsZoomed` must not be consulted: an F11 fullscreen entered from a maximized
  * browser keeps `WS_MAXIMIZE` (measured on Edge 140: `rect=0,0,2560,1440` while
@@ -63,8 +69,6 @@ export interface FullscreenSample {
   handle: bigint
   /** The monitor the foreground window fills. */
   monitor: bigint
-  /** Whether that window itself lives in the topmost band. */
-  topmost: boolean
 }
 
 /** Win32 work the guard needs; injectable so the guard itself stays testable. */
@@ -76,8 +80,8 @@ export interface ZOrderProbe {
   foreground(): FullscreenSample | undefined
   /** The monitor a window is on. Throws when the handle has no monitor. */
   monitorOf(handle: bigint): bigint
-  /** Insert `handle` below `below`, without moving, resizing or activating either. */
-  stackBelow(handle: bigint, below: bigint): void
+  /** Send `handle` to the bottom of the z-order without moving, resizing or activating it. */
+  sendToBottom(handle: bigint): void
 }
 
 /** The subset of `BrowserWindow` the guard reads. */
@@ -98,9 +102,9 @@ export interface ZOrderGuard {
 /** The level the ball normally lives at; `openWindow` sets the same one. */
 const TOPMOST_LEVEL = 'screen-saver'
 
-const GWL_EXSTYLE = -20
-const WS_EX_TOPMOST = 0x0000_0008
 const MONITOR_DEFAULTTONEAREST = 2
+/** `HWND_BOTTOM`: the bottom of the whole z-order, no cross-process handle needed. */
+const HWND_BOTTOM = 1n
 /** `MONITORINFO` is 40 bytes; `rcMonitor` starts at byte 4 (after `cbSize`). */
 const MONITORINFO_BYTES = 40
 const MONITORINFO_CB_SIZE = 40
@@ -155,14 +159,13 @@ export function createZOrderGuard(window: ZOrderWindow, probe: ZOrderProbe): ZOr
       }
       if (sameDisplay) {
         if (window.isAlwaysOnTop()) window.setAlwaysOnTop(false)
-        // Inserting a normal window after a topmost one makes it topmost again on
-        // Windows, so only re-stack behind foreground windows of the normal band.
-        if (!sample.topmost) {
-          try {
-            probe.stackBelow(handle, sample.handle)
-          } catch {
-            // The foreground window can be gone by the time the stack call runs.
-          }
+        // HWND_BOTTOM rather than "below the fullscreen window": a cross-process
+        // SetWindowPos can be refused (UIPI / anti-cheat), which would leave the ball
+        // at the top of the normal band, still over the game.
+        try {
+          probe.sendToBottom(handle)
+        } catch {
+          // The window can be gone by the time the call runs.
         }
         return
       }
@@ -211,7 +214,6 @@ interface Win32Bindings {
   MonitorFromWindow(window: unknown, flags: number): unknown
   GetWindowThreadProcessId(window: unknown, pid: number[]): number
   IsWindowVisible(window: unknown): number
-  GetWindowLongPtrW(window: unknown, index: number): unknown
   SetWindowPos(window: unknown, insertAfter: unknown, x: number, y: number, cx: number, cy: number, flags: number): number
 }
 
@@ -238,7 +240,6 @@ function createWin32Probe(): ZOrderProbe | undefined {
       MonitorFromWindow: user32.func('void * __stdcall MonitorFromWindow(void *hWnd, uint32 dwFlags)'),
       GetWindowThreadProcessId: user32.func('uint32 __stdcall GetWindowThreadProcessId(void *hWnd, _Out_ uint32 *lpdwProcessId)'),
       IsWindowVisible: user32.func('int __stdcall IsWindowVisible(void *hWnd)'),
-      GetWindowLongPtrW: user32.func('intptr __stdcall GetWindowLongPtrW(void *hWnd, int nIndex)'),
       SetWindowPos: user32.func('int __stdcall SetWindowPos(void *hWnd, void *hWndInsertAfter, int X, int Y, int cx, int cy, uint32 uFlags)'),
     }
   } catch (error) {
@@ -275,16 +276,15 @@ function createWin32Probe(): ZOrderProbe | undefined {
       const bounds = monitorRect(monitor)
       if (bounds === undefined) return undefined
       if (!rectFillsMonitor({ ...rect }, bounds)) return undefined
-      const topmost = (Number(api.GetWindowLongPtrW(handle, GWL_EXSTYLE)) & WS_EX_TOPMOST) !== 0
-      return { handle, monitor, topmost }
+      return { handle, monitor }
     },
     monitorOf(handle: bigint): bigint {
       const monitor = asHandle(api.MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST))
       if (monitor === undefined) throw new Error('z-order guard: the window has no monitor')
       return monitor
     },
-    stackBelow(handle: bigint, below: bigint): void {
-      api.SetWindowPos(handle, below, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+    sendToBottom(handle: bigint): void {
+      api.SetWindowPos(handle, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
     },
   }
 }

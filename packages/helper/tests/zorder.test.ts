@@ -50,14 +50,14 @@ function fakeWindow(options?: { topmost?: boolean; handle?: bigint }): FakeWindo
 function fakeProbe(
   sample: FullscreenSample | undefined,
   monitorOf: (handle: bigint) => bigint = () => MONITOR_HANDLE,
-): ZOrderProbe & { stacked: Array<[bigint, bigint]> } {
-  const stacked: Array<[bigint, bigint]> = []
+): ZOrderProbe & { bottoms: bigint[] } {
+  const bottoms: bigint[] = []
   return {
-    stacked,
+    bottoms,
     foreground: () => sample,
     monitorOf,
-    stackBelow(handle: bigint, below: bigint) {
-      stacked.push([handle, below])
+    sendToBottom(handle: bigint) {
+      bottoms.push(handle)
     },
   }
 }
@@ -89,33 +89,33 @@ describe('fullscreen rect matching', () => {
 })
 
 describe('z-order guard', () => {
-  it('leaves the topmost band and stacks below a normal-band fullscreen window', () => {
+  it('leaves the topmost band and sends the ball to the bottom of the z-order', () => {
     const window = fakeWindow()
-    const probe = fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE, topmost: false })
+    const probe = fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE })
     createZOrderGuard(window, probe).tick()
     assert.deepEqual(window.calls, ['alwaysOnTop(false)'])
-    assert.deepEqual(probe.stacked, [[BALL_HANDLE, FOREGROUND_HANDLE]])
+    assert.deepEqual(probe.bottoms, [BALL_HANDLE])
   })
 
-  it('only leaves the topmost band when the fullscreen window is topmost itself', () => {
-    // Windows makes a window inserted after a topmost window topmost again, so the
-    // stack call must be skipped in that case.
+  it('sends the ball to the bottom even when the fullscreen window is topmost itself', () => {
+    // HWND_BOTTOM is relative to the whole z-order, so it needs no information about
+    // the foreground window and cannot be refused for naming another process's window.
     const window = fakeWindow()
-    const probe = fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE, topmost: true })
+    const probe = fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE })
     createZOrderGuard(window, probe).tick()
     assert.deepEqual(window.calls, ['alwaysOnTop(false)'])
-    assert.deepEqual(probe.stacked, [])
+    assert.deepEqual(probe.bottoms, [BALL_HANDLE])
   })
 
   it('does nothing while the fullscreen window is on another display', () => {
     const window = fakeWindow()
     const probe = fakeProbe(
-      { handle: FOREGROUND_HANDLE, monitor: 0x0000_0000_0000_1002n, topmost: false },
+      { handle: FOREGROUND_HANDLE, monitor: 0x0000_0000_0000_1002n },
       () => MONITOR_HANDLE,
     )
     createZOrderGuard(window, probe).tick()
     assert.deepEqual(window.calls, [])
-    assert.deepEqual(probe.stacked, [])
+    assert.deepEqual(probe.bottoms, [])
   })
 
   it('restores the topmost band once fullscreen ends', () => {
@@ -133,7 +133,7 @@ describe('z-order guard', () => {
   it('ignores a destroyed window', () => {
     const window = fakeWindow()
     window.destroy()
-    createZOrderGuard(window, fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE, topmost: false })).tick()
+    createZOrderGuard(window, fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE })).tick()
     assert.deepEqual(window.calls, [])
   })
 
@@ -146,12 +146,12 @@ describe('z-order guard', () => {
       monitorOf() {
         throw new Error('no monitor')
       },
-      stackBelow() {
+      sendToBottom() {
         throw new Error('no window')
       },
     }
     assert.doesNotThrow(() => createZOrderGuard(window, broken).tick())
-    const throwingMonitor = fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE, topmost: false }, () => {
+    const throwingMonitor = fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE }, () => {
       throw new Error('no monitor')
     })
     createZOrderGuard(window, throwingMonitor).tick()
@@ -160,7 +160,7 @@ describe('z-order guard', () => {
 
   it('stops acting after stop()', () => {
     const window = fakeWindow()
-    const guard = createZOrderGuard(window, fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE, topmost: false }))
+    const guard = createZOrderGuard(window, fakeProbe({ handle: FOREGROUND_HANDLE, monitor: MONITOR_HANDLE }))
     guard.stop()
     guard.tick()
     assert.deepEqual(window.calls, [])
