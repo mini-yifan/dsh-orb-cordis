@@ -2,7 +2,11 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { RESIDENT_SELECTION_ARGS, startResidentSelection } from '../../native-selection/src/windows-resident.js'
+import {
+  RESIDENT_SELECTION_SCRIPT,
+  residentSelectionArgs,
+  startResidentSelection,
+} from '../../native-selection/src/windows-resident.js'
 
 /**
  * A stand-in for `powershell.exe` that speaks the reader protocol.
@@ -50,12 +54,16 @@ function fakeProcess(behaviour: {
   return child
 }
 
-function start(behaviour: Parameters<typeof fakeProcess>[0], options: { requestTimeoutMs?: number } = {}) {
+function start(behaviour: Parameters<typeof fakeProcess>[0], options: {
+  requestTimeoutMs?: number
+  startupTimeoutMs?: number
+} = {}) {
   const children: ReturnType<typeof fakeProcess>[] = []
   const reader = startResidentSelection({
     command: 'fake-powershell',
     args: ['-NoProfile'],
     requestTimeoutMs: options.requestTimeoutMs,
+    startupTimeoutMs: options.startupTimeoutMs,
     spawnImpl: ((command: string, args: readonly string[]) => {
       assert.equal(command, 'fake-powershell')
       assert.deepEqual([...args], ['-NoProfile'])
@@ -93,6 +101,31 @@ describe('resident selection reader', () => {
     // placeholder and leave every later read one answer behind.
     const { reader } = start({ answer: () => '{"ok":true,"text":"real"}' })
     assert.equal((await reader.read())?.text, 'real')
+    reader.close()
+  })
+
+  it('holds reads until readiness, then sends one request per read', async () => {
+    // The first click can arrive while Add-Type is still loading. Its request must wait for the
+    // ready line rather than starting a timeout against a child that cannot answer yet.
+    const { reader, children } = start({
+      announce: false,
+      answer: () => '{"ok":true,"text":"after-ready"}',
+    })
+    const pending = reader.read()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.deepEqual(children[0]?.requests, [])
+    children[0]?.stdout.write('{"ok":false,"ready":true}\n')
+    assert.equal((await pending)?.text, 'after-ready')
+    assert.deepEqual(children[0]?.requests, ['read'])
+    reader.close()
+  })
+
+  it('gives up when the child never announces readiness', async () => {
+    // A PowerShell that hangs before loading UI Automation must not leave the read pending
+    // forever; the startup timeout answers nothing so the toolbar stays hidden.
+    const { reader, children } = start({ announce: false }, { startupTimeoutMs: 40 })
+    assert.equal(await reader.read(), undefined)
+    assert.deepEqual(children[0]?.requests, [])
     reader.close()
   })
 
@@ -134,9 +167,14 @@ describe('resident selection reader', () => {
     assert.equal(children[0]?.requests.includes('quit'), true)
   })
 
-  it('starts the reader with the arguments PowerShell needs to read stdin', () => {
-    // `-Command -` is what makes PowerShell read its script from stdin; `-STA` is required by
-    // UI Automation, and `-NonInteractive` keeps a prompt from blocking the pipe.
-    assert.deepEqual([...RESIDENT_SELECTION_ARGS], ['-NoProfile', '-NonInteractive', '-STA', '-Command', '-'])
+  it('runs the script from the command line so stdin stays a request stream', () => {
+    // `-Command -` would hand PowerShell the script through the same stdin the while loop reads
+    // requests from; the loop then consumes the script's own tail. `-EncodedCommand` separates
+    // the two, and `-STA` is required by UI Automation.
+    const args = residentSelectionArgs()
+    assert.deepEqual(args.slice(0, 4), ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand'])
+    assert.equal(Buffer.from(args[4] ?? '', 'base64').toString('utf16le'), RESIDENT_SELECTION_SCRIPT)
+    // A non-English console writes GBK by default; the host decodes stdout as UTF-8.
+    assert.match(RESIDENT_SELECTION_SCRIPT, /\[Console\]::OutputEncoding = \[System\.Text\.Encoding\]::UTF8/)
   })
 })

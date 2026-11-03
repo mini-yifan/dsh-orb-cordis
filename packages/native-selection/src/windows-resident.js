@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process'
  * the whole point — that is where the seconds were going.
  */
 export const RESIDENT_SELECTION_SCRIPT = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -62,8 +63,30 @@ while ($true) {
 }
 `
 
-/** Arguments that start the resident reader. */
-export const RESIDENT_SELECTION_ARGS = ['-NoProfile', '-NonInteractive', '-STA', '-Command', '-']
+/**
+ * Arguments that run the reader script and leave stdin free for request lines.
+ *
+ * Passing the script through stdin (`-Command -`) is what looks natural, but PowerShell parses
+ * and executes stdin line by line: once the script reaches its `while` loop, that loop starts
+ * consuming the script's own tail as if it were requests. `-EncodedCommand` keeps the two
+ * streams separate, and UTF-16LE base64 is also the form PowerShell expects on its command line.
+ * @param script - the reader script; tests inject a shorter one.
+ * @returns argv for `powershell.exe`, with the encoded script last.
+ */
+export function residentSelectionArgs(script = RESIDENT_SELECTION_SCRIPT) {
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-STA',
+    '-EncodedCommand',
+    Buffer.from(script, 'utf16le').toString('base64'),
+  ]
+}
+
+/** How long a normal read may wait for one answer line. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 1_500
+/** How long the child may take to load UI Automation and announce readiness. */
+const DEFAULT_STARTUP_TIMEOUT_MS = 5_000
 
 /**
  * @typedef {object} ResidentSelection
@@ -81,8 +104,9 @@ export const RESIDENT_SELECTION_ARGS = ['-NoProfile', '-NonInteractive', '-STA',
  */
 export function startResidentSelection(options = {}) {
   const command = options.command ?? 'powershell.exe'
-  const args = [...(options.args ?? RESIDENT_SELECTION_ARGS)]
-  const timeoutMs = options.requestTimeoutMs ?? 1_500
+  const args = [...(options.args ?? residentSelectionArgs())]
+  const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+  const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS
   const spawnImpl = options.spawnImpl ?? spawn
 
   let child
@@ -94,13 +118,44 @@ export function startResidentSelection(options = {}) {
 
   let buffer = ''
   let closed = false
+  let ready = false
   /** Requests waiting for the next answer line, oldest first. */
   const waiting = []
+  /** Callers that asked for a read before the assemblies finished loading. */
+  const waitingForReady = []
+  let startupTimer
 
   function settle(answer) {
     const next = waiting.shift()
     next?.(answer)
   }
+
+  /** Start every read that arrived while the child was still loading. */
+  function startWaiting() {
+    for (const start of waitingForReady.splice(0)) start()
+  }
+
+  function stop() {
+    if (closed) return
+    closed = true
+    if (startupTimer !== undefined) clearTimeout(startupTimer)
+    // A read that was waiting for readiness must resolve, not hang: its `start` sees `closed`.
+    startWaiting()
+    while (waiting.length > 0) settle(undefined)
+  }
+
+  function failStartup() {
+    if (closed) return
+    stop()
+    try {
+      child.kill()
+    } catch {
+      // Already gone.
+    }
+  }
+
+  startupTimer = setTimeout(failStartup, startupTimeoutMs)
+  startupTimer.unref?.()
 
   child.stdout.setEncoding('utf8')
   child.stdout.on('data', (chunk) => {
@@ -118,9 +173,16 @@ export function startResidentSelection(options = {}) {
       }
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue
       const record = parsed
-      // The startup announcement is not an answer: it exists so the host can log readiness,
-      // and consuming it here would hand the first read a placeholder.
-      if (record.ready === true) continue
+      // The startup announcement is not an answer: it is the green light for reads that arrived
+      // while Add-Type was still loading, and consuming it as an answer would hand the first
+      // caller a placeholder.
+      if (record.ready === true) {
+        if (closed || ready) continue
+        ready = true
+        if (startupTimer !== undefined) clearTimeout(startupTimer)
+        startWaiting()
+        continue
+      }
       settle(record)
     }
   })
@@ -130,10 +192,7 @@ export function startResidentSelection(options = {}) {
 
   const onGone = () => {
     if (closed) return
-    closed = true
-    // Every request in flight is answered with nothing, so no caller waits out its timeout
-    // for a process that is already gone.
-    while (waiting.length > 0) settle(undefined)
+    stop()
   }
   child.on('error', onGone)
   child.on('exit', onGone)
@@ -143,30 +202,37 @@ export function startResidentSelection(options = {}) {
     read() {
       if (closed) return Promise.resolve(undefined)
       return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          const at = waiting.indexOf(done)
-          if (at >= 0) waiting.splice(at, 1)
-          resolve(undefined)
-        }, timeoutMs)
-        function done(answer) {
-          clearTimeout(timer)
-          resolve(answer)
+        function start() {
+          if (closed) {
+            resolve(undefined)
+            return
+          }
+          const timer = setTimeout(() => {
+            const at = waiting.indexOf(done)
+            if (at >= 0) waiting.splice(at, 1)
+            resolve(undefined)
+          }, timeoutMs)
+          function done(answer) {
+            clearTimeout(timer)
+            resolve(answer)
+          }
+          waiting.push(done)
+          try {
+            child.stdin.write('read\n')
+          } catch {
+            const at = waiting.indexOf(done)
+            if (at >= 0) waiting.splice(at, 1)
+            clearTimeout(timer)
+            resolve(undefined)
+          }
         }
-        waiting.push(done)
-        try {
-          child.stdin.write('read\n')
-        } catch {
-          const at = waiting.indexOf(done)
-          if (at >= 0) waiting.splice(at, 1)
-          clearTimeout(timer)
-          resolve(undefined)
-        }
+        if (ready) start()
+        else waitingForReady.push(start)
       })
     },
     close() {
       if (closed) return
-      closed = true
-      while (waiting.length > 0) settle(undefined)
+      stop()
       try {
         child.stdin.write('quit\n')
         child.stdin.end()

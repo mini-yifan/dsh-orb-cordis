@@ -117,10 +117,20 @@ describe('selection lines', () => {
     // The per-click one-shot survives only as the fallback for a reader that will not start.
     assert.match(hooks, /readWindowsSelectionOnce/)
     const resident = readFileSync(join(here, '../../native-selection/src/windows-resident.js'), 'utf8')
-    // `-Command -` is what makes PowerShell read its script from stdin; UI Automation needs STA.
-    assert.match(resident, /'-NonInteractive', '-STA', '-Command', '-'/)
+    // The script runs from the command line so stdin is free for `read` requests; `-Command -`
+    // would let the while loop consume the script's own tail as requests.
+    assert.match(resident, /'-NonInteractive'/)
+    assert.match(resident, /'-STA'/)
+    assert.match(resident, /'-EncodedCommand'/)
     assert.match(resident, /while \(\$true\)/)
     assert.match(resident, /\[Console\]::In\.ReadLine\(\)/)
+    // Both scripts force UTF-8: a hidden PowerShell console writes GBK by default, while the
+    // host decodes stdout as UTF-8, which turns Chinese selections into replacement characters.
+    assert.match(resident, /\[Console\]::OutputEncoding = \[System\.Text\.Encoding\]::UTF8/)
+    assert.match(hooks, /\[Console\]::OutputEncoding = \[System\.Text\.Encoding\]::UTF8/)
+    // The resident reader is warmed when the monitor starts, so the first double-click does
+    // not pay Add-Type's startup before the toolbar can appear.
+    assert.match(readFileSync(join(here, '../../native-selection/src/windows-dispatch.js'), 'utf8'), /probe\.warm\?\.\(\)/)
     // The reader closes when the monitor stops, so the process does not outlive the ball.
     assert.match(readFileSync(join(here, '../../native-selection/src/windows-dispatch.js'), 'utf8'), /probe\.close\?\.\(\)/)
   })

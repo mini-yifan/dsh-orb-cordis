@@ -11,6 +11,7 @@ import { startResidentSelection } from './windows-resident.js'
  * PowerShell install degrades to the old behaviour instead of no selection at all.
  */
 const SELECTION_SCRIPT = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -261,6 +262,7 @@ export function productionSelectionProbe() {
   return {
     readSelection: readWindowsSelection,
     activatePid: activateWindowsPid,
+    warm: () => { residentSelection() },
     close: closeResidentSelection,
   }
 }

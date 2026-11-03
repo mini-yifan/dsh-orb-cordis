@@ -49,6 +49,13 @@ export function startWindowsSelectionMonitor(handlers, probe, install) {
   handlers.onEvent({ type: 'ready' })
   let unhook = () => {}
   const reads = { generation: 0 }
+  // Load UI Automation while the ball is up instead of on the first click: the first
+  // double-click then does not pay the Add-Type cost before its toolbar can appear.
+  try {
+    probe.warm?.()
+  } catch (error) {
+    console.error(`dsh-orb: selection warm-up failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
   try {
     unhook = install((message) => { dispatchWindowsSelectionMessage(message, handlers, tracking, excluded, reads) })
   } catch (error) {

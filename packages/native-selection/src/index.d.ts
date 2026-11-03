@@ -65,6 +65,8 @@ export interface WindowsSelectionProbe {
     height?: number
   } | undefined>
   activatePid(pid: number): void
+  /** Start the resident reader early, so the first click does not pay its startup cost. */
+  warm?(): void
   /** Release the resident reader, if the implementation keeps one. */
   close?(): void
 }
