@@ -86,6 +86,7 @@ const zh = {
   noticeTitle: '后台任务报告',
   localBadge: '未计入对话',
   localBadgeTitle: '这段内容只在屏幕上，不进入对话历史，模型也看不到',
+  jumpToLatest: '回到底部',
 }
 const en = {
   title: 'Desktop agent',
@@ -148,6 +149,7 @@ const en = {
   noticeTitle: 'Background task report',
   localBadge: 'Not in the conversation',
   localBadgeTitle: 'This stays on screen only. It never enters the chat history, and the model cannot see it.',
+  jumpToLatest: 'Jump to latest',
 }
 
 const PROMPT_LIMIT = 8000
@@ -264,6 +266,13 @@ function main() {
   const dockTab = document.querySelector('#dock-tab')
   const panel = document.querySelector('#panel')
   const transcript = document.querySelector('#transcript')
+  const jumpToLatest = document.querySelector('#transcript-jump')
+  /** Whether new content should pull the transcript to the bottom. */
+  let followBottom = true
+  /** Scroll events caused by our own writes must not be read as the reader scrolling up. */
+  let programmaticScrollUntil = 0
+  let bottomFrame
+  const BOTTOM_EPSILON_PX = 24
   const questionRoot = document.querySelector('#question')
   const questionEyebrow = document.querySelector('#question-eyebrow')
   const questionTitle = document.querySelector('#question-title')
@@ -390,6 +399,11 @@ function main() {
     historyToggle.title = messages.history
     document.querySelector('#input-label').textContent = messages.placeholder
     prompt.dataset.placeholder = messages.placeholder
+    if (jumpToLatest !== null) {
+      jumpToLatest.textContent = messages.jumpToLatest
+      jumpToLatest.setAttribute('aria-label', messages.jumpToLatest)
+      jumpToLatest.title = messages.jumpToLatest
+    }
     questionCancel.textContent = messages.cancel
     questionSkip.textContent = messages.skip
     questionPrev.setAttribute('aria-label', messages.prev)
@@ -696,6 +710,8 @@ function main() {
       renderAgentStrip()
       syncGif()
       renderVoiceMeter()
+      positionJumpToLatest()
+      if (followBottom) scheduleScrollToLatest()
       return
     }
     if (!force && (pinned || running || asking() || voiceHold)) return
@@ -852,6 +868,7 @@ function main() {
     const lassoId = attachedLasso?.selectionId
     setAttachedSelection('')
     clearLassoChip()
+    pinToLatest()
     api.send(payload, lassoId)
   }
 
@@ -1900,6 +1917,9 @@ function main() {
       }
       blocks.set(block.key, node)
       placeBlock(node, block.kind)
+      // Late layout inside a block (highlighting, math, an image) must re-anchor the
+      // transcript bottom; observing each block catches that without polling.
+      transcriptResize.observe(node)
     }
     if (block.kind !== 'tool') node.dataset.state = block.running ? 'running' : 'ok'
     // A local block is display-only: a translation the ball rendered without putting it
@@ -1931,20 +1951,91 @@ function main() {
 
   /**
    * Transcript events apply in arrival order on one animation frame, so a turn
-   * marker never lands before the blocks queued ahead of it, and the view only
-   * scrolls when the reader is already at the bottom.
+   * marker never lands before the blocks queued ahead of it. The view follows the
+   * newest content while the reader is at the bottom; scrolling up pauses it and
+   * brings back the "jump to latest" pill.
    */
   const staged = []
   let stagedFrame
+
+  function positionJumpToLatest() {
+    if (jumpToLatest === null || jumpToLatest.hidden) return
+    // Offsets are layout values, so the pill keeps its place while the panel scales in
+    // or out; getBoundingClientRect would apply that transform twice.
+    jumpToLatest.style.right = `${Math.max(12, panel.clientWidth - transcript.offsetLeft - transcript.offsetWidth + 12)}px`
+    jumpToLatest.style.bottom = `${Math.max(12, panel.clientHeight - transcript.offsetTop - transcript.offsetHeight + 12)}px`
+  }
+
+  function updateJumpToLatest() {
+    if (jumpToLatest === null) return
+    const overflowing = transcript.scrollHeight > transcript.clientHeight + 1
+    jumpToLatest.hidden = !overflowing || followBottom
+    if (!jumpToLatest.hidden) positionJumpToLatest()
+  }
+
+  function scrollToLatest({ smooth = false } = {}) {
+    if (!followBottom) return
+    programmaticScrollUntil = performance.now() + (smooth ? 600 : 120)
+    transcript.scrollTo({
+      top: transcript.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto',
+    })
+    updateJumpToLatest()
+  }
+
+  function scheduleScrollToLatest() {
+    if (bottomFrame !== undefined) return
+    bottomFrame = requestAnimationFrame(() => {
+      bottomFrame = undefined
+      if (followBottom) scrollToLatest()
+    })
+  }
+
+  /** Force the next frames to follow the bottom, even if the reader was scrolled up. */
+  function pinToLatest({ smooth = false } = {}) {
+    followBottom = true
+    updateJumpToLatest()
+    if (smooth) scrollToLatest({ smooth: true })
+    else scheduleScrollToLatest()
+  }
+
+  updateJumpToLatest()
+
+  transcript.addEventListener('scroll', () => {
+    if (performance.now() < programmaticScrollUntil) return
+    const next = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= BOTTOM_EPSILON_PX
+    if (next === followBottom) return
+    followBottom = next
+    updateJumpToLatest()
+  }, { passive: true })
+
+  // A block can grow after its frame (Shiki, KaTeX, images, a tool card), and the
+  // transcript itself changes size when the composer or the panel grows. Re-anchor on
+  // either so a late layout pass cannot leave the newest line below the fold.
+  const transcriptResize = new ResizeObserver(() => {
+    positionJumpToLatest()
+    if (followBottom) scheduleScrollToLatest()
+    else updateJumpToLatest()
+  })
+  transcriptResize.observe(transcript)
+
+  if (jumpToLatest !== null) {
+    jumpToLatest.addEventListener('click', () => { pinToLatest() })
+  }
+
   function stage(message) {
     staged.push(message)
     stagedFrame ??= requestAnimationFrame(() => {
       stagedFrame = undefined
       const list = staged.splice(0)
-      const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 120
+      let forceFollow = false
       for (const item of list) {
         // A card that fails to render must not swallow the rest of the frame.
         try {
+          // A user block is something the reader just did: their message, a translation,
+          // or the echo of a send. It must be brought into view even if they were reading
+          // older content when it arrived.
+          if (item.type === 'block' && item.kind === 'user') forceFollow = true
           if (item.type === 'block') upsertBlock(item)
           else if (item.type === 'block-drop') removeBlock(item.key)
           else if (item.type === 'turn') setRunning(item.running === true, item.interrupted === true)
@@ -1953,7 +2044,9 @@ function main() {
           console.error('dsh-orb: transcript frame item failed', item, error)
         }
       }
-      if (nearBottom) transcript.scrollTop = transcript.scrollHeight
+      if (forceFollow) followBottom = true
+      if (followBottom) scrollToLatest()
+      else updateJumpToLatest()
     })
   }
 
@@ -1962,6 +2055,7 @@ function main() {
     if (node === undefined) return
     blocks.delete(key)
     blockData.delete(key)
+    transcriptResize.unobserve(node)
     node.remove()
   }
 
@@ -2148,9 +2242,15 @@ function main() {
   function clearTranscript() {
     stopProcessClock()
     processGroup = undefined
+    for (const node of blocks.values()) transcriptResize.unobserve(node)
     blocks.clear()
     blockData.clear()
     transcript.replaceChildren()
+    // A fresh conversation opens on its latest message, not on whatever scroll offset
+    // the previous transcript happened to have.
+    followBottom = true
+    programmaticScrollUntil = 0
+    updateJumpToLatest()
     pending = undefined
     clearLassoChip(true)
     setLassoing(false)
@@ -2667,6 +2767,7 @@ function main() {
     clearLassoChip()
     setHistoryOpen(false)
     setPermissionOpen(false)
+    pinToLatest()
     api.send(payload, lassoId)
   }
   prompt.addEventListener('input', () => {

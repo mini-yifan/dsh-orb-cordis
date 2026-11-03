@@ -58,6 +58,22 @@ describe('ball page render guards', () => {
     assert.match(code, /querySelectorAll\('\.search-file-path, \.search-line'\)/)
   })
 
+  it('pins the transcript to the latest content and offers a jump pill', () => {
+    const html = source('../assets/floating.html')
+    const css = source('../assets/floating.css')
+    assert.match(html, /id="transcript-jump"/)
+    assert.match(css, /#transcript-jump \{/)
+    // Sending is an explicit action: it forces the bottom even when the reader had
+    // scrolled up, which the old near-bottom gate refused to do.
+    assert.match(code, /function pinToLatest/)
+    assert.match(code, /pinToLatest\(\)\n\s*api\.send/)
+    assert.match(code, /item\.kind === 'user'/)
+    assert.equal(code.includes('nearBottom'), false)
+    // Late layout (highlighting, math, images, composer growth) re-anchors the view.
+    assert.match(code, /new ResizeObserver/)
+    assert.match(code, /transcriptResize\.observe\(node\)/)
+  })
+
   it('re-upgrades tracked roots once a lazy grammar lands', () => {
     assert.match(highlight, /const root = ref\.deref\(\)/)
     assert.match(highlight, /upgradeCodeBlocks\(root, \{ track: false \}\)/)

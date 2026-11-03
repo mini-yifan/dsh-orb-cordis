@@ -496,6 +496,35 @@ body.expand-down #question {
   display: none;
 }
 
+/* The "jump to latest" pill. It is positioned from the transcript's own bottom edge by
+ * shell.js, so it sits above the composer and any selection/lasso chips in either
+ * expand direction. */
+#transcript-jump {
+  position: absolute;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--pin);
+  border-radius: 999px;
+  background: var(--white);
+  color: var(--black);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  cursor: pointer;
+}
+
+#transcript-jump:hover {
+  background: var(--input-bg);
+}
+
+#transcript-jump[hidden] {
+  display: none;
+}
+
 /* The chrome buttons park on the side away from the composer; keep the
  * transcript clear of that band so rows never slide under them. */
 body.expand-down #transcript {
