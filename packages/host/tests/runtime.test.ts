@@ -1961,6 +1961,9 @@ describe('selection translation', () => {
     assert.equal(harness.calls.prompt.length, 0, 'the session never saw this exchange')
     assert.equal(fake.requests.length, 1)
     assert.equal('tools' in (fake.requests[0] ?? {}), false)
+    // Third-party routes such as OpenCode Go require the conversation id on every call;
+    // a direct translation must carry the same session the Agent uses.
+    assert.match(String(fake.requests[0]?.sessionId), /^session-/)
 
     const lastTurn = () => (client.messages.filter((message) => message.type === 'turn') as { running: boolean }[]).at(-1)
     assert.equal(client.messages.some((message) => message.type === 'turn' && message.running === true), true)

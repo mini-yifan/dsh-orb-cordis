@@ -2341,6 +2341,7 @@ export class OrbRuntime {
       route: toTranslationRoute(route),
       truncatedMark: LOCAL_TRUNCATED_MARK,
       llm,
+      sessionId: this.sessionId ?? 'session-orb-translate',
       signal,
       onText,
     }))
@@ -2360,6 +2361,7 @@ export class OrbRuntime {
       target,
       route: toTranslationRoute(route),
       llm,
+      sessionId: this.sessionId ?? 'session-orb-translate',
       signal,
       onText,
     }))

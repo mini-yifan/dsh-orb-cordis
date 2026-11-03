@@ -56,6 +56,7 @@ describe('translation call', () => {
       route: { provider: 'p', model: 'm' },
       truncatedMark: '…',
       llm,
+      sessionId: 'session-test',
       signal: new AbortController().signal,
       onText: (text) => { seen.push(text) },
     })
@@ -67,8 +68,57 @@ describe('translation call', () => {
     assert.equal(calls.length, 1)
     assert.equal(calls[0]?.provider, 'p')
     assert.equal(calls[0]?.model, 'm')
+    // OpenCode Go rejects a request with no `x-opencode-session`; the adapter fills that
+    // header from this field, so a translation must carry the conversation id too.
+    assert.equal(calls[0]?.sessionId, 'session-test')
     assert.equal('tools' in (calls[0] ?? {}), false)
     assert.deepEqual(calls[0]?.messages, [{ role: 'user', content: [{ type: 'text', text: 'hello, world' }] }])
+  })
+
+  it('surfaces a terminal finish failure instead of settling a blank answer', async () => {
+    const llm: TranslationLlm = {
+      stream: () => (async function* emit() {
+        yield {
+          type: 'finish',
+          reason: {
+            kind: 'error',
+            failure: { code: 'MISSING_SESSION', message: 'Request is missing x-opencode-session' },
+          },
+        }
+      })(),
+    }
+    await assert.rejects(
+      runTranslation({
+        source: 'hello',
+        target: 'zh',
+        route: { provider: 'p', model: 'm' },
+        truncatedMark: '…',
+        llm,
+        signal: new AbortController().signal,
+        onText() {},
+      }),
+      /missing x-opencode-session（MISSING_SESSION）/,
+    )
+  })
+
+  it('reports a model that finishes without any text', async () => {
+    const llm: TranslationLlm = {
+      stream: () => (async function* emit() {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })(),
+    }
+    await assert.rejects(
+      runTranslation({
+        source: 'hello',
+        target: 'zh',
+        route: { provider: 'p', model: 'm' },
+        truncatedMark: '…',
+        llm,
+        signal: new AbortController().signal,
+        onText() {},
+      }),
+      /EMPTY_RESPONSE/,
+    )
   })
 
   it('keeps an over-long source inside the budget before it reaches the model', async () => {
