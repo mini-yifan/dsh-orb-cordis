@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { WAKE_MODEL_NPM_MIRROR, WAKE_MODEL_NPM_OFFICIAL, WAKE_MODEL_SHA256, WAKE_MODEL_URL } from '@dsh-orb/voice/manifest'
-import { VoiceDownloads, wakeModelSources } from '../src/voice-download.ts'
+import { TTS_EN_REVISION, TTS_VOCODER_REPO, TTS_VOCODER_REVISION, TTS_ZH_REPO, TTS_ZH_REVISION, WAKE_MODEL_NPM_MIRROR, WAKE_MODEL_NPM_OFFICIAL, WAKE_MODEL_SHA256, WAKE_MODEL_URL } from '@dsh-orb/voice/manifest'
+import { hubResolveUrl, VoiceDownloads, wakeModelSources } from '../src/voice-download.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'orb-voice-download-'))
 after(() => { rmSync(root, { recursive: true, force: true }) })
@@ -30,6 +30,25 @@ describe('voice model download', () => {
     // Both registry URLs serve the same bytes, so one digest checks either of them.
     assert.ok(sources.slice(0, 2).every((source) => source.sha256 === WAKE_MODEL_SHA256))
     assert.equal(sources[2].sha256, undefined)
+  })
+
+  it('resolves every TTS file at a pinned commit instead of main', () => {
+    const zh = hubResolveUrl('https://hf-mirror.com', TTS_ZH_REPO, TTS_ZH_REVISION, 'model-steps-3.onnx')
+    assert.equal(zh, `https://hf-mirror.com/${TTS_ZH_REPO}/resolve/${TTS_ZH_REVISION}/model-steps-3.onnx`)
+    assert.ok(!zh.includes('/resolve/main/'))
+    const vocoder = hubResolveUrl(
+      'https://huggingface.co',
+      TTS_VOCODER_REPO,
+      TTS_VOCODER_REVISION,
+      'vocoder-models/vocos-22khz-univ.onnx',
+    )
+    assert.equal(
+      vocoder,
+      `https://huggingface.co/${TTS_VOCODER_REPO}/resolve/${TTS_VOCODER_REVISION}/vocoder-models/vocos-22khz-univ.onnx`,
+    )
+    for (const revision of [TTS_ZH_REVISION, TTS_EN_REVISION, TTS_VOCODER_REVISION]) {
+      assert.match(revision, /^[0-9a-f]{40}$/)
+    }
   })
 
   it('tells the settings dialog the wake model comes from the registry', () => {

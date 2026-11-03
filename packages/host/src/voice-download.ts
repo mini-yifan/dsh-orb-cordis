@@ -8,9 +8,28 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import { mkdir, readFile, rename, rm, stat } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { finished } from 'node:stream/promises'
-import { absentVoiceModels, ASR_MODEL_BYTES, TTS_EN_MODEL_SHA256, TTS_EN_REPO, TTS_MODEL_BYTES, TTS_ORIGINS, TTS_VOCODER_SHA256, TTS_ZH_MODEL_SHA256, TTS_ZH_REPO, WAKE_MODEL_NPM_MIRROR, WAKE_MODEL_NPM_OFFICIAL, WAKE_MODEL_SHA256, WAKE_MODEL_URL, type VoiceModelKind, type VoiceModels } from '@dsh-orb/voice/manifest'
+import {
+  absentVoiceModels,
+  ASR_MODEL_BYTES,
+  TTS_EN_MODEL_SHA256,
+  TTS_EN_REPO,
+  TTS_EN_REVISION,
+  TTS_MODEL_BYTES,
+  TTS_ORIGINS,
+  TTS_VOCODER_REVISION,
+  TTS_VOCODER_SHA256,
+  TTS_ZH_MODEL_SHA256,
+  TTS_ZH_REPO,
+  TTS_ZH_REVISION,
+  WAKE_MODEL_NPM_MIRROR,
+  WAKE_MODEL_NPM_OFFICIAL,
+  WAKE_MODEL_SHA256,
+  WAKE_MODEL_URL,
+  type VoiceModelKind,
+  type VoiceModels,
+} from '@dsh-orb/voice/manifest'
 import { TTS_EN_FILES, TTS_VOCODER, TTS_ZH_FILES } from './tts-files.ts'
 import { asrPresent, kwsPresent, ttsPresent } from './voice-models.ts'
 
@@ -263,18 +282,20 @@ async function installVoiceModel(
   await installTts(paths.tts, progress)
 }
 
-/** One repository's files, with the folder they land in. */
+/** One repository's files, with the folder they land in and the commit they come from. */
 interface TtsPart {
   readonly repo: string
+  readonly revision: string
   readonly dir: string
   readonly files: readonly { readonly path: string; readonly bytes: number; readonly local?: string }[]
 }
 
 const TTS_PARTS: readonly TtsPart[] = [
-  { repo: TTS_ZH_REPO, dir: 'matcha-icefall-zh-baker', files: TTS_ZH_FILES },
-  { repo: TTS_EN_REPO, dir: 'matcha-icefall-en_US-ljspeech', files: TTS_EN_FILES },
+  { repo: TTS_ZH_REPO, revision: TTS_ZH_REVISION, dir: 'matcha-icefall-zh-baker', files: TTS_ZH_FILES },
+  { repo: TTS_EN_REPO, revision: TTS_EN_REVISION, dir: 'matcha-icefall-en_US-ljspeech', files: TTS_EN_FILES },
   {
     repo: TTS_VOCODER.repo,
+    revision: TTS_VOCODER_REVISION,
     dir: '',
     files: [{ path: TTS_VOCODER.path, bytes: TTS_VOCODER.bytes, local: TTS_VOCODER.local }],
   },
@@ -329,7 +350,7 @@ async function downloadTts(origins: readonly Origin[], root: string, progress: (
       if (job === undefined || failure !== undefined) return
       try {
         const local = job.file.local ?? job.file.path
-        await downloadHubFile(origins, job.part.repo, job.file, join(root, job.part.dir, local))
+        await downloadHubFile(origins, job.part.repo, job.part.revision, job.file, join(root, job.part.dir, local))
         received += job.file.bytes
         progress(received, TTS_MODEL_BYTES)
       } catch (error) {
@@ -343,20 +364,26 @@ async function downloadTts(origins: readonly Origin[], root: string, progress: (
   if (failure !== undefined) throw failure
 }
 
+/** One file at a pinned commit. `main` moves; a commit's bytes do not. */
+export function hubResolveUrl(base: string, repo: string, revision: string, path: string): string {
+  const encoded = path.split('/').map(encodeURIComponent).join('/')
+  return `${base}/${repo}/resolve/${revision}/${encoded}`
+}
+
 async function downloadHubFile(
   origins: readonly Origin[],
   repo: string,
+  revision: string,
   file: { readonly path: string; readonly bytes: number },
   dest: string,
 ): Promise<void> {
-  const encoded = file.path.split('/').map(encodeURIComponent).join('/')
   await mkdir(dirname(dest), { recursive: true })
   let last: unknown
   for (const origin of origins) {
     if (origin.down) continue
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        await fetchToFile(`${origin.base}/${repo}/resolve/main/${encoded}`, dest, file.bytes)
+        await fetchToFile(hubResolveUrl(origin.base, repo, revision, file.path), dest, file.bytes)
         origin.failures = 0
         return
       } catch (error) {
@@ -423,7 +450,10 @@ async function verifyTts(root: string): Promise<void> {
   ]
   for (const [file, accepted] of checks) {
     const digest = await sha256(file).catch(() => '')
-    if (!(accepted as readonly string[]).includes(digest)) throw new Error(`${basename(file)} 校验失败`)
+    if (!(accepted as readonly string[]).includes(digest)) {
+      const expected = accepted.map((hash) => `${hash.slice(0, 8)}…`).join(' / ')
+      throw new Error(`${relative(root, file)} 校验失败（实际 ${digest.slice(0, 8) || '无法读取'}，期望 ${expected}）`)
+    }
   }
 }
 

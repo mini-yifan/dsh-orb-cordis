@@ -697,3 +697,20 @@ Host 由 `spawn(app 的可执行文件, [...desktop-host/lib/index.js])` 启动�
 - **测试**：`shell-render.test.ts` 补 1 例，钉住 `onAttach` 走 `showWorkPanel()` 而不是裸 `setExpanded`。这条断言做过反向验证：把实现改回 `setExpanded(true)` 后该例会红（18 过 1 挂），改回来即绿，确认它真的守着这个回归点。全量 `pnpm typecheck` 通过，`pnpm test` 566 例（564 过 2 跳过 0 失败）+ vitest 322 例全过。
 - **装机**：备份到 `~/.dsh/dsh-orb-installed-backup-20261031-203556-attach-pin/`，走完整 `pnpm build` 后只替换 `dist/helper/assets/shell.js`。`shell.js` 是 helper 进程启动时加载，**需重启应用**生效。
 - **待真机确认**：「点按钮 → 固定 → 直接说话 → 自动上屏」这条端到端链路需要真机走一遍，测试只能钉住源码形状与 `listenMode` 的联动。
+
+## 44. 上游再次重传中文 Matcha，全新安装又报「model-steps-3.onnx 校验失败」(2026-11-03)
+
+现象：2026-10-29 之后全新安装语音播报模型，进度条走完、文件大小也对，最后仍然报 `model-steps-3.onnx 校验失败`，模型一直显示「未下载」；10-25 前后已经装好模型的机器不复现。学生侧就是「每次点下载都失败」。
+
+- **根因（与第 29 节同型，但换了一次提交）**：上游 2026-10-29 04:01 UTC 又重传了 `csukuangfj/matcha-icefall-zh-baker` 的 `model-steps-3.onnx`（commit `a447c1f`），LFS sha256 从 `47e82b11…` 变成 `78a9fd17…`，**文件名和字节数仍是 75,624,188**。下载器请求 `resolve/main`，拿到的就是这份新文件；`TTS_ZH_FILES` 的尺寸检查因此通过，`verifyTts` 再比对哈希时失败。
+- **证据**：`resolve/4ddc32d…`（10-24 commit）的 `X-Linked-Etag` 是 `47e82b11…`，`resolve/main` 是 `78a9fd17…`；本机 10-25 安装的中文模型哈希正是 `47e8…`，所以开发机不复现。英文当前仍是 `4d7771c0…`，vocoder 仍是 `0574a135…`，都在白名单里，只有中文这份坏。
+- **修法**：不再请求 `resolve/main`，把三个 Hub 仓库钉到具体 commit：
+  - 中文 `4ddc32d1724e5ea167116096b860de07b8dcb781`（10-24，`47e8…`）
+  - 英文 `be5535c9e754d0dfd3ab66dac34f78c5b5d66d50`（10-24，`f8e8…`）
+  - vocoder `bee11a0c31f3054fa7e73752e59f50d1e05340af`（`0574…`）
+  这三个正好是本机 10-25 已验证能合成的那套。`TtsPart` 增加 `revision`，`hubResolveUrl()` 统一拼 `resolve/<revision>/…`；哈希白名单保持不变，老安装不会被迫重下。
+- **报错**：`verifyTts` 现在会写清相对路径和实际/期望哈希前缀，例如 `matcha-icefall-zh-baker/model-steps-3.onnx 校验失败（实际 78a9fd17，期望 47e82b11… / ff1cc7f7…）`，下次不用再靠猜。
+- **不采用的捷径**：只把 `78a9…` 加进白名单。10-24 已经这样修过一次，10-29 又重演；`main` 会继续动，静态名单永远追不上。
+- **未做**：10-29 的 `78a9…` 没有直接放行，先钉 10-24 的已验证版本；如果上游这次重传包含实际修复，等本机合成冒烟测试后再把 revision 和哈希一起升级。
+- **测试**：`voice-download.test.ts` 新增用例，断言 TTS URL 里是 40 位 commit、不是 `main`；`pnpm typecheck` 通过，host 全量 321 例中 319 过，2 个失败是既有的 Windows `deferred-install`（`#!/bin/sh` 用例）和 `voice.test` 的 EPIPE，均与本次无关（已用 stash 在基线上复现）。新增用例 7/7 通过。
+- **装机**：重新 `pnpm build` 并打包发布；已经是 `47e8…`/`f8e8…`/`0574…` 的用户不会重下，失败过的用户更新后再点一次下载即可（失败时 `*.staging` 已清掉，不用手工清理）。

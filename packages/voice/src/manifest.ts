@@ -51,23 +51,42 @@ export const WAKE_MODEL_BYTES = 9_024_132
 
 /**
  * The Matcha engines and their vocoder are fetched file by file from the
- * Hugging Face Hub. Repository trees are immutable, so one pinned digest per
- * model stays valid, and the domestic mirror serves the same bytes as
- * huggingface.co. `hf-mirror` goes first because GitHub is unreachable from
- * mainland China while that mirror runs at several MB/s there.
+ * Hugging Face Hub. A commit's tree is immutable, but `main` is a moving ref:
+ * upstream produced three different digests for the same filename in ten days
+ * (see docs/04-addenda.md), and a fresh install kept downloading bytes the
+ * pinned list had never seen. Every URL therefore resolves a pinned
+ * commit, never `main`, so the digests below stay valid and the domestic
+ * mirror serves the same bytes as huggingface.co. `hf-mirror` goes first
+ * because GitHub is unreachable from mainland China while that mirror runs at
+ * several MB/s there.
+ *
+ * Bumping a revision is a deliberate release step: change the commit here,
+ * update the accepted digests if the file changed, and smoke-test synthesis.
+ * Never point these at `main` again.
  */
 export const TTS_ZH_REPO = 'csukuangfj/matcha-icefall-zh-baker'
 export const TTS_EN_REPO = 'csukuangfj/matcha-icefall-en_US-ljspeech'
 export const TTS_VOCODER_REPO = 'k2-fsa/sherpa-onnx-models'
 
+/**
+ * The 2026-10-24 builds, the same files a working local install already has.
+ * Verified through hf-mirror: `resolve/<commit>/model-steps-3.onnx` returns
+ * these exact digests. The 2026-10-29 re-export of the Chinese model
+ * (`78a9fd17…`) is deliberately not used until it has been smoke-tested.
+ */
+export const TTS_ZH_REVISION = '4ddc32d1724e5ea167116096b860de07b8dcb781'
+export const TTS_EN_REVISION = 'be5535c9e754d0dfd3ab66dac34f78c5b5d66d50'
+export const TTS_VOCODER_REVISION = 'bee11a0c31f3054fa7e73752e59f50d1e05340af'
+
 export const TTS_ORIGINS = ['https://hf-mirror.com', 'https://huggingface.co'] as const
 
 /**
- * Every legitimate digest of the acoustic model. Upstream re-exported both
- * Matcha packages on 2026-10-24 without renaming them, so the previous build
- * and the current one both exist in the wild: the old one inside an already
- * installed folder, the new one on the Hub. Accepting either keeps an existing
- * install valid and lets a fresh download pass.
+ * Every legitimate digest of the acoustic model. Upstream re-exports the
+ * Matcha packages without renaming them, so several builds exist in the wild:
+ * the older one inside an already installed folder, the pinned one a fresh
+ * download now gets. Accepting both keeps an existing install valid and lets
+ * a fresh download pass. A digest is added only after that build has been
+ * verified; it is not a substitute for pinning the revision.
  */
 export const TTS_ZH_MODEL_SHA256 = [
   '47e82b11454edeeb65adc4e44a24fd54c6715cd4d875cc2a20f75545ecc32d4d',
