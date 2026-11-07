@@ -449,7 +449,9 @@ export function loadNative(dir: string): NativeLibrary {
     },
     windows: (adapter, app) => {
       const out: unknown[] = [null]
-      const code = ad_list_windows(adapter, app, false, out)
+      // The ABI's app filter matches no running app on macOS (checked against display
+      // names and bundle ids), so ask for every window and filter the decoded rows here.
+      const code = ad_list_windows(adapter, null, false, out)
       if (code !== 0) return { ok: false, error: lastError(code) }
       const list = out[0]
       const windows: import('./protocol.ts').WindowInfo[] = []
@@ -478,6 +480,7 @@ export function loadNative(dir: string): NativeLibrary {
             && Number.isFinite(box.x) && Number.isFinite(box.y)
             && Number.isFinite(box.width) && Number.isFinite(box.height)
             && (box.width ?? 0) > 0 && (box.height ?? 0) > 0
+          if (app !== '' && (info.app_name ?? '') !== app) continue
           windows.push({
             id: info.id ?? '',
             title: info.title ?? '',

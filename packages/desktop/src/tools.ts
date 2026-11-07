@@ -26,6 +26,7 @@ import {
   releaseLease,
   screenLockOwner,
 } from './guard.ts'
+import { chooseWindow } from './frame.ts'
 import { renderSnapshot } from './render.ts'
 import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData } from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
@@ -156,7 +157,11 @@ export function registerDesktopTools(
    * Draw the warm ribbon around the window this action touches, when the helper
    * is available. The ribbon is a courtesy signal: it never blocks the action.
    */
-  const showRibbon = async (call: Call, app: string): Promise<void> => {
+  const showRibbon = async (
+    call: Call,
+    app: string,
+    target: { windowId?: string; windowTitle?: string } = {},
+  ): Promise<void> => {
     const frame = ctx.get('backgroundFrame') as
       | { show(bounds: { x: number; y: number; width: number; height: number }, label: string): Promise<void>; hide(): Promise<void> }
       | undefined
@@ -166,10 +171,9 @@ export function registerDesktopTools(
         op: 'windows',
         app,
       })
-      const target = windows.find(window => window.focused && window.bounds !== undefined)
-        ?? windows.find(window => window.bounds !== undefined)
-      if (target?.bounds === undefined) return
-      await frame.show(target.bounds, `后台操作中 · ${app}`)
+      const window = chooseWindow(windows, target)
+      if (window?.bounds === undefined) return
+      await frame.show(window.bounds, `后台操作中 · ${app}`)
       if (holdTimer !== undefined) clearTimeout(holdTimer)
       holdTimer = setTimeout(() => {
         holdTimer = undefined
@@ -354,7 +358,10 @@ export function registerDesktopTools(
       })
       try {
         await gate(call, known.app, config)
-        await showRibbon(call, known.app)
+        await showRibbon(call, known.app, {
+          ...known.windowId !== undefined ? { windowId: known.windowId } : {},
+          ...known.windowTitle !== undefined ? { windowTitle: known.windowTitle } : {},
+        })
         const data = await call.client.request({ op: 'act', ref: args.ref, action })
         refreshLease(known.app, call.sessionId)
         return { text: actionText(data) }

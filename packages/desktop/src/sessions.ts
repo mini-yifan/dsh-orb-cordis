@@ -28,6 +28,8 @@ interface Remembered {
   readonly app: string
   readonly refs: ReadonlySet<string>
   readonly at: number
+  readonly windowId?: string
+  readonly windowTitle?: string
 }
 
 /** What one session may address, and which app each ref belongs to. */
@@ -45,6 +47,8 @@ export class RefBook {
       app: snapshot.app,
       refs: new Set(refs),
       at: Date.now(),
+      ...snapshot.windowId !== undefined ? { windowId: snapshot.windowId } : {},
+      ...snapshot.windowTitle !== undefined ? { windowTitle: snapshot.windowTitle } : {},
     })
     while (this.bySnapshot.size > REMEMBERED_SNAPSHOTS) {
       const oldest = this.bySnapshot.keys().next().value
@@ -58,14 +62,19 @@ export class RefBook {
    * @param ref - qualified ref.
    * @returns the app and whether the model was shown this exact ref.
    */
-  lookup(ref: string): { app: string; known: boolean } | undefined {
+  lookup(ref: string): { app: string; known: boolean; windowId?: string; windowTitle?: string } | undefined {
     const match = /^@([^:]+):/.exec(ref)
     if (match === null) return undefined
     const snapshotId = match[1]
     if (snapshotId === undefined) return undefined
     const entry = this.bySnapshot.get(snapshotId)
     if (entry === undefined) return undefined
-    return { app: entry.app, known: entry.refs.has(ref) }
+    return {
+      app: entry.app,
+      known: entry.refs.has(ref),
+      ...entry.windowId !== undefined ? { windowId: entry.windowId } : {},
+      ...entry.windowTitle !== undefined ? { windowTitle: entry.windowTitle } : {},
+    }
   }
 
   /** Drop every remembered snapshot. */

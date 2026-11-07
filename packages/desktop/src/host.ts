@@ -244,7 +244,17 @@ function main(): void {
         const depth = typeof request.depth === 'number' ? request.depth : 3
         const interactive = request.interactive !== false
         const compact = request.compact !== false
-        const result = native.snapshot(adapter, app, depth, interactive, compact)
+        let result = native.snapshot(adapter, app, depth, interactive, compact)
+        if (!result.ok && app !== null && result.error?.code === 'AMBIGUOUS_TARGET') {
+          // Several processes can share one display name (WeChat ships helpers under the
+          // same name). When the target is what the user is looking at, the focused window
+          // is the unambiguous one, so try that before giving up.
+          const focused = native.snapshot(adapter, null, depth, interactive, compact)
+          if (focused.ok) {
+            const focusedEnvelope = parseJson<SnapshotEnvelope>(focused.json)
+            if (focusedEnvelope?.data?.app === app) result = focused
+          }
+        }
         if (!result.ok) return fail(id, result.error)
         const envelope = parseJson<SnapshotEnvelope>(result.json)
         if (envelope === undefined) {
