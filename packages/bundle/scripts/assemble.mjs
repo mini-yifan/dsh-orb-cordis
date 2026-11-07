@@ -10,6 +10,7 @@
  *   client.js                      settings page, browser half (from client-settings)
  *   dist/host/                     @dsh-orb/host
  *   dist/computer-use/             @dsh-orb/computer-use, including the ScreenCaptureKit helper
+ *   dist/desktop/                  @dsh-orb/desktop, including the per-platform FFI libraries
  *   dist/helper/                   Electron entry, preload scripts, assets
  *   dist/native-selection/         selection monitor sources and prebuilt library
  */
@@ -66,6 +67,22 @@ await rewrite(clientFile, OLD_CLIENT_ID, NEW_CLIENT_ID, 1)
 await copyFrom('host', 'lib', join(dist, 'host'))
 await copyFrom('computer-use', 'lib', join(dist, 'computer-use'))
 await chmod(join(dist, 'computer-use', 'macos-sck-capture'), 0o755)
+
+// Background desktop control: the plugin row and the platform libraries travel
+// together, so a user never downloads anything beyond the plugin itself.
+const desktopNative = join(packages, 'desktop', 'native')
+if (!existsSync(desktopNative)) {
+  throw new Error(
+    'assemble: packages/desktop/native is missing. '
+    + 'Run `pnpm --filter @dsh-orb/desktop fetch-native` before packing.',
+  )
+}
+await copyFrom('desktop', 'lib', join(dist, 'desktop'))
+await copyFrom('desktop', 'native', join(dist, 'desktop', 'native'))
+for (const platform of ['darwin-arm64', 'darwin-x64']) {
+  const helper = join(dist, 'desktop', 'native', platform, 'agent-desktop-macos-helper')
+  if (existsSync(helper)) await chmod(helper, 0o755)
+}
 
 // The host reaches the helper at ../helper/lib/main.js and the selection monitor at ../native-selection/src.
 await copyFrom('helper', 'lib', join(dist, 'helper', 'lib'))

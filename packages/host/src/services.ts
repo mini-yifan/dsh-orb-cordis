@@ -34,7 +34,8 @@ export function installOrbServices(ctx: ServiceContext, store: ProfileStore): vo
 
 /**
  * Pin the stored Access preset on Computer Use and background sessions under the
- * workspace the ball is using right now. Read on each create, so a switch applies
+ * workspace the ball is using right now. `desktop` is the background desktop mode; `standard`
+ * sessions under the workspace are the ones started before that mode existed. Read on each create, so a switch applies
  * to the next session without re-registering the listener.
  * @returns a disposer for the create listener.
  */
@@ -80,7 +81,7 @@ function pinSession(
 function isOrbSession(session: SessionLike, workspaceRoot: string): boolean {
   const preset = session.header?.agentPreset
   const cwd = session.header?.cwd
-  if ((preset !== 'computer-use' && preset !== 'standard') || cwd === undefined) return false
+  if ((preset !== 'computer-use' && preset !== 'standard' && preset !== 'desktop') || cwd === undefined) return false
   return isOrbWorkspace(cwd, workspaceRoot)
 }
 

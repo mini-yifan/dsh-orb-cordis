@@ -48,6 +48,10 @@
       "types": "./dist/computer-use/lasso-service.d.ts",
       "default": "./dist/computer-use/lasso-service.js"
     },
+    "./desktop": {
+      "types": "./dist/desktop/index.d.ts",
+      "default": "./dist/desktop/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -104,6 +108,7 @@
     "@deepseek-ai/schemastery": "3.18.4",
     "@dsh-orb/client-ui-settings-orb": "workspace:*",
     "@dsh-orb/computer-use": "workspace:*",
+    "@dsh-orb/desktop": "workspace:*",
     "@dsh-orb/helper": "workspace:*",
     "@dsh-orb/host": "workspace:*",
     "@dsh-orb/native-selection": "workspace:*",

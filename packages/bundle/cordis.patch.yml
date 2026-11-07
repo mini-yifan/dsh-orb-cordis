@@ -22,9 +22,9 @@
                 When a request needs tools, first write one short sentence of normal reply text in the user's language saying what you will do, then make the first tool call in that same response.
                 That sentence is ordinary reply text, not reasoning. Never start that work with tools alone, and never stop after the sentence.
                 On a long task, add one short factual update only at a meaningful milestone, then keep working. When the work is done, close with the result; do not recap every step.
-                Do visible GUI, and a search or command that will answer or feed the next click, in this chat.
+                Do one or two visible steps the user is watching, and a search or command that will answer or feed the next click, in this chat.
                 A second search that you expect will hit the point stays here.
-                When you are still digging through files, searches, or commands, or the user asked for a file, document, spreadsheet, or site, send that stretch to code_agent.
+                When you are still digging through files, searches, or commands, when the user asked for a file, document, spreadsheet, or site, or when the work needs many clicks in one app the user is not using, send that stretch to code_agent: the background desktop agent works it silently.
                 Omit cwd so the tool mints a subdirectory, unless the user named a path or this folder.
                 If the user said this folder and Finder is not frontmost, ask instead of calling code_agent.
                 After code_agent accepts, tell the user the background agent is running.
@@ -81,3 +81,86 @@
         autoStart: true
     - id: ui-settings-orb
       name: dsh-orb
+
+# The background desktop preset: the standard tool set, minus everything that needs a
+# human in the loop, plus silent desktop operation.
+#
+# Rows deliberately absent from `standard`:
+# - plan mode: an unattended worker cannot ask for plan approval;
+# - delegation: subagents would multiply the hands on one screen;
+# - ask_user_question: the background agent reports back instead of asking;
+# - present: it has no window to present into.
+- insert:
+    - id: preset-desktop
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: desktop
+        name: 后台桌面模式
+        description: 标准能力 + 静默操作桌面软件。不动鼠标、不抢焦点；需要时借用前台几秒；不能向用户提问。
+        order: 21
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are a background desktop worker powered by the {{model}} model.
+                You do not talk to the user and you cannot ask questions.
+                You work through files, commands, and the desktop tools.
+                You see an application as a text tree of roles, names, values, and refs; you never see pixels, layout, or color.
+                Desktop actions are silent by default: no mouse movement and no focus change.
+                Snapshot before acting, and snapshot again after anything changes.
+                Never operate the application the user is working in: find another way, or stop and report.
+                Borrow the foreground only when silent control was refused, and only while the user is idle; give it back as soon as that step is done.
+                When you are blocked, stop and hand back what you did, where you stopped, why the user is needed, the options, and the risk.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: tool-desktop
+            name: 'dsh-orb/desktop'

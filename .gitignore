@@ -65,3 +65,6 @@ packages/bundle/client.js
 
 # Local-only release manual (handbook, never publish)
 RELEASE.md
+
+# agent-desktop FFI libraries (fetched by packages/desktop/scripts/fetch-native.mjs)
+packages/desktop/native/

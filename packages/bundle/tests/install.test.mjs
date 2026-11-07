@@ -41,6 +41,7 @@ function checkInstalled(profile, root) {
     'dsh-orb/computer-use/code-agent',
     'dsh-orb/computer-use/code-agent-registry',
     'dsh-orb/computer-use/lasso-service',
+    'dsh-orb/desktop',
     'dsh-orb/host',
   ])
   for (const specifier of names) {
