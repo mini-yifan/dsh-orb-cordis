@@ -190,17 +190,6 @@ export class DesktopSessions {
     if (entry === undefined) {
       clearRaised()
       await restore(raised)
-      return
-    }
-    try {
-      const presence = await entry.client.request<{ idleMs: number | null }>({ op: 'presence' }, 3000)
-      const idle = presence?.idleMs ?? null
-      if (idle !== null && idle < this.config.raiseIdleMs) {
-        clearRaised()
-        await restore(raised)
-      }
-    } catch {
-      // A child that stopped answering is cleaned up by the idle sweep.
     }
   }
 

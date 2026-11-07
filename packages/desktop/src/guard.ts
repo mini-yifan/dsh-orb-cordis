@@ -16,10 +16,6 @@ const SCREEN_LOCK_KEY = Symbol.for('dsh-orb.gui-lock')
 
 /** Tunables. See `config.ts` for the loader-facing shape. */
 export interface GuardConfig {
-  /** User input within this window means the app is in use, so it is untouchable. */
-  readonly presentMs: number
-  /** Foreground may be borrowed only after this much quiet. */
-  readonly raiseIdleMs: number
   /** A borrowed foreground is returned automatically after this long. */
   readonly raiseMaxMs: number
   /** How long one background session may hold an app lease without another call. */
@@ -27,8 +23,6 @@ export interface GuardConfig {
 }
 
 export const DEFAULT_GUARD_CONFIG: GuardConfig = {
-  presentMs: 60_000,
-  raiseIdleMs: 2_000,
   raiseMaxMs: 90_000,
   leaseMs: 120_000,
 }
@@ -176,14 +170,10 @@ export function screenLockOwner(): string | undefined {
 export function decideMutation(input: {
   readonly app: string
   readonly owner: string
-  readonly frontmost: string | undefined
-  readonly idleMs: number | undefined
-  readonly raised: RaisedApp | undefined
   readonly leaseHolder: string | undefined
   readonly screenLockOwner: string | undefined
-  readonly config: GuardConfig
 }): Decision {
-  const { app, owner, frontmost, idleMs, raised, leaseHolder, screenLockOwner: lockOwner, config } = input
+  const { app, owner, leaseHolder, screenLockOwner: lockOwner } = input
 
   if (lockOwner !== undefined && lockOwner !== '' && lockOwner !== owner) {
     return {
@@ -201,30 +191,6 @@ export function decideMutation(input: {
       suggestion: 'Leave this app alone for now and do something else, or finish without it.',
     }
   }
-  if (raised !== undefined && raised.owner === owner) {
-    if (idleMs !== undefined && idleMs < config.raiseIdleMs) {
-      return {
-        allow: false,
-        code: 'USER_ACTIVE',
-        message: 'The user just touched the keyboard or mouse; the borrowed window was returned.',
-        suggestion: 'Stop touching that app. Finish with files or commands, or report back.',
-      }
-    }
-    return { allow: true }
-  }
-  if (frontmost === app) {
-    if (idleMs === undefined || idleMs < config.presentMs) {
-      return {
-        allow: false,
-        code: 'USER_IN_USE',
-        message: `The user is using ${app} right now.`,
-        suggestion: 'Do not raise or operate it. Find another way (a file, a command, another app),'
-          + ' or stop and report back to the foreground agent.',
-      }
-    }
-    // The user has been away for a while; operating the front window is safe.
-    return { allow: true }
-  }
   return { allow: true }
 }
 
@@ -236,13 +202,10 @@ export function decideMutation(input: {
 export function decideRaise(input: {
   readonly app: string
   readonly owner: string
-  readonly frontmost: string | undefined
-  readonly idleMs: number | undefined
   readonly raised: RaisedApp | undefined
   readonly screenLockOwner: string | undefined
-  readonly config: GuardConfig
 }): Decision {
-  const { app, owner, frontmost, idleMs, raised, screenLockOwner: lockOwner, config } = input
+  const { app, owner, raised, screenLockOwner: lockOwner } = input
   if (lockOwner !== undefined && lockOwner !== '' && lockOwner !== owner) {
     return {
       allow: false,
@@ -257,30 +220,6 @@ export function decideRaise(input: {
       code: 'SCREEN_BUSY',
       message: `Another background task borrowed the foreground for ${raised.app}.`,
       suggestion: 'Wait until it releases, or work without the screen.',
-    }
-  }
-  if (idleMs === undefined) {
-    return {
-      allow: false,
-      code: 'PRESENCE_UNKNOWN',
-      message: 'This machine cannot report whether the user is active.',
-      suggestion: 'Stay headless; do not borrow the foreground. Report back if you cannot continue.',
-    }
-  }
-  if (idleMs < config.raiseIdleMs) {
-    return {
-      allow: false,
-      code: 'USER_ACTIVE',
-      message: 'The user is typing or moving the mouse right now.',
-      suggestion: 'Do not take the foreground. Try another way, wait for a quieter moment, or report back.',
-    }
-  }
-  if (frontmost === app && idleMs < config.presentMs) {
-    return {
-      allow: false,
-      code: 'USER_IN_USE',
-      message: `The user is using ${app} right now.`,
-      suggestion: 'Do not operate it. Try another way, or stop and report back.',
     }
   }
   return { allow: true }

@@ -13,10 +13,8 @@ export interface Config {
   readonly maxNodes?: number
   /** Most characters rendered per snapshot. Default: 6000. */
   readonly maxChars?: number
-  /** Input within this window means the app is in use. Default: 60000. */
-  readonly presentMs?: number
-  /** Foreground may be borrowed only after this much quiet. Default: 2000. */
-  readonly raiseIdleMs?: number
+  /** Keep the operated window's ribbon on screen this long after the last action. Default: 4000. */
+  readonly frameHoldMs?: number
   /** A borrowed foreground is returned after this long. Default: 90000. */
   readonly raiseMaxMs?: number
   /** App lease lifetime. Default: 120000. */
@@ -31,6 +29,7 @@ export interface ResolvedConfig extends GuardConfig {
   readonly maxNodes: number
   readonly maxChars: number
   readonly idleCloseMs: number
+  readonly frameHoldMs: number
 }
 
 function positive(value: number | undefined, fallback: number, name: string): number {
@@ -50,8 +49,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     maxNodes: positive(config.maxNodes, 140, 'maxNodes'),
     maxChars: positive(config.maxChars, 6000, 'maxChars'),
     idleCloseMs: positive(config.idleCloseMs, 600_000, 'idleCloseMs'),
-    presentMs: positive(config.presentMs, DEFAULT_GUARD_CONFIG.presentMs, 'presentMs'),
-    raiseIdleMs: positive(config.raiseIdleMs, DEFAULT_GUARD_CONFIG.raiseIdleMs, 'raiseIdleMs'),
+    frameHoldMs: positive(config.frameHoldMs, 4_000, 'frameHoldMs'),
     raiseMaxMs: positive(config.raiseMaxMs, DEFAULT_GUARD_CONFIG.raiseMaxMs, 'raiseMaxMs'),
     leaseMs: positive(config.leaseMs, DEFAULT_GUARD_CONFIG.leaseMs, 'leaseMs'),
   }

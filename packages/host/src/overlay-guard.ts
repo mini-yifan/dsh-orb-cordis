@@ -122,6 +122,20 @@ export function createOverlayGuard(transport: OverlayGuardTransport) {
       }
     },
 
+    /**
+     * Draw or clear the background-agent ribbon around one window.
+     * The ribbon is a courtesy signal, never a gate: a missing helper or a lost
+     * ack must not fail the action it annotates.
+     */
+    async setAgentFrame(bounds: OverlayRect | null, label: string, signal?: AbortSignal): Promise<void> {
+      if (!transport.hasHelper()) return
+      try {
+        await transport.send({ type: 'agent-frame', id: randomUUID(), bounds, label }, signal)
+      } catch {
+        // No helper, or it went away mid-draw: the desktop action still stands.
+      }
+    },
+
     async setObservationFrame(bounds: OverlayRect | null, signal?: AbortSignal): Promise<void> {
       if (!transport.hasHelper()) return
       // Switched off: a show request collapses to a hide, so a frame that is

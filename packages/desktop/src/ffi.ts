@@ -98,6 +98,7 @@ export interface NativeLibrary {
   wait(adapter: unknown, wait: import('./protocol.ts').WaitRequest): { ok: boolean; json?: string; error?: NativeError }
   status(adapter: unknown): { ok: boolean; json?: string; error?: NativeError }
   apps(adapter: unknown): { ok: true; apps: readonly { name: string; pid: number; bundleId?: string }[] } | { ok: false; error: NativeError }
+  windows(adapter: unknown, app: string): { ok: true; windows: readonly import('./protocol.ts').WindowInfo[] } | { ok: false; error: NativeError }
   idleMs(): number | undefined
 }
 
@@ -182,6 +183,29 @@ export function loadNative(dir: string): NativeLibrary {
     scope: WaitScope,
   })
 
+  const Rect = koffi.struct('AdRect', {
+    x: 'double',
+    y: 'double',
+    width: 'double',
+    height: 'double',
+  })
+  const WindowInfo = koffi.struct('AdWindowInfo', {
+    id: 'const char *',
+    title: 'const char *',
+    app_name: 'const char *',
+    pid: 'uint32',
+    bounds: Rect,
+    has_bounds: 'bool',
+    is_focused: 'bool',
+  })
+  const ExactWindowInfo = koffi.struct('AdExactWindowInfo', {
+    version: 'uint32',
+    size: 'uint32',
+    window: WindowInfo,
+    process_instance: 'const char *',
+    accessible: 'bool',
+  })
+
   const AppInfo = koffi.struct('AdAppInfo', {
     name: 'const char *',
     pid: 'uint32',
@@ -212,6 +236,12 @@ export function loadNative(dir: string): NativeLibrary {
   const ad_app_count = lib.func('uint32_t ad_app_list_count(void *list)')
   const ad_app_get = lib.func('void *ad_app_list_get(void *list, uint32_t index)')
   const ad_app_free = lib.func('void ad_app_list_free(void *list)')
+  const ad_list_windows = lib.func(
+    'int ad_list_windows_exact(void *adapter, const char *app_filter, bool focused_only, _Out_ void **out)',
+  )
+  const ad_window_count = lib.func('uint32_t ad_exact_window_list_count(void *list)')
+  const ad_window_get = lib.func('void *ad_exact_window_list_get(void *list, uint32_t index)')
+  const ad_window_free = lib.func('void ad_exact_window_list_free(void *list)')
   const ad_free_string = lib.func('void ad_free_string(void *s)')
   const ad_action_size = lib.func('size_t ad_action_size(void)')
   const ad_wait_size = lib.func('size_t ad_wait_args_size(void)')
@@ -416,6 +446,53 @@ export function loadNative(dir: string): NativeLibrary {
         ad_app_free(list)
       }
       return { ok: true, apps }
+    },
+    windows: (adapter, app) => {
+      const out: unknown[] = [null]
+      const code = ad_list_windows(adapter, app, false, out)
+      if (code !== 0) return { ok: false, error: lastError(code) }
+      const list = out[0]
+      const windows: import('./protocol.ts').WindowInfo[] = []
+      try {
+        const count = ad_window_count(list)
+        const expected = koffi.sizeof(ExactWindowInfo)
+        for (let index = 0; index < count; index += 1) {
+          const raw = koffi.decode(ad_window_get(list, index), ExactWindowInfo) as {
+            size?: number
+            window?: {
+              id?: string
+              title?: string
+              app_name?: string
+              pid?: number
+              bounds?: { x?: number; y?: number; width?: number; height?: number }
+              has_bounds?: boolean
+              is_focused?: boolean
+            }
+          }
+          // A different struct size means the library grew the record: skip rather than
+          // read fields at the wrong offset.
+          if (raw.size !== expected || raw.window === undefined) continue
+          const info = raw.window
+          const box = info.bounds
+          const hasBounds = info.has_bounds === true && box !== undefined
+            && Number.isFinite(box.x) && Number.isFinite(box.y)
+            && Number.isFinite(box.width) && Number.isFinite(box.height)
+            && (box.width ?? 0) > 0 && (box.height ?? 0) > 0
+          windows.push({
+            id: info.id ?? '',
+            title: info.title ?? '',
+            appName: info.app_name ?? '',
+            pid: info.pid ?? 0,
+            focused: info.is_focused === true,
+            ...hasBounds
+              ? { bounds: { x: box.x ?? 0, y: box.y ?? 0, width: box.width ?? 0, height: box.height ?? 0 } }
+              : {},
+          })
+        }
+      } finally {
+        ad_window_free(list)
+      }
+      return { ok: true, windows }
     },
     idleMs,
   }

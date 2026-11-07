@@ -20,77 +20,22 @@ beforeEach(() => {
   state.raised = undefined
 })
 
-test('headless control of a background app is allowed', () => {
+test('a background app is operable', () => {
   const decision = decideMutation({
     app: 'Excel',
     owner: 's1',
-    frontmost: 'Word',
-    idleMs: 100,
-    raised: undefined,
     leaseHolder: undefined,
     screenLockOwner: undefined,
-    config,
   })
   assert.equal(decision.allow, true)
 })
 
-test('the app the user is working in is refused', () => {
+test('the app the user is working in is operable too: the ribbon says who is acting', () => {
   const decision = decideMutation({
-    app: 'Word',
+    app: 'WeChat',
     owner: 's1',
-    frontmost: 'Word',
-    idleMs: 500,
-    raised: undefined,
     leaseHolder: undefined,
     screenLockOwner: undefined,
-    config,
-  })
-  assert.equal(decision.allow, false)
-  if (!decision.allow) assert.equal(decision.code, 'USER_IN_USE')
-})
-
-test('a frontmost app is operable once the user has been away', () => {
-  const decision = decideMutation({
-    app: 'Word',
-    owner: 's1',
-    frontmost: 'Word',
-    idleMs: config.presentMs + 1,
-    raised: undefined,
-    leaseHolder: undefined,
-    screenLockOwner: undefined,
-    config,
-  })
-  assert.equal(decision.allow, true)
-})
-
-test('a borrowed window is dropped the moment the user touches anything', () => {
-  markRaised('Excel', 's1', 'Word', config)
-  assert.equal(raisedApp()?.app, 'Excel')
-  const decision = decideMutation({
-    app: 'Excel',
-    owner: 's1',
-    frontmost: 'Excel',
-    idleMs: 10,
-    raised: raisedApp(),
-    leaseHolder: undefined,
-    screenLockOwner: undefined,
-    config,
-  })
-  assert.equal(decision.allow, false)
-  if (!decision.allow) assert.equal(decision.code, 'USER_ACTIVE')
-})
-
-test('a borrowed window is operable while the user stays idle', () => {
-  markRaised('Excel', 's1', 'Word', config)
-  const decision = decideMutation({
-    app: 'Excel',
-    owner: 's1',
-    frontmost: 'Excel',
-    idleMs: 5000,
-    raised: raisedApp(),
-    leaseHolder: undefined,
-    screenLockOwner: undefined,
-    config,
   })
   assert.equal(decision.allow, true)
 })
@@ -101,12 +46,8 @@ test('another session cannot operate a leased app', () => {
   const decision = decideMutation({
     app: 'Excel',
     owner: 's2',
-    frontmost: 'Word',
-    idleMs: 5000,
-    raised: undefined,
     leaseHolder: leaseOwner('Excel', config),
     screenLockOwner: undefined,
-    config,
   })
   assert.equal(decision.allow, false)
   if (!decision.allow) assert.equal(decision.code, 'APP_BUSY')
@@ -118,83 +59,54 @@ test('the foreground agent holding the physical lock blocks background input', (
   const decision = decideMutation({
     app: 'Excel',
     owner: 's1',
-    frontmost: 'Excel',
-    idleMs: 60_000,
-    raised: undefined,
     leaseHolder: undefined,
     screenLockOwner: 'other-agent',
-    config,
   })
   assert.equal(decision.allow, false)
   if (!decision.allow) assert.equal(decision.code, 'SCREEN_BUSY')
 })
 
-test('raising is refused while the user types', () => {
+test('raising is allowed even while the user types: the window is framed, not hidden', () => {
   const decision = decideRaise({
     app: 'Excel',
     owner: 's1',
-    frontmost: 'Word',
-    idleMs: 100,
     raised: undefined,
     screenLockOwner: undefined,
-    config,
-  })
-  assert.equal(decision.allow, false)
-  if (!decision.allow) assert.equal(decision.code, 'USER_ACTIVE')
-})
-
-test('raising is refused when the user is reading that app', () => {
-  const decision = decideRaise({
-    app: 'Word',
-    owner: 's1',
-    frontmost: 'Word',
-    idleMs: 5000,
-    raised: undefined,
-    screenLockOwner: undefined,
-    config,
-  })
-  assert.equal(decision.allow, false)
-  if (!decision.allow) assert.equal(decision.code, 'USER_IN_USE')
-})
-
-test('raising is allowed after the user goes quiet', () => {
-  const decision = decideRaise({
-    app: 'Excel',
-    owner: 's1',
-    frontmost: 'Word',
-    idleMs: 5000,
-    raised: undefined,
-    screenLockOwner: undefined,
-    config,
   })
   assert.equal(decision.allow, true)
 })
 
-test('raising is refused when presence is unknown', () => {
-  const decision = decideRaise({
-    app: 'Excel',
-    owner: 's1',
-    frontmost: 'Word',
-    idleMs: undefined,
-    raised: undefined,
-    screenLockOwner: undefined,
-    config,
-  })
-  assert.equal(decision.allow, false)
-  if (!decision.allow) assert.equal(decision.code, 'PRESENCE_UNKNOWN')
-})
-
 test('only one session may borrow the foreground', () => {
   markRaised('Excel', 's1', 'Word', config)
+  assert.equal(raisedApp()?.app, 'Excel')
   const decision = decideRaise({
     app: 'Numbers',
     owner: 's2',
-    frontmost: 'Excel',
-    idleMs: 5000,
     raised: raisedApp(),
     screenLockOwner: undefined,
-    config,
   })
   assert.equal(decision.allow, false)
   if (!decision.allow) assert.equal(decision.code, 'SCREEN_BUSY')
+})
+
+test('the foreground lock also blocks borrowing the foreground', () => {
+  const decision = decideRaise({
+    app: 'Excel',
+    owner: 's1',
+    raised: undefined,
+    screenLockOwner: 'other-agent',
+  })
+  assert.equal(decision.allow, false)
+  if (!decision.allow) assert.equal(decision.code, 'SCREEN_BUSY')
+})
+
+test('a borrowed foreground expires instead of pinning the screen forever', () => {
+  const raised = markRaised('Excel', 's1', 'Word', config)
+  assert.ok(raised.deadline > raised.at)
+})
+
+test('an expired raise is forgotten on the next read', () => {
+  const state = guardState()
+  state.raised = { app: 'Excel', owner: 's1', at: 0, deadline: 1 }
+  assert.equal(raisedApp(), undefined)
 })

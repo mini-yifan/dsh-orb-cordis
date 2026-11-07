@@ -101,11 +101,22 @@ export interface AppInfo {
   readonly bundleId?: string
 }
 
+/** One on-screen window of an application, with its rectangle when the OS reports one. */
+export interface WindowInfo {
+  readonly id: string
+  readonly title: string
+  readonly appName: string
+  readonly pid: number
+  readonly focused: boolean
+  readonly bounds?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+}
+
 /** Everything the host can be asked to do. */
 export type HostRequest =
   | { readonly op: 'ping' }
   | { readonly op: 'status' }
   | { readonly op: 'apps' }
+  | { readonly op: 'windows'; readonly app: string }
   | { readonly op: 'frontmost' }
   | { readonly op: 'presence' }
   | { readonly op: 'state' }

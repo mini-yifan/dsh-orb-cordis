@@ -9,14 +9,13 @@ import type { SnapshotData } from '../src/protocol.ts'
 test('config fills every default', () => {
   const resolved = resolveConfig()
   assert.equal(resolved.enabled, true)
-  assert.equal(resolved.presentMs, 60_000)
-  assert.equal(resolved.raiseIdleMs, 2_000)
+  assert.equal(resolved.frameHoldMs, 4_000)
   assert.equal(resolved.raiseMaxMs, 90_000)
   assert.equal(resolved.idleCloseMs, 600_000)
 })
 
 test('config rejects impossible values', () => {
-  assert.throws(() => resolveConfig({ presentMs: 0 }), /presentMs/)
+  assert.throws(() => resolveConfig({ frameHoldMs: 0 }), /frameHoldMs/)
   assert.throws(() => resolveConfig({ maxNodes: Number.NaN }), /maxNodes/)
 })
 

@@ -518,6 +518,13 @@ export class OrbRuntime {
       log: (message) => console.error(`dsh-orb: ${message}`),
     })
     ctx.provide('computerUseOverlayGuard', this.overlay)
+    // Background desktop control draws its own ribbon: same helper window family,
+    // different hue, so the two agents never look like each other.
+    ctx.provide('backgroundFrame', {
+      show: (bounds: { x: number; y: number; width: number; height: number }, label: string) =>
+        this.overlay.setAgentFrame(bounds, label),
+      hide: () => this.overlay.setAgentFrame(null, ''),
+    })
     this.balance = new BalanceMonitor({
       account: () => this.ctx.get('deepseekAccount') as BalanceAccount | undefined,
       client: () => ({

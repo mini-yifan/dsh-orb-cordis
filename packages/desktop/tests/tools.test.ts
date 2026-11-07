@@ -51,8 +51,15 @@ function harness() {
     },
     async releaseForeground() {},
   }
+  const disposers: (() => void)[] = []
   const ctx = {
     tools: { register: (definition: ToolLike) => { tools.set(definition.name, definition) } },
+    effect: (register: () => () => void) => {
+      const dispose = register()
+      disposers.push(dispose)
+      return { dispose }
+    },
+    get: (_name: string) => undefined,
   }
   guardState().leases.clear()
   guardState().raised = undefined

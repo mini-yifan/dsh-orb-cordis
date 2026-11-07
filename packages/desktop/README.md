@@ -26,8 +26,10 @@ accessibility bridge costs one child, not the orb.
 | Rule | Where |
 |---|---|
 | Headless by default: semantic actions only, never physical input | `ffi.ts` passes `AD_POLICY_KIND_HEADLESS` on every call |
-| A background task never operates the app the user is working in | `guard.ts` (`frontmost` + 60 s of input) |
-| Borrowing the foreground needs 2 s of quiet, returns after 90 s, and returns the moment the user touches anything | `guard.ts`, `sessions.ts` |
+| Any window is operable, including the one the user is working in | `guard.ts` only refuses our own agents' conflicts |
+| Every operated window is framed by a warm dashed ribbon that names the app | `showRibbon` in `tools.ts` → `backgroundFrame` → helper |
+| The ribbon never gates an action: no bounds, no helper, no ribbon | `showRibbon` swallows its own failures |
+| Borrowing the foreground returns after 90 s | `guard.ts`, `sessions.ts` |
 | Only one session may operate one app, and only one may hold the foreground | `guard.ts` leases |
 | The foreground agent's screen lock blocks background input | `screenLockOwner()` reads the orb's process-global lock |
 | A ref the model was never shown is refused | `RefBook` in `sessions.ts` |
@@ -50,10 +52,19 @@ At runtime the library is copied once into
 `$DSH_HOME/dsh-orb/desktop/native/1.2.0-<platform>/`, because a loaded image
 cannot be replaced on Windows while pnpm swaps the package folder.
 
+## The ribbon
+
+While a background action runs, the window it touches is ringed by a warm
+amber→rose dashed band that drifts slowly and carries a small "后台操作中 ·
+<app>" chip. The foreground Computer Use frame is the opposite: a cool
+cyan→violet glow around the whole display, so the two never read alike. The
+ribbon is click-through, never takes focus, stays out of captures, and
+disappears about four seconds after the last action.
+
 ## Limits worth knowing
 
-- Reading the frontmost app is allowed; operating it is not, unless the user has
-  been idle for a minute or this session borrowed it.
+- Operating the frontmost window is allowed; the ribbon is what tells the user
+  it is happening. There is no "ask first" step.
 - Some apps expose no semantic actions at all. Those steps fail with
   `ACTION_NOT_SUPPORTED` and are handed back to the foreground agent; the
   background agent never falls back to physical input.

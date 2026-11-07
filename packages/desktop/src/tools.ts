@@ -81,16 +81,11 @@ function asHostError(error: unknown): HostError {
  * @param config - tunables.
  */
 async function gate(call: Call, app: string, config: ResolvedConfig): Promise<void> {
-  const state = await osState(call.client)
   const decision = decideMutation({
     app,
     owner: call.sessionId,
-    frontmost: state.app ?? undefined,
-    idleMs: state.idleMs ?? undefined,
-    raised: raisedApp(),
     leaseHolder: leaseOwner(app, config),
     screenLockOwner: screenLockOwner(),
-    config,
   })
   if (!decision.allow) throw new Error(denialText(decision))
   if (!acquireLease(app, call.sessionId, config)) {
@@ -155,6 +150,42 @@ export function registerDesktopTools(
   dependencies: ToolDependencies = {},
 ): void {
   const activate = dependencies.activate ?? activateApp
+  let holdTimer: NodeJS.Timeout | undefined
+
+  /**
+   * Draw the warm ribbon around the window this action touches, when the helper
+   * is available. The ribbon is a courtesy signal: it never blocks the action.
+   */
+  const showRibbon = async (call: Call, app: string): Promise<void> => {
+    const frame = ctx.get('backgroundFrame') as
+      | { show(bounds: { x: number; y: number; width: number; height: number }, label: string): Promise<void>; hide(): Promise<void> }
+      | undefined
+    if (frame === undefined) return
+    try {
+      const windows = await call.client.request<readonly import('./protocol.ts').WindowInfo[]>({
+        op: 'windows',
+        app,
+      })
+      const target = windows.find(window => window.focused && window.bounds !== undefined)
+        ?? windows.find(window => window.bounds !== undefined)
+      if (target?.bounds === undefined) return
+      await frame.show(target.bounds, `后台操作中 · ${app}`)
+      if (holdTimer !== undefined) clearTimeout(holdTimer)
+      holdTimer = setTimeout(() => {
+        holdTimer = undefined
+        void frame.hide()
+      }, config.frameHoldMs)
+      holdTimer.unref()
+    } catch {
+      // No helper, no bounds, or the ribbon window is gone: the action still stands.
+    }
+  }
+
+  ctx.effect(() => () => {
+    if (holdTimer !== undefined) clearTimeout(holdTimer)
+    const frame = ctx.get('backgroundFrame') as { hide(): Promise<void> } | undefined
+    void frame?.hide()
+  })
   ctx.tools.register(defineTool({
     name: 'desktop_status',
     description:
@@ -323,6 +354,7 @@ export function registerDesktopTools(
       })
       try {
         await gate(call, known.app, config)
+        await showRibbon(call, known.app)
         const data = await call.client.request({ op: 'act', ref: args.ref, action })
         refreshLease(known.app, call.sessionId)
         return { text: actionText(data) }
@@ -423,18 +455,12 @@ export function registerDesktopTools(
       const decision = decideRaise({
         app: args.app,
         owner: call.sessionId,
-        frontmost: state.app ?? undefined,
-        idleMs: state.idleMs ?? undefined,
         raised: raisedApp(),
         screenLockOwner: screenLockOwner(),
-        config,
       })
       if (!decision.allow) return { text: denialText(decision) }
       if (state.app === args.app) {
-        return {
-          text: `${args.app} is already in front and the user has been away long enough; nothing was borrowed. `
-            + 'Work on it directly.',
-        }
+        return { text: `${args.app} is already in front; nothing was borrowed. Work on it directly.` }
       }
       try {
         await activate(args.app)
