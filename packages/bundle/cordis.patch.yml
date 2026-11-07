@@ -155,8 +155,12 @@
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
+          # 0.2.x requires this value; 0.1.7 accepts it. Omitting it breaks the
+          # whole preset on current releases.
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
           - id: tool-web
             name: '@deepseek-ai/dsh-tool-web'
             config:
