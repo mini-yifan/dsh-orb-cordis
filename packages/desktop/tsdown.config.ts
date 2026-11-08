@@ -17,6 +17,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     host: 'src/host.ts',
+    'cli-path': 'src/cli-path.ts',
   },
   outDir: 'lib',
   format: ['esm'],

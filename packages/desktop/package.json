@@ -11,6 +11,10 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./cli-path": {
+      "types": "./lib/cli-path.d.ts",
+      "default": "./lib/cli-path.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

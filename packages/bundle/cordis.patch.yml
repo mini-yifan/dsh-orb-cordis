@@ -168,3 +168,84 @@
               searchTimeoutMs: 60000
           - id: tool-desktop
             name: 'dsh-orb/desktop'
+
+# Temporary comparison mode: the standard toolset plus the upstream CLI on PATH.
+# Nothing here is wrapped by the orb — no ribbon, no guard, no ref book, no policy
+# escalation. It exists to answer one question: is raw agent-desktop good enough?
+- insert:
+    - id: preset-desktop-raw
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: desktop-raw
+        name: 桌面测试（原始 agent-desktop）
+        description: 标准能力 + 未经包装的 agent-desktop 命令行。没有彩带、没有护栏，用来对比原生效果。
+        order: 22
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are a coding agent powered by the {{model}} model with direct access to this Mac through the unmodified
+                agent-desktop command-line tool, which is on PATH.
+                Before the first desktop action, run `agent-desktop status`, then `agent-desktop skills get desktop` and
+                `agent-desktop skills get platform`, and follow those guides exactly.
+                Nothing is wrapped: snapshots, refs and actions are the upstream tool's own.
+                Physical input is available; when a control has no semantic action, decide deliberately whether to use
+                --headed, and confirm the result by reading the screen again.
+                Never repeat a submit to "make sure": read the result first.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: tool-desktop-cli
+            name: 'dsh-orb/desktop/cli-path'

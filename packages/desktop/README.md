@@ -71,6 +71,15 @@ disappears about four seconds after the last action.
 - Windows refuses `SetForegroundWindow` from a background process often enough
   that `desktop_raise` reports failure instead of forcing it.
 
+## Raw comparison mode
+
+`lib/cli-path.js` is a separate plugin used only by the temporary `desktop-raw`
+preset: it stages the **unmodified upstream CLI** inside
+`$DSH_HOME/dsh-orb/bin/<version>-<platform>/` and prepends that folder to PATH,
+so a main-window session can call `agent-desktop` exactly as upstream documents
+it. No ribbon, no guard, no ref book, no policy escalation. It exists to answer
+whether upstream is good enough on its own.
+
 ## Tests
 
 ```bash

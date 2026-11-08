@@ -52,6 +52,10 @@
       "types": "./dist/desktop/index.d.ts",
       "default": "./dist/desktop/index.js"
     },
+    "./desktop/cli-path": {
+      "types": "./dist/desktop/cli-path.d.ts",
+      "default": "./dist/desktop/cli-path.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },

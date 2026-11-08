@@ -44,6 +44,30 @@ const TARGETS = {
   },
 }
 
+/** The unmodified upstream CLI, used by the raw test preset. Same release, same checksums. */
+const CLI_TARGETS = {
+  'darwin-arm64': {
+    asset: `agent-desktop-v${VERSION}-aarch64-apple-darwin.tar.gz`,
+    sha256: '219813428bb1ad8decae172faed05c5964a2415170df402e2786ccfa6452ba82',
+    files: ['agent-desktop', 'agent-desktop-macos-helper'],
+  },
+  'darwin-x64': {
+    asset: `agent-desktop-v${VERSION}-x86_64-apple-darwin.tar.gz`,
+    sha256: 'd9dc50226f28d7fc86a2f5b0945f0c206dff6c31e418907749f493b6f9e773e6',
+    files: ['agent-desktop', 'agent-desktop-macos-helper'],
+  },
+  'win32-x64': {
+    asset: `agent-desktop-v${VERSION}-x86_64-pc-windows-msvc.tar.gz`,
+    sha256: 'a4199f741a441cedd349bf56c5eba01783b1261258b498efeb7ec9945220c3e8',
+    files: ['agent-desktop.exe'],
+  },
+  'win32-arm64': {
+    asset: `agent-desktop-v${VERSION}-aarch64-pc-windows-msvc.tar.gz`,
+    sha256: 'd6d8643310c2c13eace2261444d9e4c0d16ca09581f38500983104903604caa6',
+    files: ['agent-desktop.exe'],
+  },
+}
+
 const packageRoot = fileURLToPath(new URL('..', import.meta.url))
 const nativeRoot = join(packageRoot, 'native')
 const cacheRoot = join(nativeRoot, '.cache')
@@ -135,6 +159,42 @@ async function main() {
       console.error(`${key}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  for (const [key, target] of Object.entries(CLI_TARGETS)) {
+    const targetDir = join(nativeRoot, key, 'cli')
+    const marker = join(targetDir, '.source')
+    if (!force && existsSync(marker) && readFileSync(marker, 'utf8').trim() === `${VERSION} ${target.sha256}`) {
+      console.log(`${key} cli: up to date`)
+      continue
+    }
+    const archive = join(cacheRoot, target.asset)
+    const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${target.asset}`
+    console.log(`${key} cli: downloading ${target.asset}`)
+    try {
+      await download(url, archive)
+      const digest = sha256(archive)
+      if (digest !== target.sha256) throw new Error(`checksum mismatch: ${digest} != ${target.sha256}`)
+      const staging = mkdtempSync(join(tmpdir(), 'dsh-orb-desktop-cli-'))
+      try {
+        extract(archive, staging)
+        rmSync(targetDir, { recursive: true, force: true })
+        mkdirSync(targetDir, { recursive: true })
+        for (const file of target.files) {
+          const found = findFile(staging, file)
+          if (found === undefined) throw new Error(`${file} is missing from the archive`)
+          copyFileSync(found, join(targetDir, file))
+          if (!file.endsWith('.exe')) execFileSync('chmod', ['755', join(targetDir, file)])
+        }
+        writeFileSync(marker, `${VERSION} ${target.sha256}\n`)
+      } finally {
+        rmSync(staging, { recursive: true, force: true })
+      }
+      console.log(`${key} cli: ready`)
+    } catch (error) {
+      failed += 1
+      console.error(`${key} cli: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   if (failed > 0) {
     console.error(
       `\n${failed} platform(s) failed. Retry with AGENT_DESKTOP_RELEASE_MIRROR=<mirror> or download the archives `
