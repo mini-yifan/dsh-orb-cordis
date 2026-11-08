@@ -127,7 +127,15 @@ export type HostRequest =
     readonly interactive?: boolean
     readonly compact?: boolean
   }
-  | { readonly op: 'act'; readonly ref: string; readonly action: ActionRequest }
+  | {
+    readonly op: 'act'
+    readonly ref: string
+    readonly action: ActionRequest
+    /** Delivery policy: 0 semantic, 1 focus fallback, 2 physical. Default: 0. */
+    readonly policy?: number
+    /** Override the library's 5 s pre-action wait. */
+    readonly timeout_ms?: number
+  }
   | { readonly op: 'wait'; readonly wait: WaitRequest }
   | { readonly op: 'shutdown' }
 

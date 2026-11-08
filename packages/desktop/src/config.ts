@@ -15,6 +15,10 @@ export interface Config {
   readonly maxChars?: number
   /** Keep the operated window's ribbon on screen this long after the last action. Default: 4000. */
   readonly frameHoldMs?: number
+  /** Refuse an identical action repeated within this window. Default: 12000. */
+  readonly repeatWindowMs?: number
+  /** Allow a denied semantic action to retry with physical input when the window is in front. Default: true. */
+  readonly physicalFallback?: boolean
   /** A borrowed foreground is returned after this long. Default: 90000. */
   readonly raiseMaxMs?: number
   /** App lease lifetime. Default: 120000. */
@@ -30,6 +34,8 @@ export interface ResolvedConfig extends GuardConfig {
   readonly maxChars: number
   readonly idleCloseMs: number
   readonly frameHoldMs: number
+  readonly repeatWindowMs: number
+  readonly physicalFallback: boolean
 }
 
 function positive(value: number | undefined, fallback: number, name: string): number {
@@ -50,6 +56,8 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     maxChars: positive(config.maxChars, 6000, 'maxChars'),
     idleCloseMs: positive(config.idleCloseMs, 600_000, 'idleCloseMs'),
     frameHoldMs: positive(config.frameHoldMs, 4_000, 'frameHoldMs'),
+    repeatWindowMs: positive(config.repeatWindowMs, 12_000, 'repeatWindowMs'),
+    physicalFallback: config.physicalFallback !== false,
     raiseMaxMs: positive(config.raiseMaxMs, DEFAULT_GUARD_CONFIG.raiseMaxMs, 'raiseMaxMs'),
     leaseMs: positive(config.leaseMs, DEFAULT_GUARD_CONFIG.leaseMs, 'leaseMs'),
   }

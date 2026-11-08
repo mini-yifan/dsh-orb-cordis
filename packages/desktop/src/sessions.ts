@@ -27,6 +27,7 @@ const TICK_MS = 5000
 interface Remembered {
   readonly app: string
   readonly refs: ReadonlySet<string>
+  readonly elements: ReadonlyMap<string, { role: string; name: string }>
   readonly at: number
   readonly windowId?: string
   readonly windowTitle?: string
@@ -41,11 +42,16 @@ export class RefBook {
    * @param snapshot - the observation.
    * @param refs - refs the renderer emitted.
    */
-  remember(snapshot: SnapshotData, refs: readonly string[]): void {
+  remember(
+    snapshot: SnapshotData,
+    refs: readonly string[],
+    elements: ReadonlyMap<string, { role: string; name: string }> = new Map(),
+  ): void {
     if (snapshot.snapshotId === '' || refs.length === 0) return
     this.bySnapshot.set(snapshot.snapshotId, {
       app: snapshot.app,
       refs: new Set(refs),
+      elements,
       at: Date.now(),
       ...snapshot.windowId !== undefined ? { windowId: snapshot.windowId } : {},
       ...snapshot.windowTitle !== undefined ? { windowTitle: snapshot.windowTitle } : {},
@@ -62,16 +68,25 @@ export class RefBook {
    * @param ref - qualified ref.
    * @returns the app and whether the model was shown this exact ref.
    */
-  lookup(ref: string): { app: string; known: boolean; windowId?: string; windowTitle?: string } | undefined {
+  lookup(ref: string): {
+    app: string
+    known: boolean
+    role?: string
+    name?: string
+    windowId?: string
+    windowTitle?: string
+  } | undefined {
     const match = /^@([^:]+):/.exec(ref)
     if (match === null) return undefined
     const snapshotId = match[1]
     if (snapshotId === undefined) return undefined
     const entry = this.bySnapshot.get(snapshotId)
     if (entry === undefined) return undefined
+    const element = entry.elements.get(ref)
     return {
       app: entry.app,
       known: entry.refs.has(ref),
+      ...element !== undefined ? { role: element.role, name: element.name } : {},
       ...entry.windowId !== undefined ? { windowId: entry.windowId } : {},
       ...entry.windowTitle !== undefined ? { windowTitle: entry.windowTitle } : {},
     }

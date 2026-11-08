@@ -27,6 +27,7 @@ import {
   screenLockOwner,
 } from './guard.ts'
 import { chooseWindow } from './frame.ts'
+import { POLICY } from './ffi.ts'
 import { renderSnapshot } from './render.ts'
 import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData } from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
@@ -98,6 +99,45 @@ async function gate(call: Call, app: string, config: ResolvedConfig): Promise<vo
   }
 }
 
+/** The library names keys in lower case; models write `Return` and `Escape`. */
+const KEY_ALIASES: Record<string, string> = {
+  return: 'enter',
+  enter: 'enter',
+  esc: 'escape',
+  escape: 'escape',
+  tab: 'tab',
+  space: 'space',
+  backspace: 'backspace',
+  delete: 'delete',
+  del: 'delete',
+  up: 'up',
+  down: 'down',
+  left: 'left',
+  right: 'right',
+}
+
+/**
+ * Normalize a model-supplied key name.
+ * @param key - raw key.
+ * @returns the library's name for it.
+ */
+export function normalizeKey(key: string): string {
+  const trimmed = key.trim()
+  const lower = trimmed.toLowerCase()
+  return KEY_ALIASES[lower] ?? lower
+}
+
+/** Whether this action submits something whose result cannot be undone. */
+export function isSubmitAction(action: ActionRequest): boolean {
+  return action.kind === 'press_key' && normalizeKey(action.key ?? '') === 'enter'
+}
+
+interface EffectRecord {
+  readonly at: number
+  /** False only when the library said nothing was delivered. */
+  readonly landed: boolean
+}
+
 function actionOf(input: {
   action: ActionKind
   text?: string
@@ -152,6 +192,7 @@ export function registerDesktopTools(
 ): void {
   const activate = dependencies.activate ?? activateApp
   let holdTimer: NodeJS.Timeout | undefined
+  const effects = new Map<string, EffectRecord>()
 
   /**
    * Draw the warm ribbon around the window this action touches, when the helper
@@ -291,7 +332,7 @@ export function registerDesktopTools(
           maxNodes: args.max_nodes ?? config.maxNodes,
           maxChars: config.maxChars,
         })
-        call.entry.refs.remember(snapshot, rendered.refs)
+        call.entry.refs.remember(snapshot, rendered.refs, rendered.elements)
         return { text: rendered.text }
       } catch (error) {
         return { text: `desktop_snapshot failed\n${failureText(asHostError(error))}` }
@@ -304,8 +345,12 @@ export function registerDesktopTools(
     description:
       'Operate one element by the ref a snapshot showed you. Actions: click, double_click, right_click, set_value, '
       + 'type_text, press_key, scroll, toggle, check, uncheck, expand, collapse, select, clear. '
-      + 'Prefer set_value over type_text for fields that accept a value. Everything runs headless: no mouse movement, '
-      + 'no focus stealing. If it fails with POLICY_DENIED or USER_IN_USE, do not retry — take another route or report back.',
+      + 'Prefer set_value over type_text for fields that accept a value. Actions run headless first: no mouse movement, '
+      + 'no focus stealing. If a control exposes no semantic action and its window is in front, the call retries once '
+      + 'with physical input and says so in the result. '
+      + 'The same action on the same control is refused for about 12 seconds after it may have landed, so never repeat '
+      + 'a click or Enter to "make sure": a submit result already tells you to confirm with desktop_wait or a fresh '
+      + 'snapshot instead. Key names are case-insensitive; Return is accepted for enter.',
     parameters: {
       ref: { type: 'string', required: true, description: 'A fully qualified ref from the latest snapshot.' },
       action: {
@@ -351,23 +396,81 @@ export function registerDesktopTools(
       const action = actionOf({
         action: args.action as ActionKind,
         ...args.text !== undefined ? { text: args.text } : {},
-        ...args.key !== undefined ? { key: args.key } : {},
+        ...args.key !== undefined ? { key: normalizeKey(args.key) } : {},
         ...args.modifiers !== undefined ? { modifiers: args.modifiers } : {},
         ...args.direction !== undefined ? { direction: args.direction } : {},
         ...args.action === 'scroll' ? { amount: args.amount ?? 3 } : {},
       })
+      const effectKey = [
+        call.sessionId,
+        known.app,
+        known.role ?? '',
+        known.name ?? '',
+        action.kind,
+        action.text ?? action.key ?? '',
+      ].join('\u0000')
+      const previous = effects.get(effectKey)
+      if (previous !== undefined && previous.landed && Date.now() - previous.at < config.repeatWindowMs) {
+        return {
+          text: 'IDENTICAL_ACTION: the same action on the same control already ran '
+            + `${Math.round((Date.now() - previous.at) / 1000)}s ago and may have landed. `
+            + 'Do not repeat it. Confirm the result with desktop_wait (kind=text) or a fresh desktop_snapshot; '
+            + 'if the result is visible, continue from there.',
+        }
+      }
       try {
         await gate(call, known.app, config)
         await showRibbon(call, known.app, {
           ...known.windowId !== undefined ? { windowId: known.windowId } : {},
           ...known.windowTitle !== undefined ? { windowTitle: known.windowTitle } : {},
         })
-        const data = await call.client.request({ op: 'act', ref: args.ref, action })
+        let data: unknown
+        let escalated = false
+        try {
+          data = await call.client.request({ op: 'act', ref: args.ref, action, policy: POLICY.headless })
+        } catch (error) {
+          const hostError = asHostError(error)
+          // Only pointer and key delivery may escalate: a physical click makes no sense for
+          // a value write, and escalating one would turn a harmless refusal into a stray click.
+          const escalatable = action.kind === 'click' || action.kind === 'double_click'
+            || action.kind === 'right_click' || action.kind === 'press_key'
+          const retryable = escalatable
+            && (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED')
+          const state = retryable ? await osState(call.client) : undefined
+          const borrowed = raisedApp()?.owner === call.sessionId && raisedApp()?.app === known.app
+          const inFront = state?.app === known.app || borrowed
+          if (!retryable || !config.physicalFallback || !inFront) throw error
+          // The control has no semantic path, but the window is in front: deliver with
+          // real input, exactly like a person would. The ribbon already marks the window.
+          data = await call.client.request({
+            op: 'act',
+            ref: args.ref,
+            action,
+            policy: POLICY.headed,
+            // Do not sit in the library's 5 s preflight when the control never becomes usable.
+            timeout_ms: 2_000,
+          })
+          escalated = true
+        }
+        effects.set(effectKey, { at: Date.now(), landed: true })
         refreshLease(known.app, call.sessionId)
-        return { text: actionText(data) }
+        const lines = [actionText(data)]
+        if (escalated) lines.push('note: semantic control was unavailable; this ran as physical input.')
+        if (isSubmitAction(action)) {
+          lines.push(
+            'note: a submit was sent. Give the app a moment, then confirm with desktop_wait (kind=text)'
+            + ' or a fresh snapshot. Never press it again to "make sure".',
+          )
+        }
+        return { text: lines.join('\n') }
       } catch (error) {
+        const hostError = asHostError(error)
+        effects.set(effectKey, {
+          at: Date.now(),
+          landed: hostError.delivery !== 'not_delivered' && hostError.code !== 'INVALID_ARGS',
+        })
         releaseLease(known.app, call.sessionId)
-        return { text: `desktop_act failed\n${failureText(asHostError(error))}` }
+        return { text: `desktop_act failed\n${failureText(hostError)}` }
       }
     },
   }))

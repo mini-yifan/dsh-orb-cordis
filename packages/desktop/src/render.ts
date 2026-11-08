@@ -24,6 +24,8 @@ export interface RenderedTree {
   readonly text: string
   /** Every ref that reached the model; the session refuses refs outside this set. */
   readonly refs: readonly string[]
+  /** Role and name per emitted ref, for repeat detection and guidance. */
+  readonly elements: ReadonlyMap<string, { readonly role: string; readonly name: string }>
   readonly nodes: number
   /** Whether the node or character budget cut something. */
   readonly truncated: boolean
@@ -81,6 +83,7 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS
   const lines: string[] = []
   const refs: string[] = []
+  const elements = new Map<string, { role: string; name: string }>()
   let nodes = 0
   let chars = 0
   let truncated = false
@@ -111,7 +114,10 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
     const indent = '  '.repeat(depth)
     lines.push(`${indent}${nodeLine(node)}`)
     chars += indent.length + nodeLine(node).length + 1
-    if (node.ref !== undefined) refs.push(node.ref)
+    if (node.ref !== undefined) {
+      refs.push(node.ref)
+      elements.set(node.ref, { role: node.role, name: node.name ?? '' })
+    }
     const children = node.children ?? []
     if (node.childrenCount !== undefined && node.childrenCount > 0 && children.length === 0) {
       const note = `${indent}  … ${node.childrenCount} hidden by depth (snapshot a deeper level)`
@@ -139,5 +145,5 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
   if (truncated) {
     lines.push('note: output cut at the node budget; re-snapshot with a deeper level or a larger max_nodes for the part you need.')
   }
-  return { text: lines.join('\n'), refs, nodes, truncated }
+  return { text: lines.join('\n'), refs, elements, nodes, truncated }
 }

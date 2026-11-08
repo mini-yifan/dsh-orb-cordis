@@ -52,8 +52,15 @@ const DIRECTION: Record<ScrollDirection, number> = { up: 0, down: 1, left: 2, ri
 
 const MODIFIER: Record<Modifier, number> = { cmd: 0, ctrl: 1, alt: 2, shift: 3 }
 
-/** Semantic-only policy. Physical input and focus fallback are never requested. */
-const POLICY_HEADLESS = 0
+/** Delivery policies the library accepts. */
+export const POLICY = {
+  /** Semantic actions only; no focus change and no synthetic input. */
+  headless: 0,
+  /** May focus an element without moving the cursor. */
+  focusFallback: 1,
+  /** May move the cursor and post synthetic keyboard events. */
+  headed: 2,
+} as const
 
 /** Result codes that carry a model-facing meaning. */
 export const RESULT = {
@@ -94,7 +101,13 @@ export interface NativeLibrary {
   createProbeAdapter(): unknown
   destroyAdapter(adapter: unknown): void
   snapshot(adapter: unknown, app: string | null, depth: number, interactive: boolean, compact: boolean): { ok: boolean; json?: string; error?: NativeError }
-  act(adapter: unknown, ref: string, action: ActionRequest): { ok: boolean; json?: string; error?: NativeError }
+  act(
+    adapter: unknown,
+    ref: string,
+    action: ActionRequest,
+    policy?: number,
+    timeoutMs?: number,
+  ): { ok: boolean; json?: string; error?: NativeError }
   wait(adapter: unknown, wait: import('./protocol.ts').WaitRequest): { ok: boolean; json?: string; error?: NativeError }
   status(adapter: unknown): { ok: boolean; json?: string; error?: NativeError }
   apps(adapter: unknown): { ok: true; apps: readonly { name: string; pid: number; bundleId?: string }[] } | { ok: false; error: NativeError }
@@ -229,6 +242,10 @@ export function loadNative(dir: string): NativeLibrary {
   const ad_execute = lib.func(
     'int ad_execute_by_ref(void *adapter, const char *ref_id, const AdAction *action,'
     + ' int32_t policy, _Out_ void **out)',
+  )
+  const ad_execute_timeout = lib.func(
+    'int ad_execute_by_ref_timeout(void *adapter, const char *ref_id, const AdAction *action,'
+    + ' int32_t policy, int64_t timeout_ms, _Out_ void **out)',
   )
   const ad_wait = lib.func('int ad_wait(void *adapter, const AdWaitArgs *args, _Out_ void **out)')
   const ad_status = lib.func('int ad_status(void *adapter, _Out_ void **out)')
@@ -408,9 +425,11 @@ export function loadNative(dir: string): NativeLibrary {
       const code = ad_snapshot(adapter, app, 0, Math.min(255, Math.max(1, depth)), interactive, compact, out)
       return fromEnvelope(code, out[0])
     },
-    act: (adapter, ref, action) => {
+    act: (adapter, ref, action, policy = POLICY.headless, timeoutMs) => {
       const out: unknown[] = [null]
-      const code = ad_execute(adapter, ref, buildAction(action), POLICY_HEADLESS, out)
+      const code = timeoutMs === undefined
+        ? ad_execute(adapter, ref, buildAction(action), policy, out)
+        : ad_execute_timeout(adapter, ref, buildAction(action), policy, timeoutMs, out)
       return fromEnvelope(code, out[0])
     },
     wait: (adapter, wait) => {

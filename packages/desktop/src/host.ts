@@ -269,7 +269,15 @@ function main(): void {
         if (ref === '' || action === undefined || typeof action !== 'object') {
           return fail(id, { code: 'INVALID_ARGS', message: 'act needs ref and action', resultCode: -10 })
         }
-        const result = native.act(adapter, ref, action as import('./protocol.ts').ActionRequest)
+        const policy = typeof request.policy === 'number' ? request.policy : 0
+        const timeoutMs = typeof request.timeout_ms === 'number' ? request.timeout_ms : undefined
+        const result = native.act(
+          adapter,
+          ref,
+          action as import('./protocol.ts').ActionRequest,
+          policy,
+          timeoutMs,
+        )
         if (!result.ok) return fail(id, result.error)
         writeLine({ id, ok: true, data: parseJson(result.json) })
         return

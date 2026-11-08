@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveConfig } from '../src/config.ts'
 import { guardState } from '../src/guard.ts'
+import { isSubmitAction, normalizeKey } from '../src/tools.ts'
 import { RefBook } from '../src/sessions.ts'
 import { registerDesktopTools } from '../src/tools.ts'
 
@@ -23,22 +24,29 @@ const snapshotData = {
   },
 }
 
-function harness() {
+function harness(options: { frontmost?: string, denyHeadless?: boolean } = {}) {
   const tools = new Map<string, ToolLike>()
-  const calls: { op: string }[] = []
+  const calls: { op: string, policy?: number }[] = []
   const activated: string[] = []
   const refs = new RefBook()
   const client = {
     alive: true,
-    async request(request: { op: string }) {
+    async request(request: { op: string, policy?: number }) {
       calls.push(request)
       switch (request.op) {
-        case 'state': return { idleMs: 120_000, app: 'Word', window: 'Doc' }
+        case 'state': return { idleMs: 120_000, app: options.frontmost ?? 'Word', window: 'Doc' }
         case 'status':
           return { platform: 'macos', version: '1.2.0', permissions: { accessibility: { state: 'granted' } } }
         case 'apps': return [{ name: 'Notes', pid: 12, bundleId: 'com.apple.Notes' }]
         case 'snapshot': return snapshotData
-        case 'act': return { action: 'click', ref_id: '@s1:e2', disposition: { delivery: 'delivered_verified' } }
+        case 'act':
+          if (options.denyHeadless === true && request.policy === 0) {
+            throw Object.assign(new Error('Target is not actionable: supported_action'), {
+              code: 'POLICY_DENIED',
+              delivery: 'not_delivered',
+            })
+          }
+          return { action: 'click', ref_id: '@s1:e2', disposition: { delivery: 'delivered_verified' } }
         case 'wait': return { found: true, elapsed_ms: 40 }
         default: return {}
       }
@@ -178,4 +186,61 @@ test('release says when nothing was borrowed', async () => {
   assert.ok(release)
   const result = await release.execute({}, exec)
   assert.match(result.text, /nothing was borrowed/)
+})
+
+test('repeating the same action inside the guard window is refused', async () => {
+  const { tools, exec } = harness()
+  const snapshot = tools.get('desktop_snapshot')
+  const act = tools.get('desktop_act')
+  assert.ok(snapshot && act)
+  await snapshot.execute({ app: 'Notes' }, exec)
+  const first = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.match(first.text, /^ok/)
+  const second = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.match(second.text, /IDENTICAL_ACTION/)
+})
+
+test('a denied semantic action retries as physical input when the window is in front', async () => {
+  const { tools, exec, calls } = harness({ frontmost: 'Notes', denyHeadless: true })
+  const snapshot = tools.get('desktop_snapshot')
+  const act = tools.get('desktop_act')
+  assert.ok(snapshot && act)
+  await snapshot.execute({ app: 'Notes' }, exec)
+  const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.match(result.text, /^ok/)
+  assert.match(result.text, /physical input/)
+  const policies = calls.filter(call => call.op === 'act').map(call => call.policy)
+  assert.deepEqual(policies, [0, 2])
+})
+
+test('a denied semantic action stays denied when the window is not in front', async () => {
+  const { tools, exec, calls } = harness({ frontmost: 'Word', denyHeadless: true })
+  const snapshot = tools.get('desktop_snapshot')
+  const act = tools.get('desktop_act')
+  assert.ok(snapshot && act)
+  await snapshot.execute({ app: 'Notes' }, exec)
+  const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.match(result.text, /POLICY_DENIED/)
+  assert.equal(calls.filter(call => call.op === 'act').length, 1)
+})
+
+test('submitting warns against pressing again', async () => {
+  const { tools, exec } = harness()
+  const snapshot = tools.get('desktop_snapshot')
+  const act = tools.get('desktop_act')
+  assert.ok(snapshot && act)
+  await snapshot.execute({ app: 'Notes' }, exec)
+  const result = await act.execute({ ref: '@s1:e2', action: 'press_key', key: 'Return' }, exec)
+  assert.match(result.text, /submit was sent/)
+  assert.doesNotMatch(result.text, /INVALID_ARGS/)
+})
+
+
+test('key aliases and submit detection', () => {
+  assert.equal(normalizeKey('Return'), 'enter')
+  assert.equal(normalizeKey('ESC'), 'escape')
+  assert.equal(normalizeKey('s'), 's')
+  assert.equal(isSubmitAction({ kind: 'press_key', key: 'enter' }), true)
+  assert.equal(isSubmitAction({ kind: 'press_key', key: 'tab' }), false)
+  assert.equal(isSubmitAction({ kind: 'click' }), false)
 })

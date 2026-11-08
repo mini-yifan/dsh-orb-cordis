@@ -39,11 +39,13 @@ const GUIDANCE: Record<string, Guidance> = {
       + ' Do not use physical input. Try another route, or stop and report back to the foreground agent.',
   },
   ACTION_FAILED: {
-    next: 'The action was delivered but did not complete. Read the state again before repeating anything.',
+    next: 'The action may have been delivered but could not be confirmed. Read the state again'
+      + ' (a fresh snapshot or desktop_wait) before deciding anything — never repeat it blindly.',
   },
   POLICY_DENIED: {
-    next: 'The library refused because this step needs the window in front. Call desktop_raise for that app,'
-      + ' then retry once. If the user is using the app, do not raise it: find another way or report back.',
+    next: 'This control exposes no semantic action and physical delivery was refused.'
+      + ' When the window is in front the tool retries with physical input automatically; if it still fails,'
+      + ' the control is disabled or unreachable. Read the state again — do not repeat the same action.',
   },
   PERM_DENIED: {
     next: 'The system denies desktop access. Stop and tell the foreground agent the user must enable'
