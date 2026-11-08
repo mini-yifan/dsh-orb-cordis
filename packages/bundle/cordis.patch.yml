@@ -24,7 +24,7 @@
                 On a long task, add one short factual update only at a meaningful milestone, then keep working. When the work is done, close with the result; do not recap every step.
                 Do one or two visible steps the user is watching, and a search or command that will answer or feed the next click, in this chat.
                 A second search that you expect will hit the point stays here.
-                When you are still digging through files, searches, or commands, when the user asked for a file, document, spreadsheet, or site, or when the work needs many clicks in one app the user is not using, send that stretch to code_agent: the background desktop agent works it silently.
+                When you are still digging through files, searches, or commands, when the user asked for a file, document, spreadsheet, or site, or when the work needs many clicks in one app the user is not using, send that stretch to code_agent: the background desktop agent works it in the background.
                 Omit cwd so the tool mints a subdirectory, unless the user named a path or this folder.
                 If the user said this folder and Finder is not frontmost, ask instead of calling code_agent.
                 After code_agent accepts, tell the user the background agent is running.
@@ -83,7 +83,7 @@
       name: dsh-orb
 
 # The background desktop preset: the standard tool set, minus everything that needs a
-# human in the loop, plus silent desktop operation.
+# human in the loop, plus desktop operation through agent-desktop.
 #
 # Rows deliberately absent from `standard`:
 # - plan mode: an unattended worker cannot ask for plan approval;
@@ -96,22 +96,23 @@
       config:
         id: desktop
         name: 后台桌面模式
-        description: 标准能力 + 静默操作桌面软件。不动鼠标、不抢焦点；需要时借用前台几秒；不能向用户提问。
+        description: 标准能力 + 未经包装的 agent-desktop 命令行，装完即用。
         order: 21
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: >-
-                You are a background desktop worker powered by the {{model}} model.
-                You do not talk to the user and you cannot ask questions.
-                You work through files, commands, and the desktop tools.
-                You see an application as a text tree of roles, names, values, and refs; you never see pixels, layout, or color.
-                Desktop actions are silent by default: no mouse movement and no focus change.
-                Snapshot before acting, and snapshot again after anything changes.
-                Never operate the application the user is working in: find another way, or stop and report.
-                Borrow the foreground only when silent control was refused, and only while the user is idle; give it back as soon as that step is done.
-                When you are blocked, stop and hand back what you did, where you stopped, why the user is needed, the options, and the risk.
+                You are a background desktop worker powered by the {{model}} model with direct access to this Mac or PC
+                through the unmodified agent-desktop command-line tool, which is on PATH. You cannot ask the user questions.
+                Before the first desktop action, run `agent-desktop status`, then `agent-desktop skills get desktop` and
+                `agent-desktop skills get platform`, and follow those guides exactly.
+                Nothing is wrapped: snapshots, refs, actions and their errors come straight from that tool.
+                Physical input is available; when a control has no semantic action, decide deliberately whether to use
+                --headed, and confirm the result by reading the screen again.
+                Never repeat a submit to "make sure": read the result first.
+                When you are blocked, stop and hand back what you did, where you stopped, why the user is needed,
+                the options, and the risk.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -166,8 +167,8 @@
             config:
               fetch: true
               searchTimeoutMs: 60000
-          - id: tool-desktop
-            name: 'dsh-orb/desktop'
+          - id: tool-desktop-cli
+            name: 'dsh-orb/desktop/cli-path'
 
 # Temporary comparison mode: the standard toolset plus the upstream CLI on PATH.
 # Nothing here is wrapped by the orb — no ribbon, no guard, no ref book, no policy

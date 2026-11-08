@@ -52,12 +52,12 @@ export const STATUS_TOOL_NAME = 'code_agent_status'
 /** Model-visible tool that stops one of this Computer Use caller's Code sessions. */
 export const STOP_TOOL_NAME = 'code_agent_stop'
 
-/** Agent preset the delegated session runs: standard tools plus silent desktop control. */
+/** Agent preset the delegated session runs: standard tools plus the upstream agent-desktop CLI. */
 export const DESKTOP_PRESET = 'desktop'
 
-const DESCRIPTION = 'Delegate one stretch of a task — files, commands, and silent desktop operation — to a background desktop agent that appears in the desktop sidebar like a user-created session. '
+const DESCRIPTION = 'Delegate one stretch of a task — files, commands, and desktop operation — to a background desktop agent that appears in the desktop sidebar like a user-created session. '
   + 'Do the stretch in this chat when it is visible GUI or when one search or one command will answer or feed the next click. A second search that you expect will hit the point stays here. '
-  + 'The background agent operates applications without moving the mouse or taking focus, so multi-step GUI work belongs there too. Do the stretch in this chat only when the user is watching you do it, or when one click decides the next step. '
+  + 'The background agent drives applications through the upstream agent-desktop CLI: it acts on accessibility trees and only falls back to the mouse or the keyboard for a control that has no semantic action. Multi-step GUI work belongs there too. Do the stretch in this chat only when the user is watching you do it, or when one click decides the next step. '
   + 'Do not call this tool for a short lookup such as today\'s weather or current headlines — use web_search or web_fetch in this chat. '
   + 'Call this tool when you are still digging through files, searches, or commands, or when the user asked for a file, document, spreadsheet, or site. The last step being a click does not keep the investigation here. '
   + 'Omit session_id to create a new blank standard session: write a Word document, make a gobang game, write an HTML research report, or any task that is not a follow-up to a previous code_agent result. '

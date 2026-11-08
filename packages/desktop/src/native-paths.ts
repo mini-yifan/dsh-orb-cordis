@@ -31,6 +31,11 @@ export function libraryName(key: NativeKey): string {
   return 'libagent_desktop_ffi.so'
 }
 
+/** File name of the upstream CLI for a platform. */
+export function cliName(key: NativeKey): string {
+  return key.startsWith('win32') ? 'agent-desktop.exe' : 'agent-desktop'
+}
+
 /** macOS-only companion the library looks for beside itself. */
 export function helperName(key: NativeKey): string | undefined {
   return key.startsWith('darwin') ? 'agent-desktop-macos-helper' : undefined
@@ -66,6 +71,23 @@ export function packagedNativeDir(key: NativeKey, from: string = import.meta.url
   for (const base of bases) {
     const dir = join(fileURLToPath(base), key)
     if (existsSync(join(dir, libraryName(key)))) return dir
+  }
+  return undefined
+}
+
+/**
+ * The packaged folder that holds one platform's upstream CLI.
+ * Checked separately from the library, because the CLI is what the background
+ * preset needs and the library may be absent in a trimmed package.
+ * @param key - platform key.
+ * @param from - module URL of this file.
+ * @returns the folder, or undefined when the package ships no CLI for it.
+ */
+export function packagedCliDir(key: NativeKey, from: string = import.meta.url): string | undefined {
+  const bases = [new URL('./native/', from), new URL('../native/', from)]
+  for (const base of bases) {
+    const dir = join(fileURLToPath(base), key, 'cli')
+    if (existsSync(join(dir, cliName(key)))) return dir
   }
   return undefined
 }

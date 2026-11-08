@@ -1,11 +1,12 @@
 /**
  * Put the unmodified upstream CLI on the child shell PATH.
  *
- * This exists only for the raw test preset: it stages the upstream
- * `agent-desktop` binary (and its macOS helper) inside the orb's data folder and
- * prepends that folder to this process's PATH, so every bash tool can call
- * `agent-desktop` exactly as its own documentation describes. Nothing about the
- * binary is wrapped, filtered or guarded.
+ * The background desktop preset drives `agent-desktop` exactly as its own
+ * documentation describes: no wrapper, no guard, no ref book. This plugin only
+ * makes the command exist: it stages the binary shipped inside the package into
+ * the orb's data folder and prepends that folder to this process's PATH, so any
+ * bash or pwsh child can call `agent-desktop` without the user configuring
+ * anything.
  * @module @dsh-orb/desktop/src/cli-path
  */
 
@@ -13,10 +14,16 @@ import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { NATIVE_VERSION, nativeKey, packagedNativeDir } from './native-paths.ts'
+import { NATIVE_VERSION, cliName, nativeKey, packagedCliDir, type NativeKey } from './native-paths.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'dsh-orb-desktop-cli'
+
+/** Folder holding this version's staged CLI. */
+function stageDir(key: NativeKey): string {
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(home, 'dsh-orb', 'bin', `${NATIVE_VERSION}-${key}`)
+}
 
 /**
  * Stage the CLI once and prepend it to PATH.
@@ -25,20 +32,18 @@ export const name = 'dsh-orb-desktop-cli'
 export function apply(): void {
   try {
     const key = nativeKey(process.platform, process.arch)
-    if (key === undefined) return
-    const packaged = packagedNativeDir(key)
-    if (packaged === undefined) {
-      console.error('dsh-orb: desktop CLI is missing; run fetch-native before packing')
+    if (key === undefined) {
+      console.error(`dsh-orb: no agent-desktop build for ${process.platform}-${process.arch}`)
       return
     }
-    const source = join(packaged, 'cli')
-    if (!existsSync(source)) {
-      console.error('dsh-orb: desktop CLI archive was not unpacked into native/<platform>/cli')
+    const source = packagedCliDir(key)
+    if (source === undefined) {
+      console.error('dsh-orb: agent-desktop is missing from the package (run fetch-native before packing)')
       return
     }
-    const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-    const target = join(home, 'dsh-orb', 'bin', `${NATIVE_VERSION}-${key}`)
-    if (!existsSync(join(target, 'agent-desktop'))) {
+    const target = stageDir(key)
+    const binary = join(target, cliName(key))
+    if (!existsSync(binary)) {
       mkdirSync(target, { recursive: true })
       for (const entry of readdirSync(source)) {
         const from = join(source, entry)
@@ -53,6 +58,6 @@ export function apply(): void {
       process.env.PATH = `${target}${delimiter}${path}`
     }
   } catch (error) {
-    console.error(`dsh-orb: desktop CLI staging failed: ${error instanceof Error ? error.message : String(error)}`)
+    console.error(`dsh-orb: agent-desktop staging failed: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
