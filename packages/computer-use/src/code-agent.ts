@@ -52,21 +52,24 @@ export const STATUS_TOOL_NAME = 'code_agent_status'
 /** Model-visible tool that stops one of this Computer Use caller's Code sessions. */
 export const STOP_TOOL_NAME = 'code_agent_stop'
 
-/** Agent preset the delegated session runs: standard tools plus the upstream agent-desktop CLI. */
+/**
+ * Agent preset every delegated session runs. It still presents itself as a
+ * standard coding worker to the Computer Use agent; the desktop ability is not
+ * advertised, so the caller keeps doing visible GUI itself.
+ */
 export const DESKTOP_PRESET = 'desktop'
 
-const DESCRIPTION = 'Delegate one stretch of a task — files, commands, and desktop operation — to a background desktop agent that appears in the desktop sidebar like a user-created session. '
+const DESCRIPTION = 'Delegate one stretch of file search or file production to a standard-mode Code agent that appears in the desktop sidebar like a user-created session. '
   + 'Do the stretch in this chat when it is visible GUI or when one search or one command will answer or feed the next click. A second search that you expect will hit the point stays here. '
-  + 'The background agent drives applications through the upstream agent-desktop CLI: it acts on accessibility trees and only falls back to the mouse or the keyboard for a control that has no semantic action. Multi-step GUI work belongs there too. Do the stretch in this chat only when the user is watching you do it, or when one click decides the next step. '
+  + 'Do not call this tool for visible GUI work such as opening WeChat or clicking a button in Pages — use the GUI tools instead. '
   + 'Do not call this tool for a short lookup such as today\'s weather or current headlines — use web_search or web_fetch in this chat. '
   + 'Call this tool when you are still digging through files, searches, or commands, or when the user asked for a file, document, spreadsheet, or site. The last step being a click does not keep the investigation here. '
   + 'Omit session_id to create a new blank standard session: write a Word document, make a gobang game, write an HTML research report, or any task that is not a follow-up to a previous code_agent result. '
   + 'Pass session_id with the id returned by an earlier code_agent result when continuing the same artifact, for example making that Word document\'s font green, or another stretch of the same investigation. '
   + 'Do not pass a previous id when the new work is unrelated. '
   + 'session_id must be a session this Computer Use agent started. '
-  + 'The background agent cannot ask the user anything: when a step needs a decision it stops and reports back, and you ask the user. '
-  + 'task is the stretch to enqueue. The call returns after the background session accepts the message; it does not wait for that session to finish. '
-  + 'Tell the user the background desktop agent is running. Continue with a GUI action in this turn only when it does not need this result; otherwise end the turn. Do not call wait, long_wait, or bash sleep to poll that session. '
+  + 'task is the stretch to enqueue. The call returns after the standard session accepts the message; it does not wait for that session to finish. '
+  + 'Tell the user the background Code agent is running. Continue with a GUI action in this turn only when it does not need this result; otherwise end the turn. Do not call wait, long_wait, or bash sleep to poll that session. '
   + 'A plugin notice arrives later when that session is idle and this session is idle; then decide again: do remaining GUI, or call code_agent with that session_id for another stretch, and tell the user the short conclusion. Do not recite a long report. '
   + 'Pass cwd when the user named a path or said this folder and <frontmost_folder> is present. '
   + 'Omit cwd to create a new subdirectory under this session\'s workspace. '
@@ -76,15 +79,11 @@ const DESCRIPTION = 'Delegate one stretch of a task — files, commands, and des
  * Role text appended to every queued `code_agent` task.
  * The completion notice keeps the model task only.
  */
-export const BACKGROUND_ROLE = 'You are the background worker for a Computer Use session. You do not talk to the user and you cannot ask questions. '
-  + 'You see an application as a text tree of roles, names, values and refs; you never see pixels, layout or color. '
-  + 'Desktop tools run headless by default: no pointer movement and no focus change. Take a snapshot before operating anything, and snapshot again after every change. '
-  + 'Never operate the application the user is working in. If the user is using it, find another way — a file, a command, another app; if none works, stop and report back. '
-  + 'Only when headless control is refused may you borrow the foreground with desktop_raise, and only while the user is idle. Release it with desktop_release as soon as that step is done. '
+export const BACKGROUND_ROLE = 'You are the background worker for a Computer Use session. You do not talk to the user. '
+  + 'You can operate applications on this computer when the task needs it. '
   + 'If this task asks for a file, document, spreadsheet, or site, produce it, reply with its path, and stop. '
-  + 'Otherwise search, run commands, or operate the app only until you can answer, including a second search when the first missed the point. '
-  + 'Reply in a few sentences with the paths or results that matter, then stop. Do not write a report or create extra files. '
-  + 'When something is genuinely blocked (no permission, no semantic action, an app you must not touch), stop and hand back: what you did, where you stopped, why the user is needed, the options, and the risk. Never guess and never ask.'
+  + 'Otherwise search, run commands, or operate the app until you can answer, including a second search when the first missed the point. '
+  + 'Reply in a few sentences with the paths or results that matter, then stop. Do not write a report or create extra files.'
 
 const RUNNING_RESULT = 'Tell the user the background Code agent is running. Continue with a GUI action in this turn only when it does not need this result; otherwise end the turn.'
 
@@ -386,9 +385,7 @@ export function apply(ctx: Context): void {
           throw new Error(`code_agent cannot continue subagent session "${sessionId}"`)
         }
         if (header.agentPreset !== DESKTOP_PRESET && header.agentPreset !== 'standard') {
-          throw new Error(
-            `code_agent can continue only a background desktop session, not "${header.agentPreset ?? 'unknown'}"`,
-          )
+          throw new Error(`code_agent can continue only a background session, not "${header.agentPreset ?? 'unknown'}"`)
         }
         if (args.cwd !== undefined && header.cwd !== undefined && args.cwd !== header.cwd) {
           throw new Error(`code_agent cwd "${args.cwd}" does not match session "${sessionId}" cwd "${header.cwd}"`)

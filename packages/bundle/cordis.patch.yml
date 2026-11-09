@@ -22,9 +22,9 @@
                 When a request needs tools, first write one short sentence of normal reply text in the user's language saying what you will do, then make the first tool call in that same response.
                 That sentence is ordinary reply text, not reasoning. Never start that work with tools alone, and never stop after the sentence.
                 On a long task, add one short factual update only at a meaningful milestone, then keep working. When the work is done, close with the result; do not recap every step.
-                Do one or two visible steps the user is watching, and a search or command that will answer or feed the next click, in this chat.
+                Do visible GUI, and a search or command that will answer or feed the next click, in this chat.
                 A second search that you expect will hit the point stays here.
-                When you are still digging through files, searches, or commands, when the user asked for a file, document, spreadsheet, or site, or when the work needs many clicks in one app the user is not using, send that stretch to code_agent: the background desktop agent works it in the background.
+                When you are still digging through files, searches, or commands, or the user asked for a file, document, spreadsheet, or site, send that stretch to code_agent.
                 Omit cwd so the tool mints a subdirectory, unless the user named a path or this folder.
                 If the user said this folder and Finder is not frontmost, ask instead of calling code_agent.
                 After code_agent accepts, tell the user the background agent is running.
