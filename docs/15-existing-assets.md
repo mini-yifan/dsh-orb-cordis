@@ -35,7 +35,7 @@
 | **dsh-orb**（本仓库） | 桌面悬浮球 + Computer Use + 双轨 Agent | MIT | 0.2.x | 能力 A 桌面、能力 B 的 Agent/后台模式 | 直接用 / 直接改 / 参考 |
 | **dsh-Go** | Android DSH 客户端 + 手机操控 + 远程客户端 | AGPL-3.0；`sdk/`、`examples/` MIT | 1.0.x | 能力 A 手机、能力 B 手机端/远程 | 直接改 / 参考 |
 | **ds-harness-remote** | 账号/设备/E2E/Relay/远程会话/远程工具 | MIT；完整 Server 未开源 | 0.6.4 | 能力 B 的账号/通道/远程会话/文件 | 直接用 / 直接改 / 参考 |
-| **DSH** | 插件/Agent/会话/工作区/审批/客户端 | MIT | 0.2.1-rc.x | 全产品底座 | 直接用 / 参考 |
+| **DSH** | 插件/Agent/会话/工作区/审批/客户端 | MIT | 0.2.2-rc.1 | 全产品底座 | 直接用 / 参考 |
 | **文档/工具链** | 可行性、需求、构建、测试 | 同各仓库 | — | 降低未知、复用工程能力 | 参考 / 直接用 |
 
 ---
@@ -75,23 +75,23 @@
 
 | 资产 | 位置（仓库路径） | 提供什么 | 用法 | 可用度 | 注意事项 |
 |---|---|---|---|---|---|
-| 手机操控 MCP | `app/android/.../phone/PhoneToolCatalog.kt`、`PhoneGuest.kt`、`McpServer.kt`、`PhoneCore.kt` | `screen/tap/type/scroll/key/tap_xy/handoff`、元素优先、截图、确认/交还、任务串行 | **直接用/直接改** | 高 | 只对本机引擎、正常模式；远程/SSH 无 |
+| 手机操控 MCP | `app/android/.../phone/PhoneToolCatalog.kt`、`PhoneGuest.kt`、`McpServer.kt`、`PhoneCore.kt` | `screen/tap/type/scroll/key/tap_xy/handoff`、元素优先、截图、确认/交还、任务串行 | **直接用/直接改** | 高 | 以 `--patch` 挂在引擎根上的 MCP 服务 `phone`，所有 preset 自动继承（模型看到 `mcp__phone__*`）；只对本机引擎、非安全模式；主屏独占，另一会话等 30 秒后报错 |
 | 无障碍截图/驱动 | `app/android/.../phone/a11y/ScreenShooter.kt`、`MainScreenDriver.kt`、`TreeCapture.kt` | 截图、带编号图、元素树、动作后校验、前台识别 | **直接用/直接改** | 高 | API 30–33 整屏、34+ 窗口；截图含 overlays 需隐藏 |
 | 安全/确认 | `app/android/.../phone/SafetyGate.kt`、`ControlOverlay.kt`、`PhonePrompts.kt` | 敏感页/密码/付款/首次 App 确认、handoff、停止 | **直接用/直接改** | 高 | 跨设备审批路由要另做 |
 | 控制悬浮条 | `app/android/.../phone/a11y/ControlOverlay.kt`、`OverlayCapsule.kt`、`OverlayBall.kt` | 胶囊/卡片/小球、暂停/停止、插话、截图隐藏 | **直接改/参考** | 高 | 与 Orb 球的仲裁要设计 |
 | 宠物悬浮窗 | `app/android/.../pet/PetOverlay.kt`、`AskBar.kt`、`OverlayAccess.kt`、`EdgeSnap.kt`、`OverlayWindowOwner.kt` | 全局悬浮窗、拖拽吸边、问一句输入条、按住说话、键盘/IME、气泡 | **直接改/参考** | 高 | 最接近 Orb 手机端的窗口/输入条骨架 |
 | 录音/转写 | `app/android/.../voice/WavRecorder.kt`、`VoicePlugin.kt`；Dart `voice_controller.dart`、`voice_bridge.dart` | 16k WAV、系统/引擎 ASR、按住说话、静音回退 | **直接改** | 高 | 手机端语音要接 Orb 发送流程 |
 | 原生聊天/会话 | `app/lib/ui/chat/*`、`app/lib/state/*` | 聊天、工具卡、审批、附件、模型、权限、会话列表 | **直接改/参考** | 高 | 统一树/多 Host 主聊天要改 |
-| 远程客户端 | `packages/dsh_remote/` | 账号、配对、E2E（Noise）、Relay/WebRTC/TURN、Host 列表、连接、会话、上传下载 | **直接用/直接改** | 高 | 单活动 Host；多 Host 并发要验证/改造 |
+| 远程客户端 | `packages/dsh_remote/` | 账号、配对、E2E（Noise）、Relay/WebRTC/TURN、Host 列表、连接、会话、上传下载 | **参考** | 中 | 单活动 Host（连另一台会断开上一台），满足不了 3–5 台互联；手机入网改为在本机引擎里跑与电脑相同的 Node 插件（见 17 第 6 节） |
 | 插件系统/宿主 UI | `app/lib/plugins/native/*`、`runtime/bridge/dsh-go-bridge/` | 原生插件面（胶囊/面板/工具卡/设置）、桥接 | **参考/直接改** | 中 | 没有跨 App 悬浮球面；统一树槽位不足 |
-| 本机引擎/运行时 | `runtime/`、`app/android/.../runtime/` | Android PRoot、DSH 0.2.1-rc.4、插件安装、引擎生命周期 | **直接用/直接改** | 高 | 手机作为 Host/节点需要新配置与安全 |
+| 本机引擎/运行时 | `runtime/`、`app/android/.../runtime/` | Android PRoot、DSH 0.2.2-rc.1（Node 24.22.1）、插件安装、引擎生命周期 | **直接用/直接改** | 高 | 引擎里没有 ds-harness-remote Host 插件，手机现在不能被其他设备连接；作为节点需要装插件并设计安全边界 |
 | 设计文档 | `docs/design/plugin-seams.md`、`native-plugins-protocol.md`、`pets.md`、`phone-overlay.md`、`voice-input.md` | 插件 slot、原生 UI、宠物/悬浮条、语音 | **参考** | 高 | 说明现有边界与可扩展点 |
 | 测试/构建 | `app/` Flutter tests、`packages/dsh_client`/`dsh_remote` tests、`runtime/tests`、`tooling/` | Android 构建、远程 E2E、运行时测试 | **直接用/直接改** | 高 | 真机验证是硬要求 |
 
 ### 4.2 结论
 
 - 手机 Orb 的**球/面板/语音/截图/手机 CU**零件基本齐了：宠物悬浮窗 + 问一句 + 手机操控 + 原生聊天。
-- 手机端的**账号/远程/会话/文件**也有现成客户端 `dsh_remote`，但它是「单活动 Host」；统一树/多 Host 需要改。
+- 手机端的**账号/远程/会话/文件**有现成客户端 `dsh_remote`，但它是「单活动 Host」，也不能让手机被连接；多设备互联改为在本机引擎里跑与电脑相同的 Node 插件。
 - 手机作为**被调用节点**（Host）还没有产品化；需要把 Host 能力装进本机引擎，并设计安全边界。
 - AGPL 是复用 dsh-Go 代码时必须先决策的许可条件。
 
@@ -169,10 +169,10 @@
 
 | 需求 | 可用资产 | 用法 | 还缺什么 |
 |---|---|---|---|
-| B1 账号/服务 | ds-harness-remote 协议/客户端/最小 Server；dsh-Go `dsh_remote` | 直接改/新建 | 第一方多租户、内置+自建、门户、命名 |
+| B1 账号/服务 | ds-harness-remote 协议/客户端/最小 Server；dsh-Go `dsh_remote`（参考） | 直接改/新建 | 第一方多租户、内置+自建、门户、命名（v0 先做单租户：管理员口令 + 配对码） |
 | B2 设备/命名/在线 | 远端 Host 列表/presence、最小 Server 设备表 | 直接改 | 默认名、当前设备改名、只读策略、撤销 UI |
 | B3 统一树 | DSH 工作区/会话 API；dsh-Go 原生列表；dsh-remote | 新建/直接改 | 多 Host 聚合、三层树、实时状态、离线 |
-| B4 远程会话 | `dsh_remote`/DshClient、远端 session 流、审批/文件 API | 直接改/新建 UI | 多 Host 主会话区、输入/暂停、审批路由 |
+| B4 远程会话 | ds-harness-remote 插件的远程网关、远端 session 流、`$events` 交互、文件 API；`dsh_remote` 参考 | 直接改/新建 UI | 多 Host 主会话区、输入/暂停、审批路由 |
 | B5 跨设备调度 | `remote_*`、dsh-orb `code_agent` 模式 | 参考/直接改 | `device_agent`、任务生命周期、完成通知、共享会话 |
 | B6 文件双向 | `remote_upload_file`/`download_file`、DSH 附件、dsh-Go 文件 | 直接改 | 任务级附件 UX、手机照片、路径/大小/清理 |
 | B7 状态/通知 | dsh-orb 完成通知；dsh-Go 通知/气泡；DSH 会话状态 | 参考/直接改 | 远程任务状态、设备离线、等待确认 |
@@ -216,14 +216,16 @@
 
 | 风险 | 说明 | 影响 |
 |---|---|---|
-| 多 Host 并发 | dsh-Go 客户端文档提到每个 client 设备一条 Host 连接；多设备树/并发任务要验证/改造 | 统一树/并行任务 |
+| 多 Host 并发 | 最小 server 在客户端发起新连接时断掉它的全部旧 Link（`gateway.ts:525`）；插件 Client 与 dsh-Go `dsh_remote` 都只保存一个活动 Host；Host 侧已支持多客户端 | 3–5 台互联的前提，必须改 |
 | 桌面统一 UI | 官方 DSH 单 Host、插件槽位有限 | D3 产品承诺 |
-| 手机作为 Host | Host 插件在手机引擎/权限/安全未产品化 | 电脑→手机 |
-| 远程审批 | 远程工具默认审批在目标原生 UI | 全流程手机端 |
+| 手机作为 Host | 手机引擎里没有 Host 插件；派到手机的标准模式会话会继承手机操控工具 | 电脑→手机、安全 |
+| 远程审批 | 远程工具文档写「在原生 UI 处理」；但远程通道放行 `$events`、`$events/result`、`userQuestions/answer`，远程 peer 可应答，需实测 | 跨设备审批/提问 |
+| 心跳/离线 | 最小 server 判离线下限写死 75 秒 | PRD 要求 ≤ 30 秒 |
+| 证书 | 客户端不支持固定证书或自定义 CA | 公网 IP + 自签证书 |
 | 目标 preset | 远程会话默认目标 preset；标准模式无 GUI/CU | 远程 GUI 任务 |
-| 文件路径 | 上传要本机绝对路径；下载落在插件机器；手机相册/下载目录要桥接 | 文件体验 |
+| 文件路径 | 上传要本机绝对路径（经中继上限 20 MiB）；下载上限 50 MiB、落在 `~/Downloads/dsh-remote-*`；没有进度、不续传；手机相册要开「访问手机文件」（挂到 `/sdcard`） | 文件体验 |
 | 许可 | dsh-Go AGPL；完整 Server 未开源 | 分发/服务模式 |
-| 版本兼容 | DSH rc.4/rc.5、插件/协议版本 | 连接/功能 |
+| 版本兼容 | 三端锁 DSH 0.2.2-rc.1；插件/协议版本 | 连接/功能 |
 | 安全 | 跨设备 RCE、账号被盗、提示注入 | 产品上线 |
 
 ---
@@ -234,7 +236,7 @@
 
 - **DSH**：插件、preset、session、workspace、approval、question、attachment。
 - **dsh-Go 手机操控/悬浮窗/语音**：作为手机 Orb 的手和嘴。
-- **dsh_remote**：账号/设备/E2E/Relay/远程会话/文件客户端。
+- **dsh_remote**：只作参考（单活动 Host）；手机入网用与电脑相同的 Node 插件。
 - **ds-harness-remote 协议/最小 Server**：作为账号/通道原型。
 - **dsh-orb 桌面 Orb/CU/双轨**：桌面侧产品与 Agent 模式。
 
@@ -242,8 +244,8 @@
 
 - **dsh-Go**：Orb 浮层/面板、发送时截图、统一树、手机 Host、远程审批。
 - **dsh-orb bundle/preset**：手机 preset、mesh 入口、桌面/移动分平台。
-- **ds-harness-remote 最小 Server**：多租户、命名/门户、OAuth、审计。
-- **dsh_remote**：多 Host 并发、远程会话控制/审批路由。
+- **ds-harness-remote 最小 Server**：v0 改为管理员口令 + 配对码、多连接、节点、心跳阈值（见 17 第 3 节）；多租户、OAuth、审计在 v0 之后。
+- **ds-harness-remote plugin/client-core**：多对端连接、证书固定、文件进度；同一套代码也装进手机引擎。
 
 ### 11.3 参考
 
@@ -275,8 +277,8 @@
 
 1. **确认许可/分发策略**：dsh-Go AGPL、dsh-orb MIT、ds-harness-remote MIT/完整 Server 未开源。
 2. **确认 PRD 的 D1/D3/D4/D6**：目标用户、桌面路线、树的范围、审批位置。
-3. **选服务路线**：扩最小 Server vs 新写多租户服务。
-4. **定第一个验证**：手机 Orb 原型 + 两设备远程任务（现有 remote client/tools）。
+3. **选服务路线**：v0 已定为 fork 最小 Server（见 16、17）；多租户服务在 v0 之后再定。
+4. **定第一个验证**：见 17 第 8 节的 B0 清单（含一个客户端同时连 3 台 Host）与 A0 清单。
 5. **把本盘点转成依赖/风险/里程碑表**（按团队与时间）。
 
 ---
