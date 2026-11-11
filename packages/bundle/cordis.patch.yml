@@ -124,6 +124,8 @@
                 Physical input is available; when a control has no semantic action, decide deliberately whether to use
                 --headed, and confirm the result by reading the screen again.
                 Never repeat a submit to "make sure": read the result first.
+                When you create or modify files the caller may need, call mesh_return_files with their paths before your final answer;
+                the caller downloads them after this turn.
                 When you are blocked, stop and hand back what you did, where you stopped, why the user is needed,
                 the options, and the risk.
           - id: agent-instructions
@@ -182,6 +184,8 @@
               searchTimeoutMs: 60000
           - id: tool-desktop-cli
             name: 'dsh-orb/desktop/cli-path'
+          - id: tool-mesh-return-files
+            name: 'dsh-orb/mesh/return-files'
 
 # Temporary comparison mode: the standard toolset plus the upstream CLI on PATH.
 # Nothing here is wrapped by the orb — no ribbon, no guard, no ref book, no policy

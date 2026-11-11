@@ -58,6 +58,7 @@
     },
     "./mesh": "./dist/mesh/index.mjs",
     "./mesh/device-agent": "./dist/mesh/device-agent.mjs",
+    "./mesh/return-files": "./dist/mesh/return-files.mjs",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },

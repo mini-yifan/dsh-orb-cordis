@@ -3,7 +3,7 @@
  * into this package's vendor directory. The release boundary is the dsh-mesh
  * `@dsh-mesh/plugin` tarball; this script is the local-development equivalent.
  */
-import { cp, mkdir, rm } from 'node:fs/promises'
+import { cp, mkdir, readdir, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,6 +18,8 @@ if (!existsSync(join(source, 'index.mjs'))) {
 }
 await rm(target, { recursive: true, force: true })
 await mkdir(target, { recursive: true })
-await cp(join(source, 'index.mjs'), join(target, 'index.mjs'))
-await cp(join(source, 'device-agent.mjs'), join(target, 'device-agent.mjs'))
+for (const file of await readdir(source)) {
+  if (!file.endsWith('.mjs')) continue
+  await cp(join(source, file), join(target, file))
+}
 console.log(`sync-mesh: ${source} -> ${target}`)

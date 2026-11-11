@@ -401,10 +401,11 @@ device_agent_stop({ device: string, session_id: string })
 
 **结果文件回传**（16 7.1.2 第 9 条）：
 
-1. 派发时在任务正文里约定：交付文件放到工作区下的 `.mesh-out/<taskId>/`。
-2. 目标这一轮结束后，发起端用 `workspaceFiles/list` 列这个目录（白名单内）。
-3. 逐个用下载原语取回，落到 `~/Downloads/dsh-mesh/<设备名>/<taskId>/`（fork 时把落点改成参数）。
-4. 记入 mesh 任务表的 `files`（名称、大小、来源设备、本机路径、状态）。这些是**任务附件**，不是 DSH 原生会话附件：在 Mesh UI 的任务卡与附件区显示，悬浮球的完成通知里写本机路径。
+1. 派发时 `attachments` 通过 `workspace.upload.*` 上传到目标工作区根目录，文件名带 `mesh-in-<taskId>-` 前缀；首条消息里列出实际的相对路径。
+2. 目标 Agent 在结束前调用 `mesh_return_files`，工具把文件复制到 `.mesh-out/<sessionId>/`。
+3. 目标这一轮结束后，发起端用 `workspaceFiles/list` 列这个目录（白名单内），逐个用下载原语取回。
+4. 回传文件落到调用方工作区的 `.mesh-in/<taskId>/`；没有工作区时落到 `~/Downloads/dsh-mesh/<taskId>/`。
+5. 记入 mesh 任务表的 `files`（名称、大小、方向、本机路径、远端路径、状态）。这些是**任务附件**，不是 DSH 原生会话附件：在 Mesh UI 的任务卡与附件区显示，悬浮球的完成通知里写本机路径。
 
 **文件传输要补的**：
 
