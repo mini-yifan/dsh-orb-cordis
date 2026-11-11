@@ -29,6 +29,7 @@ declare module 'electron' {
     setVisibleOnAllWorkspaces(flag: boolean, options?: { visibleOnFullScreen?: boolean; skipTransformProcessType?: boolean }): void
     setBounds(bounds: Rectangle): void
     getBounds(): Rectangle
+    setTitle(title: string): void
     getNativeWindowHandle(): Buffer
     isVisible(): boolean
     isDestroyed(): boolean
@@ -50,6 +51,8 @@ declare module 'electron' {
     y?: number
     width?: number
     height?: number
+    minWidth?: number
+    minHeight?: number
     frame?: boolean
     transparent?: boolean
     alwaysOnTop?: boolean

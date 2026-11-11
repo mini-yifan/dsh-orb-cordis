@@ -56,6 +56,8 @@
       "types": "./dist/desktop/cli-path.d.ts",
       "default": "./dist/desktop/cli-path.js"
     },
+    "./mesh": "./dist/mesh/index.mjs",
+    "./mesh/device-agent": "./dist/mesh/device-agent.mjs",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },

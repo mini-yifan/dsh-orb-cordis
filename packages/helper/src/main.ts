@@ -115,6 +115,8 @@ if (!socketAddress || !token) {
 if (process.platform === 'darwin') app.setActivationPolicy?.('accessory')
 
 let win: BrowserWindow | undefined
+/** The interconnect window. Unlike the ball it is an ordinary framed, resizable window. */
+let meshWin: BrowserWindow | undefined
 let tccWait: ((status: unknown) => void) | undefined
 let overlays: {
   appearance(payload: {
@@ -377,6 +379,24 @@ ipcMain.on('orb:open-external', (event, url) => {
   void shell.openExternal(url)
 })
 
+/**
+ * Mesh window -> host bridge. The page never sees the socket token or the web port: it
+ * asks for one of the allowlisted `/.dsh-orb/mesh/*` paths and this process adds the
+ * `x-dsh-orb-helper` header. The allowlist is the same shape the host exposes, so the
+ * UI cannot reach settings mutations through this channel.
+ */
+ipcMain.handle('orb:mesh-request', async (event, payload) => {
+  if (!fromMesh(event)) return { ok: false, status: 403, body: { error: 'forbidden' } }
+  const request = readMeshRequest(payload)
+  if (request === undefined) return { ok: false, status: 400, body: { error: 'invalid-request' } }
+  return meshRequest(request)
+})
+
+ipcMain.on('orb:mesh-open-settings', (event) => {
+  if (!fromMesh(event)) return
+  write({ type: 'open-settings', section: 'orb-mesh' })
+})
+
 ipcMain.handle('orb:tcc-status', (event) => {
   if (!fromBall(event)) return tccUnavailable()
   return askTcc({ type: 'tcc' })
@@ -451,6 +471,65 @@ function openWindow(): BrowserWindow {
   return created
 }
 
+/**
+ * The interconnect window: a normal framed window with a taskbar entry, unlike the
+ * always-on-top transparent ball. One instance is kept; a second menu click focuses it.
+ */
+function openMeshWindow(): void {
+  if (meshWin && !meshWin.isDestroyed()) {
+    if (!meshWin.isVisible()) meshWin.show()
+    meshWin.focus()
+    return
+  }
+  const created = new BrowserWindow({
+    title: uiLanguage() === 'zh' ? '互联' : 'Interconnect',
+    width: 960,
+    height: 640,
+    minWidth: 760,
+    minHeight: 520,
+    frame: true,
+    transparent: false,
+    resizable: true,
+    movable: true,
+    minimizable: true,
+    maximizable: true,
+    fullscreenable: true,
+    skipTaskbar: false,
+    hasShadow: true,
+    show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1b1f' : '#ffffff',
+    webPreferences: {
+      preload: fileURLToPath(new URL('../mesh-preload.cjs', import.meta.url)),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+  meshWin = created
+  denyWindowPermissions(created)
+  created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  created.webContents.on('will-navigate', (event) => {
+    event.preventDefault()
+  })
+  const syncAppearance = (): void => {
+    if (created.isDestroyed()) return
+    created.setTitle(uiLanguage() === 'zh' ? '互联' : 'Interconnect')
+    created.webContents.send('mesh:appearance', {
+      dark: nativeTheme.shouldUseDarkColors,
+      locale: uiLanguage(),
+    })
+  }
+  created.webContents.on('did-finish-load', () => {
+    syncAppearance()
+    if (!created.isVisible()) created.show()
+  })
+  created.once('ready-to-show', () => { created.show() })
+  created.on('closed', () => {
+    if (meshWin === created) meshWin = undefined
+  })
+  void created.loadFile(fileURLToPath(new URL('../assets/mesh.html', import.meta.url)))
+}
+
 function connect(attempt: number): void {
   if (quitting) return
   const colon = socketAddress.lastIndexOf(':')
@@ -509,6 +588,10 @@ function deliver(message: unknown): void {
   if (overlays?.deliver(message)) return
   if (typeof message !== 'object' || message === null || !win) return
   const record = message as { type?: unknown }
+  if (record.type === 'open-mesh') {
+    openMeshWindow()
+    return
+  }
   if (record.type === 'session') {
     win.webContents.send('orb:session', (record as { sessionId?: unknown }).sessionId)
     return
@@ -656,6 +739,11 @@ function fromBall(event: unknown): boolean {
   return (event as { sender?: BrowserWindow['webContents'] }).sender === win.webContents
 }
 
+function fromMesh(event: unknown): boolean {
+  if (!meshWin || meshWin.isDestroyed()) return false
+  return (event as { sender?: BrowserWindow['webContents'] }).sender === meshWin.webContents
+}
+
 function tccUnavailable(): { applicable: false; appName: string; screen: 'granted'; accessibility: 'granted' } {
   return { applicable: false, appName: '', screen: 'granted', accessibility: 'granted' }
 }
@@ -784,6 +872,10 @@ function pushAppearance(): void {
     },
   }
   if (win && !win.isDestroyed()) win.webContents.send('orb:appearance', payload)
+  if (meshWin && !meshWin.isDestroyed()) {
+    meshWin.setTitle(uiLanguage() === 'zh' ? '互联' : 'Interconnect')
+    meshWin.webContents.send('mesh:appearance', { dark: payload.dark, locale: payload.locale })
+  }
   overlays?.appearance(payload)
 }
 
@@ -852,6 +944,7 @@ async function showMenu(window: BrowserWindow): Promise<void> {
   const template = contextMenuTemplate(chrome, menuZh(), {
     openMain: () => { write({ type: 'open-main' }) },
     openSettings: () => { write({ type: 'open-settings' }) },
+    openMesh: () => { write({ type: 'mesh-open' }) },
     setOverlay: (selection) => { write({ type: 'set-overlay', selection }) },
     setBackground: (selection) => { write({ type: 'set-background', selection }) },
     setSelection: (enabled) => { write({ type: 'set-selection', enabled }) },
@@ -1048,6 +1141,105 @@ function fetchAttachment(ref: ImageRef, thumb: boolean): Promise<{ mime: string;
       resolve(undefined)
     })
     req.on('error', () => resolve(undefined))
+    req.end()
+  })
+}
+
+/* ----- Mesh window bridge ----- */
+
+interface MeshRequest {
+  method: 'GET' | 'POST' | 'PUT'
+  path: string
+  body?: unknown
+}
+
+interface MeshWireResponse {
+  ok: boolean
+  status: number
+  body: unknown
+}
+
+/** Paths the Mesh page may reach. This mirrors the host's `/.dsh-orb/mesh/*` surface. */
+const MESH_PATH = /^\/(?:status|nodes|tree|events|interactions|tasks|prefs|pair|unpair|name)$|^\/sessions\/[^/]{1,200}\/[^/]{1,200}\/(?:page|stream|prompt|cancel)$|^\/interactions\/[^/]{1,200}\/answer$/
+
+const MAX_MESH_RESPONSE_BYTES = 8 * 1024 * 1024
+
+function readMeshRequest(value: unknown): MeshRequest | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as { method?: unknown; path?: unknown; body?: unknown }
+  if (record.method !== 'GET' && record.method !== 'POST' && record.method !== 'PUT') return undefined
+  if (typeof record.path !== 'string' || record.path.length === 0 || record.path.length > 400) return undefined
+  const parts = record.path.split('?')
+  if (parts.length > 2) return undefined
+  const path = parts[0] ?? ''
+  const query = parts[1] ?? ''
+  if (query !== '' && !/^since=\d{1,12}$/.test(query)) return undefined
+  if (!MESH_PATH.test(path)) return undefined
+  if (record.body === undefined) return { method: record.method, path: query === '' ? path : `${path}?${query}` }
+  if (record.method === 'GET') return undefined
+  if (typeof record.body !== 'object' || record.body === null || Array.isArray(record.body)) return undefined
+  if (JSON.stringify(record.body).length > 64 * 1024) return undefined
+  return { method: record.method, path: query === '' ? path : `${path}?${query}`, body: record.body }
+}
+
+/**
+ * One request to `orb-host`. The token stays in this process; the renderer receives the
+ * parsed JSON or a transport error, never the credentials or a raw socket.
+ */
+function meshRequest(request: MeshRequest): Promise<MeshWireResponse> {
+  const port = Number(webPort)
+  if (!Number.isInteger(port) || port <= 0 || !token) {
+    return Promise.resolve({ ok: false, status: 503, body: { error: 'bridge-unavailable', message: 'host bridge is not ready' } })
+  }
+  const payload = request.body === undefined ? undefined : JSON.stringify(request.body)
+  return new Promise((resolve) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: `/.dsh-orb/mesh${request.path}`,
+      method: request.method,
+      headers: {
+        'x-dsh-orb-helper': token,
+        accept: 'application/json',
+        ...(payload === undefined ? {} : {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+        }),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      res.on('data', (chunk: Buffer) => {
+        size += chunk.length
+        if (size > MAX_MESH_RESPONSE_BYTES) {
+          req.destroy()
+          resolve({ ok: false, status: 502, body: { error: 'too-large', message: 'mesh response is too large' } })
+          return
+        }
+        chunks.push(chunk)
+      })
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        let body: unknown = null
+        if (text !== '') {
+          try {
+            body = JSON.parse(text)
+          } catch {
+            body = { error: 'invalid-response', message: text.slice(0, 200) }
+          }
+        }
+        const status = res.statusCode ?? 0
+        resolve({ ok: status >= 200 && status < 300, status, body })
+      })
+    })
+    req.setTimeout(30_000, () => {
+      req.destroy()
+      resolve({ ok: false, status: 0, body: { error: 'timeout', message: 'mesh request timed out' } })
+    })
+    req.on('error', () => {
+      resolve({ ok: false, status: 0, body: { error: 'unreachable', message: 'host bridge is unreachable' } })
+    })
+    if (payload !== undefined) req.write(payload)
     req.end()
   })
 }

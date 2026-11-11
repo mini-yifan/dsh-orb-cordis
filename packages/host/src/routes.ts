@@ -28,11 +28,13 @@ import { absentVoiceModels, type VoiceModelKind, type VoiceModels } from '@dsh-o
 import { qwenVoiceViews, type QwenVoiceView } from '@dsh-orb/voice/qwen'
 import { type VoiceSettings } from '@dsh-orb/voice/settings'
 import { defaultAvatarPath } from './helper-path.ts'
+import { meshErrorBody, MeshRequestError, resolveMeshService, type MeshService } from './mesh.ts'
 import { isTccRight, openMicrophoneSettings, type TccMonitor, type TccStatus } from './tcc.ts'
 import type { UpdateState } from './update.ts'
 import { visibleWhatsNew, WHATS_NEW_VERSION, type WhatsNewNotice } from './whats-new.ts'
 
 const PREFIX = '/.dsh-orb'
+const MESH_PREFIX = `${PREFIX}/mesh`
 const HELPER_HEADER = 'x-dsh-orb-helper'
 
 interface RouteContext {
@@ -82,7 +84,7 @@ export interface OrbControl {
   /** Consumes the jump target armed by a matching bookmark click. */
   confirmJump(sessionId: string): void
   /** The pending ball-initiated floating-ball-settings target, or null once confirmed or expired. */
-  takeSettingsOpen(): { at: number } | null
+  takeSettingsOpen(): { at: number; section: string } | null
   /** Consumes the settings target armed by the ball's menu row. */
   confirmSettingsOpen(at: number): void
   updateState(): UpdateState
@@ -118,16 +120,19 @@ interface RouteDeps {
   readonly store: ProfileStore
   readonly tcc: TccMonitor
   readonly control: OrbControl
+  /** Tests inject a fresh service; production resolves `mesh` from the plugin or the mock. */
+  readonly mesh?: MeshService
 }
 
 /** Mount `/.dsh-orb` and return the disposer. */
 export function registerOrbRoutes(deps: RouteDeps): () => void {
+  const mesh = deps.mesh ?? resolveMeshService(deps.ctx)
   return deps.ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX,
     // A rejected handler used to hang the request (the official server does not answer it):
     // a bad body must come back as 400, not as an unhandled rejection.
-    handler: (req, res) => handle(deps, req, res).catch((error: unknown) => {
+    handler: (req, res) => handle(deps, mesh, req, res).catch((error: unknown) => {
       if (res.headersSent) {
         res.end()
         return
@@ -174,13 +179,16 @@ export function orbSupported(platform: NodeJS.Platform = process.platform): bool
   return platform === 'darwin' || platform === 'win32'
 }
 
-async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handle(deps: RouteDeps, mesh: MeshService, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = url.pathname
   const helperAsset = req.method === 'GET'
     && (path === `${PREFIX}/avatar` || path === `${PREFIX}/attachment`)
     && helperTokenOk(deps, req)
-  if (!helperAsset) {
+  // The helper token opens the Mesh bridge and nothing else. Keep this an explicit
+  // allowlist: widening the avatar/attachment gate would expose settings mutations.
+  const helperMesh = path.startsWith(`${MESH_PREFIX}/`) && helperTokenOk(deps, req)
+  if (!helperAsset && !helperMesh) {
     const rejection = rejectionStatus(deps.ctx, req)
     if (rejection !== undefined) {
       res.writeHead(rejection)
@@ -328,10 +336,11 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
     return
   }
   // The ball's settings row rides the same bridge as jumps: the ball arms the request
-  // and focuses the main window, whose client plugin opens the floating-ball section.
+  // and focuses the main window, whose client plugin opens the requested section. An
+  // absent `section` keeps the old payload working; the client falls back to `orb`.
   if (method === 'GET' && path === `${PREFIX}/settings-open`) {
     const target = deps.control.takeSettingsOpen()
-    sendJson(res, 200, { at: target?.at ?? null })
+    sendJson(res, 200, { at: target?.at ?? null, section: target?.section ?? null })
     return
   }
   if (method === 'POST' && path === `${PREFIX}/settings-open`) {
@@ -342,6 +351,12 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
     }
     deps.control.confirmSettingsOpen(at)
     sendJson(res, 200, { ok: true })
+    return
+  }
+  // The helper's Mesh window talks to this bridge with its socket token. The routes are
+  // not platform-gated: settings can read Mesh status on a host without a ball.
+  if (path === MESH_PREFIX || path.startsWith(`${MESH_PREFIX}/`)) {
+    await handleMesh(mesh, method, path.slice(MESH_PREFIX.length), url, req, res)
     return
   }
   if ((method === 'GET' || method === 'HEAD') && path === `${PREFIX}/avatar`) {
@@ -524,6 +539,125 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
   }
   res.writeHead(404)
   res.end()
+}
+
+/**
+ * `/.dsh-orb/mesh/*`: a one-to-one adapter over the plugin's `/.dsh-mesh/v1/*` contract
+ * (docs/18 §4.3). Responses are passed through unchanged so the helper and the settings
+ * section can later point at the plugin's own routes without a UI change.
+ */
+async function handleMesh(
+  mesh: MeshService,
+  method: string,
+  rest: string,
+  url: URL,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    if (method === 'GET' && rest === '/status') {
+      sendJson(res, 200, mesh.status())
+      return
+    }
+    if (method === 'GET' && rest === '/nodes') {
+      sendJson(res, 200, mesh.nodes())
+      return
+    }
+    if (method === 'GET' && rest === '/tree') {
+      sendJson(res, 200, mesh.tree())
+      return
+    }
+    if (method === 'GET' && rest === '/events') {
+      // Long polling belongs to the plugin. The static seam answers at once with an
+      // empty batch, which is valid for `{ items, cursor }` consumers.
+      sendJson(res, 200, { items: [], cursor: integerParam(url, 'since') ?? 0 })
+      return
+    }
+    if (method === 'GET' && rest === '/interactions') {
+      sendJson(res, 200, mesh.interactions())
+      return
+    }
+    if (method === 'GET' && rest === '/tasks') {
+      sendJson(res, 200, mesh.tasks())
+      return
+    }
+    if (method === 'GET' && rest === '/prefs') {
+      sendJson(res, 200, mesh.prefs())
+      return
+    }
+    if (method === 'PUT' && rest === '/prefs') {
+      sendJson(res, 200, mesh.setPrefs(await readJson(req)))
+      return
+    }
+    if (method === 'POST' && rest === '/pair') {
+      const body = asRecord(await readJson(req))
+      if (typeof body?.pairing !== 'string') {
+        throw new MeshRequestError(400, 'bad_pairing', '配对串格式不对，请从管理页重新复制', 1)
+      }
+      const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name : undefined
+      sendJson(res, 200, mesh.pair(body.pairing, name))
+      return
+    }
+    if (method === 'POST' && rest === '/unpair') {
+      sendJson(res, 200, mesh.unpair())
+      return
+    }
+    if (method === 'POST' && rest === '/name') {
+      const name = asRecord(await readJson(req))?.name
+      if (typeof name !== 'string') throw new MeshRequestError(400, 'invalid-name', '本机名称不能为空')
+      sendJson(res, 200, mesh.rename(name))
+      return
+    }
+    const session = /^\/sessions\/([^/]+)\/([^/]+)\/(page|stream|prompt|cancel)$/.exec(rest)
+    if (session !== null) {
+      const nodeId = decodeURIComponent(session[1] ?? '')
+      const sessionId = decodeURIComponent(session[2] ?? '')
+      const action = session[3]
+      if (method === 'GET' && (action === 'page' || action === 'stream')) {
+        const since = integerParam(url, 'since') ?? 0
+        sendJson(res, 200, action === 'page' ? mesh.page(nodeId, sessionId, since) : mesh.stream(nodeId, sessionId, since))
+        return
+      }
+      if (method === 'POST' && action === 'prompt') {
+        const text = asRecord(await readJson(req))?.text
+        if (typeof text !== 'string') throw new MeshRequestError(400, 'invalid-prompt', '指令不能为空')
+        sendJson(res, 200, mesh.prompt(nodeId, sessionId, text))
+        return
+      }
+      if (method === 'POST' && action === 'cancel') {
+        sendJson(res, 200, mesh.cancel(nodeId, sessionId))
+        return
+      }
+    }
+    const answer = /^\/interactions\/([^/]+)\/answer$/.exec(rest)
+    if (method === 'POST' && answer !== null) {
+      const body = asRecord(await readJson(req))
+      const outcome = body?.outcome
+      if (outcome !== undefined && outcome !== 'allowed-once' && outcome !== 'rejected') {
+        throw new MeshRequestError(400, 'invalid_answer', '审批结果无效')
+      }
+      sendJson(res, 200, mesh.answer({
+        eventId: decodeURIComponent(answer[1] ?? ''),
+        ...(outcome === undefined ? {} : { outcome }),
+        ...(body?.answers === undefined ? {} : { answers: body.answers }),
+      }))
+      return
+    }
+    sendJson(res, 404, { error: 'not-found', message: 'unknown mesh route' })
+  } catch (error) {
+    const { status, body } = meshErrorBody(error)
+    if (status === 500) {
+      console.error(`dsh-orb: mesh route failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    sendJson(res, status, body)
+  }
+}
+
+function integerParam(url: URL, name: string): number | undefined {
+  const raw = url.searchParams.get(name)
+  if (raw === null || raw === '') return undefined
+  const value = Number(raw)
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 async function snapshot(deps: RouteDeps, voice: VoiceSettings = deps.store.voice()): Promise<{

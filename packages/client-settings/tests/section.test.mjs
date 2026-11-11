@@ -7,6 +7,28 @@ import assert from 'node:assert/strict'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '../../..')
+const MESH_FP = `Qm9n${'A'.repeat(39)}`
+const peerNodes = [{
+  nodeId: 'node-company',
+  name: '公司 Windows',
+  platform: 'win32',
+  online: true,
+  hostDeviceId: 'h2',
+  clientDeviceId: 'c2',
+}, {
+  nodeId: 'node-test',
+  name: '测试机',
+  platform: 'linux',
+  online: false,
+  hostDeviceId: 'h3',
+  clientDeviceId: 'c3',
+  lastSeenAt: 1_699_999_000_000,
+}]
+const fail = (status, body) => ({
+  ok: false,
+  status,
+  async text() { return JSON.stringify(body) },
+})
 
 // The host owns the preset ids, the page owns their names. Read the real list so a
 // preset added on the host side without copy here fails a test instead of shipping.
@@ -28,6 +50,23 @@ function loadSection(hooks = {}) {
   /** This page's own `settings.section` row, as the shell shell's ledger holds it. */
   const sectionEntries = []
   let workspace
+  /** Mesh service state the fake host answers with; tests may replace it. */
+  let meshStatus = {
+    paired: false,
+    server: { url: '', fp: '' },
+    node: { nodeId: 'node-local', name: '书房 Mac', platform: 'darwin', online: true, hostDeviceId: 'h', clientDeviceId: 'c' },
+    connection: 'unpaired',
+    peersOnline: 0,
+    peersTotal: 0,
+  }
+  let meshNodes = [{
+    nodeId: 'node-local',
+    name: '书房 Mac',
+    platform: 'darwin',
+    online: true,
+    hostDeviceId: 'h',
+    clientDeviceId: 'c',
+  }]
   const intervals = []
   const snapshot = {
     supported: true,
@@ -125,6 +164,7 @@ function loadSection(hooks = {}) {
     },
   }
   let registered
+  let meshRegistered
   let plugin
   let file = { size: 10, async arrayBuffer() { return new Uint8Array([1, 2, 3]).buffer } }
   const sandbox = {
@@ -163,12 +203,42 @@ function loadSection(hooks = {}) {
           if (settingsOpen !== null && settingsOpen.at === JSON.parse(options.body).at) settingsOpen = null
           return json({ ok: true })
         }
-        return json({ at: settingsOpen === null ? null : settingsOpen.at })
+        return json({
+          at: settingsOpen === null ? null : settingsOpen.at,
+          section: settingsOpen === null ? null : settingsOpen.section ?? null,
+        })
       }
       if (path === '/.dsh-orb/settings') {
         return json(mode === 'linux' ? { ...snapshot, supported: false, tcc: { ...snapshot.tcc, applicable: false } } : snapshot)
       }
       if (path === '/.dsh-orb/models') return json(catalog)
+      if (path === '/.dsh-orb/mesh/status') return json(meshStatus)
+      if (path === '/.dsh-orb/mesh/nodes') return json(meshNodes)
+      if (path === '/.dsh-orb/mesh/pair' && options.method === 'POST') {
+        const body = JSON.parse(options.body)
+        const node = { ...meshStatus.node, name: body.name || 'Mac1' }
+        meshStatus = {
+          paired: true,
+          server: { url: 'https://YOUR_SERVER_IP:443', fp: MESH_FP },
+          node,
+          connection: 'connected',
+          peersOnline: 1,
+          peersTotal: 2,
+        }
+        meshNodes = [node, ...peerNodes]
+        return json({ ok: true, node, peers: peerNodes })
+      }
+      if (path === '/.dsh-orb/mesh/name' && options.method === 'POST') {
+        const body = JSON.parse(options.body)
+        meshStatus = { ...meshStatus, node: { ...meshStatus.node, name: body.name } }
+        meshNodes = [meshStatus.node, ...meshNodes.slice(1)]
+        return json({ ok: true, name: body.name })
+      }
+      if (path === '/.dsh-orb/mesh/unpair' && options.method === 'POST') {
+        meshStatus = { ...meshStatus, paired: false, server: { url: '', fp: '' }, connection: 'unpaired', peersOnline: 0, peersTotal: 0 }
+        meshNodes = [meshStatus.node]
+        return json({ ok: true })
+      }
       if (path === '/.dsh-orb/update') return json(snapshot.update)
       if (path === '/.dsh-orb/history') return json(snapshot.history)
       if (options.method === 'POST' && path === '/.dsh-orb/history/preview') {
@@ -252,9 +322,12 @@ function loadSection(hooks = {}) {
     slots: {
       inject(_name, register) { register() },
       register(spec, Component) {
-        registered = { spec, Component }
-        sectionEntries.length = 0
-        sectionEntries.push({ options: { id: spec.id } })
+        const entry = { spec, Component }
+        if (spec.id === 'orb') registered = entry
+        if (spec.id === 'orb-mesh') meshRegistered = entry
+        if (!sectionEntries.some((row) => row.options && row.options.id === spec.id)) {
+          sectionEntries.push({ options: { id: spec.id } })
+        }
       },
       entries(name) {
         if (name === 'sidebar.settings') return shellEntries
@@ -284,11 +357,19 @@ function loadSection(hooks = {}) {
   return {
     calls,
     spec: registered.spec,
+    mesh: meshRegistered,
     snapshot,
     styles,
     /** A hot reload applies the plugin again over the same document. */
     reapply() { plugin.apply(ctx) },
     render,
+    renderMesh() {
+      cursor = 0
+      return meshRegistered.Component()
+    },
+    setMeshStatus(next) { meshStatus = next },
+    setMeshNodes(next) { meshNodes = next },
+    meshStatus() { return meshStatus },
     flush,
     /** Re-render the page, then run every registered interval once (timers persist). */
     async tick() {
@@ -774,7 +855,7 @@ describe('settings section', () => {
     await page.tick()
     assert.deepEqual(opened, ['orb'])
     assert.equal(posts().length, 1, 'the opened target is consumed with a POST')
-    assert.deepEqual(JSON.parse(posts()[0].options.body), { at: 11 })
+    assert.deepEqual(JSON.parse(posts()[0].options.body), { at: 11, section: 'orb' })
 
     // A lost confirm re-confirms on the next poll; the panel must not be re-opened.
     page.setSettingsOpen({ at: 11 })
@@ -1611,6 +1692,192 @@ describe('settings section', () => {
     view = page.render()
     const dialog = find(view, (node) => node.props?.role === 'dialog')[0]
     assert.equal(find(dialog, (node) => node.children?.includes('要下载 TTS 模型。')).length, 1)
+  })
+
+  it('registers 互联 as its own section and shows the first-run pairing form', async () => {
+    const page = loadSection()
+    assert.equal(page.spec.id, 'orb')
+    assert.equal(page.mesh.spec.id, 'orb-mesh')
+    assert.equal(page.mesh.spec.order, 26)
+    assert.equal(page.mesh.spec.name, 'settings.section')
+    assert.equal(page.mesh.spec.label(), '互联')
+
+    let view = page.renderMesh()
+    await page.flush()
+    view = page.renderMesh()
+    assert.deepEqual(
+      page.calls.filter((call) => String(call.path).startsWith('/.dsh-orb/mesh')).map((call) => call.path),
+      ['/.dsh-orb/mesh/status', '/.dsh-orb/mesh/nodes'],
+    )
+    assert.equal(find(view, (node) => node.children?.includes('尚未加入互联')).length, 1)
+    assert.equal(find(view, (node) => node.children?.includes('静态假数据')).length, 1)
+    assert.equal(find(view, (node) => node.props?.placeholder === 'dshmesh://…').length, 1)
+
+    // An empty form never reaches the service.
+    const connect = find(view, (node) => node.type === 'button' && node.children?.includes('连接'))[0]
+    assert.ok(connect)
+    connect.props.onClick()
+    await settle()
+    view = page.renderMesh()
+    assert.equal(find(view, (node) => node.children?.includes('请先粘贴配对串，或展开「手动填写」。')).length, 1)
+    assert.equal(page.calls.some((call) => call.path === '/.dsh-orb/mesh/pair'), false)
+
+    const pairingInput = find(view, (node) => node.props?.placeholder === 'dshmesh://…')[0]
+    pairingInput.props.onChange({ target: { value: `dshmesh://YOUR_SERVER_IP:443/pair?v=1&code=TESTPAIR&fp=${MESH_FP}` } })
+    view = page.renderMesh()
+    const submit = find(view, (node) => node.type === 'button' && node.children?.includes('连接'))[0]
+    submit.props.onClick()
+    await settle()
+    view = page.renderMesh()
+    const pairCall = page.calls.find((call) => call.path === '/.dsh-orb/mesh/pair')
+    assert.ok(pairCall)
+    assert.equal(JSON.parse(pairCall.options.body).pairing, `dshmesh://YOUR_SERVER_IP:443/pair?v=1&code=TESTPAIR&fp=${MESH_FP}`)
+    assert.equal(page.meshStatus().paired, true)
+    assert.equal(find(view, (node) => node.children?.includes('https://YOUR_SERVER_IP:443')).length, 1)
+    assert.equal(find(view, (node) => node.children?.includes(MESH_FP)).length, 1)
+    assert.equal(find(view, (node) => node.children?.includes('公司 Windows')).length, 1)
+    assert.equal(find(view, (node) => node.children?.includes('退出互联')).length, 1)
+  })
+
+  it('builds the same pairing string from the manual fields', async () => {
+    const page = loadSection()
+    let view = page.renderMesh()
+    await page.flush()
+    view = page.renderMesh()
+    const manual = find(view, (node) => node.type === 'button' && node.children?.includes('手动填写'))[0]
+    manual.props.onClick()
+    view = page.renderMesh()
+    const byPlaceholder = (placeholder) => find(view, (node) => node.props?.placeholder === placeholder)[0]
+    byPlaceholder('YOUR_SERVER_IP:443').props.onChange({ target: { value: 'https://YOUR_SERVER_IP:443/' } })
+    byPlaceholder('8 位配对码').props.onChange({ target: { value: 'testpair' } })
+    byPlaceholder('43 位服务器指纹').props.onChange({ target: { value: MESH_FP } })
+    view = page.renderMesh()
+    const connect = find(view, (node) => node.type === 'button' && node.children?.includes('连接'))[0]
+    connect.props.onClick()
+    await settle()
+    const pairCall = page.calls.find((call) => call.path === '/.dsh-orb/mesh/pair')
+    assert.equal(
+      JSON.parse(pairCall.options.body).pairing,
+      `dshmesh://YOUR_SERVER_IP:443/pair?v=1&code=TESTPAIR&fp=${MESH_FP}`,
+    )
+  })
+
+  it('shows the paired facts read-only, renames the device, and leaves after a confirmation', async () => {
+    const page = loadSection()
+    const local = { nodeId: 'node-local', name: '书房 Mac', platform: 'darwin', online: true, hostDeviceId: 'h', clientDeviceId: 'c' }
+    page.setMeshStatus({
+      paired: true,
+      server: { url: 'https://YOUR_SERVER_IP:443', fp: MESH_FP },
+      node: local,
+      connection: 'connected',
+      peersOnline: 1,
+      peersTotal: 2,
+    })
+    page.setMeshNodes([local, ...peerNodes])
+    page.reset()
+    let view = page.renderMesh()
+    await page.flush()
+    view = page.renderMesh()
+    assert.equal(find(view, (node) => node.children?.includes('已连接')).length > 0, true)
+    assert.equal(find(view, (node) => node.children?.includes('公司 Windows')).length, 1)
+    assert.equal(find(view, (node) => node.children?.includes('测试机')).length, 1)
+    assert.equal(find(view, (node) => node.children?.includes('离线')).length > 0, true)
+
+    const nameInput = find(view, (node) => node.type === 'input' && node.props?.value === '书房 Mac')[0]
+    nameInput.props.onChange({ target: { value: '新书房' } })
+    view = page.renderMesh()
+    const save = find(view, (node) => node.type === 'button' && node.children?.includes('保存名称'))[0]
+    save.props.onClick()
+    await settle()
+    const nameCall = page.calls.find((call) => call.path === '/.dsh-orb/mesh/name')
+    assert.equal(JSON.parse(nameCall.options.body).name, '新书房')
+    view = page.renderMesh()
+    assert.equal(find(view, (node) => node.children?.includes('名称已保存。')).length, 1)
+
+    page.setConfirm(false)
+    view = page.renderMesh()
+    const leave = find(view, (node) => node.type === 'button' && node.children?.includes('退出互联'))[0]
+    leave.props.onClick()
+    await settle()
+    assert.equal(page.calls.some((call) => call.path === '/.dsh-orb/mesh/unpair'), false)
+    page.setConfirm(true)
+    leave.props.onClick()
+    await settle()
+    assert.equal(page.calls.some((call) => call.path === '/.dsh-orb/mesh/unpair' && call.options.method === 'POST'), true)
+    view = page.renderMesh()
+    assert.equal(find(view, (node) => node.children?.includes('尚未加入互联')).length, 1)
+  })
+
+  it('turns every docs/18 §3.2 pairing error into its own message', async () => {
+    let failure = null
+    const page = loadSection({
+      answer(path) {
+        return path === '/.dsh-orb/mesh/pair' && failure !== null ? failure : undefined
+      },
+    })
+    let view = page.renderMesh()
+    await page.flush()
+    view = page.renderMesh()
+    const pairingInput = find(view, (node) => node.props?.placeholder === 'dshmesh://…')[0]
+    pairingInput.props.onChange({ target: { value: `dshmesh://YOUR_SERVER_IP:443/pair?v=1&code=TESTPAIR&fp=${MESH_FP}` } })
+
+    const cases = [
+      ['already_paired', 409, { address: 'https://old.example:443' }, ['本机已加入另一台服务器（https://old.example:443）的互联，请先退出']],
+      ['bad_pairing', 400, {}, ['配对串格式不对，请从管理页重新复制']],
+      ['unreachable', 502, { address: 'https://unreachable.test:443' }, ['连不上服务器 https://unreachable.test:443，请检查网络或服务器是否在运行']],
+      ['fingerprint_mismatch', 502, {}, ['服务器证书和配对串里的指纹不一致，可能连错了服务器，已停止连接']],
+      ['server_incompatible', 409, { serverApi: 2, pluginApi: 1 }, ['服务器版本（meshApi 2）和本机互联插件（meshApi 1）不兼容，请先升级']],
+      ['code_invalid', 400, {}, ['配对码无效，请在管理页重新生成']],
+      ['code_used', 409, {}, ['配对码已被使用，请在管理页重新生成']],
+      ['code_expired', 410, {}, ['配对码已过期，请在管理页重新生成']],
+      ['rate_limited', 429, {}, ['尝试次数过多，请 1 分钟后再试']],
+      ['register_failed', 502, { reason: 'mock' }, ['服务器拒绝了本机的注册（mock），请重新生成配对码再试']],
+      ['connect_failed', 502, {}, ['已配对，但暂时连不上中继，会自动重试']],
+    ]
+    const textOf = (node) => (node.children ?? []).filter((child) => typeof child === 'string').join('')
+    for (const [code, status, details, fragments] of cases) {
+      failure = fail(status, { error: code, message: `server says ${code}`, ...details })
+      view = page.renderMesh()
+      const connect = find(view, (node) => node.type === 'button' && node.children?.includes('连接'))[0]
+      connect.props.onClick()
+      await settle()
+      view = page.renderMesh()
+      for (const fragment of fragments) {
+        assert.equal(find(view, (node) => textOf(node).includes(fragment)).length > 0, true, `${code}: ${fragment}`)
+      }
+    }
+
+    // A name collision is a success with a warning, not a failed pairing.
+    failure = json({
+      ok: true,
+      node: { nodeId: 'node-local', name: 'Mac1', platform: 'darwin', online: true },
+      peers: [],
+      warning: 'name_taken',
+      name: 'Mac1',
+    })
+    view = page.renderMesh()
+    const nameInput = find(view, (node) => node.type === 'input' && node.props?.placeholder === '留空则使用默认名称')[0]
+    nameInput.props.onChange({ target: { value: '新名字' } })
+    view = page.renderMesh()
+    const connect = find(view, (node) => node.type === 'button' && node.children?.includes('连接'))[0]
+    connect.props.onClick()
+    await settle()
+    view = page.renderMesh()
+    assert.equal(find(view, (node) => textOf(node).includes('名称「新名字」已被占用，暂用 Mac1')).length > 0, true)
+  })
+
+  it('opens the interconnect section from the ball deep link', async () => {
+    const page = loadSection()
+    const opened = []
+    const instance = { actions: { openSection(id) { opened.push(id) } } }
+    page.setShell({ create: () => instance })
+    page.setSettingsOpen({ at: 21, section: 'orb-mesh' })
+    await page.tick()
+    assert.deepEqual(opened, ['orb-mesh'])
+    const posts = page.calls.filter((call) => call.path === '/.dsh-orb/settings-open' && call.options.method === 'POST')
+    assert.equal(posts.length, 1)
+    assert.deepEqual(JSON.parse(posts[0].options.body), { at: 21, section: 'orb-mesh' })
+    page.setSettingsOpen(null)
   })
 })
 

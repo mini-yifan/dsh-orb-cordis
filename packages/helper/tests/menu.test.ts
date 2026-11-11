@@ -125,6 +125,7 @@ describe('ball menu', () => {
     }, true, {
       openMain: () => { actions.push('open') },
       openSettings: () => { actions.push('settings') },
+      openMesh: () => { actions.push('mesh') },
       setOverlay: () => { actions.push('overlay') },
       setBackground: () => { actions.push('background') },
       setSelection: (enabled) => { actions.push(`selection:${enabled}`) },
@@ -136,6 +137,7 @@ describe('ball menu', () => {
     assert.deepEqual(template.map((item) => item.label ?? item.type), [
       '打开主窗口',
       '打开悬浮球设置',
+      '打开互联',
       '悬浮球 Agent 模型',
       '后台 Agent 模型',
       '划词工具栏',
@@ -145,24 +147,25 @@ describe('ball menu', () => {
       'separator',
       '停用悬浮球',
     ])
-    const selection = template[4]
+    const selection = template[5]
     assert.equal(selection?.type, 'checkbox')
     assert.equal(selection?.checked, true, 'the checkbox mirrors the stored switch')
     assert.equal(template[0]?.enabled, true)
     template[0]?.click?.({ checked: false })
     template[1]?.click?.({ checked: false })
+    template[2]?.click?.({ checked: false })
     selection?.click?.({ checked: false })
-    assert.equal(template[5]?.label, '小卫星球')
-    assert.equal(template[5]?.type, 'checkbox')
-    assert.equal(template[5]?.checked, true, 'the lasso ball checkbox mirrors the stored switch')
-    template[5]?.click?.({ checked: false })
-    template[6]?.click?.({ checked: true })
-    template[7]?.click?.({ checked: false })
-    template[9]?.click?.({ checked: false })
-    const background = template[3]?.submenu?.find((item) => item.label === '✓ Flash')
+    assert.equal(template[6]?.label, '小卫星球')
+    assert.equal(template[6]?.type, 'checkbox')
+    assert.equal(template[6]?.checked, true, 'the lasso ball checkbox mirrors the stored switch')
+    template[6]?.click?.({ checked: false })
+    template[7]?.click?.({ checked: true })
+    template[8]?.click?.({ checked: false })
+    template[10]?.click?.({ checked: false })
+    const background = template[4]?.submenu?.find((item) => item.label === '✓ Flash')
     assert.equal(background?.submenu?.find((item) => item.label === 'Max')?.checked, true)
     background?.submenu?.[0]?.click?.({ checked: true })
-    assert.deepEqual(actions, ['open', 'settings', 'selection:false', 'lasso:false', 'fraction:true', 'update', 'disable', 'background'])
+    assert.deepEqual(actions, ['open', 'settings', 'mesh', 'selection:false', 'lasso:false', 'fraction:true', 'update', 'disable', 'background'])
     const english = contextMenuTemplate({
       catalog: { groups: [] },
       overlay: { provider: 'deepseek-official', model: 'plain' },
@@ -175,6 +178,7 @@ describe('ball menu', () => {
     }, false, {
       openMain() {},
       openSettings() {},
+      openMesh() {},
       setOverlay() {},
       setBackground() {},
       setSelection() {},
@@ -188,6 +192,9 @@ describe('ball menu', () => {
     // The settings panel is a main-window surface: no main window, no row to click.
     assert.equal(english[1]?.label, 'Open floating-ball settings')
     assert.equal(english[1]?.enabled, false)
+    // The interconnect window is independent of the main window.
+    assert.equal(english[2]?.label, 'Open interconnect')
+    assert.notEqual(english[2]?.enabled, false)
     assert.equal(english.find((item) => item.label === 'Selection toolbar')?.checked, false)
     assert.equal(english.find((item) => item.label === 'Lasso ball')?.checked, true)
     assert.equal(english.find((item) => item.label === 'Lasso ball')?.type, 'checkbox')

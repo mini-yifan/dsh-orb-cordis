@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+    <title>互联</title>
+    <link rel="stylesheet" href="theme.css">
+    <link rel="stylesheet" href="chat.css">
+    <link rel="stylesheet" href="mesh.css">
+  </head>
+  <body>
+    <header id="mesh-top">
+      <div class="mesh-brand">
+        <span id="mesh-title">互联</span>
+        <span id="mesh-mock">静态假数据</span>
+      </div>
+      <div class="mesh-status" role="status">
+        <span id="mesh-summary"></span>
+        <span id="mesh-dot" class="mesh-dot" aria-hidden="true"></span>
+      </div>
+      <div class="mesh-actions">
+        <button id="mesh-refresh" type="button">刷新</button>
+        <button id="mesh-settings" type="button">设置</button>
+        <button id="mesh-stop-all" type="button" class="mesh-danger">停止所有远程任务</button>
+      </div>
+    </header>
+    <p id="mesh-toast" role="status" hidden></p>
+    <main>
+      <aside id="mesh-side">
+        <div id="mesh-tree" role="tree" aria-label="设备、工作区与会话"></div>
+      </aside>
+      <section id="mesh-detail">
+        <header id="mesh-session-head" hidden>
+          <div class="mesh-session-head-text">
+            <h2 id="mesh-session-title"></h2>
+            <p id="mesh-session-meta"></p>
+          </div>
+          <span id="mesh-session-status"></span>
+        </header>
+        <div id="mesh-transcript" role="log" aria-live="polite"></div>
+        <div id="mesh-attachments" hidden></div>
+        <p id="mesh-hint" role="status" hidden></p>
+        <p id="mesh-error" role="alert" hidden></p>
+        <form id="mesh-composer">
+          <label id="mesh-input-label" for="mesh-input">输入指令</label>
+          <textarea id="mesh-input" rows="2" autocomplete="off"></textarea>
+          <div class="mesh-composer-actions">
+            <button id="mesh-stop" type="button">停止</button>
+            <button id="mesh-send" type="submit">发送</button>
+          </div>
+        </form>
+        <div id="mesh-empty" hidden></div>
+      </section>
+    </main>
+    <script type="module" src="mesh.js"></script>
+  </body>
+</html>

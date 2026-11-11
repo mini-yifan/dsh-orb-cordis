@@ -84,9 +84,18 @@ for (const platform of ['darwin-arm64', 'darwin-x64']) {
   if (existsSync(helper)) await chmod(helper, 0o755)
 }
 
+// Orb Mesh is built in the separate dsh-mesh repository and vendored as a
+// self-contained bundle. Refuse to assemble an install that silently lacks it.
+const meshVendor = join(bundleRoot, 'vendor', 'mesh')
+if (!existsSync(meshVendor)) {
+  throw new Error('assemble: packages/bundle/vendor/mesh is missing. Run `node scripts/sync-mesh.mjs` first.')
+}
+await cp(meshVendor, join(dist, 'mesh'), { recursive: true })
+
 // The host reaches the helper at ../helper/lib/main.js and the selection monitor at ../native-selection/src.
 await copyFrom('helper', 'lib', join(dist, 'helper', 'lib'))
 await copyFrom('helper', 'preload.cjs', join(dist, 'helper', 'preload.cjs'))
+await copyFrom('helper', 'mesh-preload.cjs', join(dist, 'helper', 'mesh-preload.cjs'))
 await copyFrom('helper', 'selection-preload.cjs', join(dist, 'helper', 'selection-preload.cjs'))
 await copyFrom('helper', 'lasso-preload.cjs', join(dist, 'helper', 'lasso-preload.cjs'))
 await copyFrom('helper', 'assets', join(dist, 'helper', 'assets'))

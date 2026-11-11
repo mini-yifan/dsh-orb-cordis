@@ -233,6 +233,8 @@ const HELPER_RETRY_DELAYS_MS = [500, 2_000, 10_000, 5 * 60_000]
 const AGENT_POLL_MS = 1_000
 /** How long a ball-initiated main-window target (session jump, settings) stays valid: long enough for a cold app launch. */
 const MAIN_WINDOW_TARGET_TTL_MS = 30_000
+/** Settings sections this page can deep-link into; unknown values fall back to the ball page. */
+const SETTINGS_SECTIONS = new Set(['orb', 'orb-mesh'])
 /** Caller conversations cycle through this many attribution colors. */
 const AGENT_COLOR_COUNT = 4
 /**
@@ -428,8 +430,8 @@ export class OrbRuntime {
    */
   private readonly readAgentIds = new Set<string>()
   private jumpTarget: { readonly sessionId: string; readonly at: number } | undefined
-  /** One-shot "open the ball's own settings page" request for the main window's client plugin. */
-  private settingsTarget: { readonly at: number } | undefined
+  /** One-shot "open a settings section in the main window" request for its client plugin. */
+  private settingsTarget: { readonly at: number; readonly section: string } | undefined
   private readonly callerColors = new Map<string, number>()
   private callerTitles: { readonly at: number; readonly byId: Map<string, string> } | undefined
   private callerTitlesTask: Promise<void> | undefined
@@ -2293,7 +2295,13 @@ export class OrbRuntime {
       return
     }
     if (record.type === 'open-settings') {
-      this.run('open-settings', () => this.openSettings())
+      this.run('open-settings', () => this.openSettings(typeof record.section === 'string' ? record.section : 'orb'))
+      return
+    }
+    if (record.type === 'mesh-open') {
+      // The Mesh window belongs to the helper; the host only relays the request, the same
+      // way every other ball menu row reaches the helper.
+      this.broadcast({ type: 'open-mesh' })
       return
     }
     if (record.type === 'tcc') {
@@ -2686,13 +2694,14 @@ export class OrbRuntime {
   }
 
   /**
-   * The ball's "open floating-ball settings" click: arm the request the main window's
-   * client plugin polls for, then bring that window forward. The window may be closed —
-   * the target outlives the launch (`MAIN_WINDOW_TARGET_TTL_MS`) so a cold start still
-   * lands on the settings page.
+   * The ball's settings click: arm the request the main window's client plugin polls for,
+   * then bring that window forward. `section` selects a registered `settings.section`;
+   * an unknown value falls back to the floating-ball page for forward compatibility.
+   * The window may be closed — the target outlives the launch
+   * (`MAIN_WINDOW_TARGET_TTL_MS`) so a cold start still lands on the settings page.
    */
-  private async openSettings(): Promise<void> {
-    this.settingsTarget = { at: Date.now() }
+  private async openSettings(section = 'orb'): Promise<void> {
+    this.settingsTarget = { at: Date.now(), section: normalizedSettingsSection(section) }
     await this.openMain()
   }
 
@@ -2825,14 +2834,14 @@ export class OrbRuntime {
    * `null` once confirmed or expired; reading it does not consume it, so a window that
    * cannot open the section yet retries instead of losing the click.
    */
-  takeSettingsOpen(): { at: number } | null {
+  takeSettingsOpen(): { at: number; section: string } | null {
     const target = this.settingsTarget
     if (target === undefined) return null
     if (Date.now() - target.at > MAIN_WINDOW_TARGET_TTL_MS) {
       this.settingsTarget = undefined
       return null
     }
-    return { at: target.at }
+    return { at: target.at, section: target.section }
   }
 
   confirmSettingsOpen(at: number): void {
@@ -3279,6 +3288,11 @@ function questionError(message: string, code: string): Error {
 
 function clip(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max)
+}
+
+/** A deep-linked settings section, restricted to ids this bundle actually registers. */
+function normalizedSettingsSection(value: string): string {
+  return SETTINGS_SECTIONS.has(value) ? value : 'orb'
 }
 
 /**

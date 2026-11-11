@@ -13,6 +13,7 @@ out/
 # Compiled from packages/*/src by `pnpm build` — never hand-edited
 packages/*/lib/
 packages/helper/assets/vendor/
+packages/bundle/vendor/
 
 # Package artifacts
 *.tgz

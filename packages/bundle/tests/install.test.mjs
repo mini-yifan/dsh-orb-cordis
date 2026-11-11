@@ -43,6 +43,8 @@ function checkInstalled(profile, root) {
     'dsh-orb/computer-use/lasso-service',
     'dsh-orb/desktop/cli-path',
     'dsh-orb/host',
+    'dsh-orb/mesh',
+    'dsh-orb/mesh/device-agent',
   ])
   for (const specifier of names) {
     const file = resolveFromProfile(profile, specifier)
@@ -61,8 +63,13 @@ function checkInstalled(profile, root) {
   for (const rel of [
     'dist/helper/lib/main.js',
     'dist/helper/preload.cjs',
+    'dist/helper/mesh-preload.cjs',
     'dist/helper/selection-preload.cjs',
     'dist/helper/assets/floating.html',
+    'dist/helper/assets/mesh.html',
+    'dist/helper/assets/mesh.js',
+    'dist/mesh/index.mjs',
+    'dist/mesh/device-agent.mjs',
     'dist/helper/assets/deepseek-avatar-square.gif',
     // The ball's typesetter: the KaTeX bundle plus the sheet and faces it needs.
     'dist/helper/assets/math.js',
