@@ -216,7 +216,7 @@
 
 | 风险 | 说明 | 影响 |
 |---|---|---|
-| 多 Host 并发 | 最小 server 在客户端发起新连接时断掉它的全部旧 Link（`gateway.ts:525`）；插件 Client 与 dsh-Go `dsh_remote` 都只保存一个活动 Host；Host 侧已支持多客户端 | 3–5 台互联的前提，必须改 |
+| 多 Host 并发 | 最小 server 在客户端发起新连接时断掉它的全部旧 Link（`gateway.ts:525`）；插件 Client 与 dsh-Go `dsh_remote` 都只保存一个活动 Host；Host 侧支持多个**不同**客户端，但同一 `peerDeviceId` 的多条连接会被 `connection-controller.ts:78-89` 互相替换 | 3–5 台互联的前提，必须改（方案见 17 §3.2-3，两端都要动） |
 | 桌面统一 UI | 官方 DSH 单 Host、插件槽位有限 | D3 产品承诺 |
 | 手机作为 Host | 手机引擎里没有 Host 插件；派到手机的标准模式会话会继承手机操控工具 | 电脑→手机、安全 |
 | 远程审批 | 远程工具文档写「在原生 UI 处理」；但远程通道放行 `$events`、`$events/result`、`userQuestions/answer`，远程 peer 可应答，需实测 | 跨设备审批/提问 |
