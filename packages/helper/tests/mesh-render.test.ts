@@ -90,8 +90,19 @@ describe('mesh window markup and wiring', () => {
     assert.match(main, /write\(\{ type: 'open-settings', section: 'orb-mesh' \}\)/)
   })
 
+  it('selects the remote task after a bookmark opens the window', () => {
+    assert.match(main, /function readMeshOpenTarget/)
+    assert.match(main, /mesh:open-session/)
+    assert.match(main, /sendMeshOpenTarget/)
+    assert.match(mesh, /pendingOpen: null/)
+    assert.match(mesh, /api\.onOpenSession\(/)
+    assert.match(mesh, /async function applyOpenTarget/)
+    assert.match(mesh, /findSession\(state\.tree, pending\.nodeId, pending\.sessionId\)/)
+    assert.match(source('../mesh-preload.cjs'), /onOpenSession\(callback\)/)
+  })
+
   it('creates an ordinary framed, resizable taskbar window and loads mesh.html', () => {
-    const start = main.indexOf('function openMeshWindow()')
+    const start = main.indexOf('function openMeshWindow(')
     assert.notEqual(start, -1)
     const block = main.slice(start, start + 2600)
     assert.match(block, /width: 960/)
@@ -117,7 +128,7 @@ describe('mesh window markup and wiring', () => {
 
   it('routes the menu row to the host and opens the window from its broadcast', () => {
     assert.match(main, /openMesh: \(\) => \{ write\(\{ type: 'mesh-open' \}\) \}/)
-    assert.match(main, /record\.type === 'open-mesh'\) \{\n\s+openMeshWindow\(\)/)
+    assert.match(main, /record\.type === 'open-mesh'\) \{\n\s+openMeshWindow\(readMeshOpenTarget\(/)
     assert.match(source('../../host/src/orb.ts'), /record\.type === 'mesh-open'\) \{[\s\S]{0,220}this\.broadcast\(\{ type: 'open-mesh' \}\)/)
   })
 })

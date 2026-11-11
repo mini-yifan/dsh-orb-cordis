@@ -48,15 +48,6 @@ button {
   font-weight: 600;
 }
 
-#mesh-mock {
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  line-height: 17px;
-  color: var(--dsw-alias-label-tertiary, #666);
-  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
-}
-
 .mesh-status {
   display: flex;
   align-items: center;

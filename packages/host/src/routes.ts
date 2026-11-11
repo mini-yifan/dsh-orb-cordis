@@ -564,7 +564,7 @@ async function handleMesh(
       return
     }
     if (method === 'GET' && rest === '/tree') {
-      sendJson(res, 200, mesh.tree())
+      sendJson(res, 200, await mesh.tree())
       return
     }
     if (method === 'GET' && rest === '/events') {
@@ -595,17 +595,17 @@ async function handleMesh(
         throw new MeshRequestError(400, 'bad_pairing', '配对串格式不对，请从管理页重新复制', 1)
       }
       const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name : undefined
-      sendJson(res, 200, mesh.pair(body.pairing, name))
+      sendJson(res, 200, await mesh.pair(body.pairing, name))
       return
     }
     if (method === 'POST' && rest === '/unpair') {
-      sendJson(res, 200, mesh.unpair())
+      sendJson(res, 200, await mesh.unpair())
       return
     }
     if (method === 'POST' && rest === '/name') {
       const name = asRecord(await readJson(req))?.name
       if (typeof name !== 'string') throw new MeshRequestError(400, 'invalid-name', '本机名称不能为空')
-      sendJson(res, 200, mesh.rename(name))
+      sendJson(res, 200, await mesh.rename(name))
       return
     }
     const session = /^\/sessions\/([^/]+)\/([^/]+)\/(page|stream|prompt|cancel)$/.exec(rest)
@@ -615,17 +615,17 @@ async function handleMesh(
       const action = session[3]
       if (method === 'GET' && (action === 'page' || action === 'stream')) {
         const since = integerParam(url, 'since') ?? 0
-        sendJson(res, 200, action === 'page' ? mesh.page(nodeId, sessionId, since) : mesh.stream(nodeId, sessionId, since))
+        sendJson(res, 200, action === 'page' ? await mesh.page(nodeId, sessionId, since) : await mesh.stream(nodeId, sessionId, since))
         return
       }
       if (method === 'POST' && action === 'prompt') {
         const text = asRecord(await readJson(req))?.text
         if (typeof text !== 'string') throw new MeshRequestError(400, 'invalid-prompt', '指令不能为空')
-        sendJson(res, 200, mesh.prompt(nodeId, sessionId, text))
+        sendJson(res, 200, await mesh.prompt(nodeId, sessionId, text))
         return
       }
       if (method === 'POST' && action === 'cancel') {
-        sendJson(res, 200, mesh.cancel(nodeId, sessionId))
+        sendJson(res, 200, await mesh.cancel(nodeId, sessionId))
         return
       }
     }

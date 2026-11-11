@@ -219,8 +219,30 @@ interface AgentBookmarkRegistry {
   list(): readonly AgentBookmark[]
 }
 
+/** One cross-device task as `@dsh-mesh/plugin` exposes it. */
+interface RemoteMeshTask {
+  readonly taskId: string
+  readonly targetNodeId: string
+  readonly sessionId: string
+  readonly status: 'running' | 'waiting-input' | 'done' | 'failed' | 'cancelled' | 'unknown'
+  readonly prompt?: string
+  readonly callerSessionId?: string
+  readonly createdAt: number
+  readonly updatedAt: number
+}
+
+/** The app-level `mesh` service, declared structurally across the plugin boundary. */
+interface RemoteMeshService {
+  tasks(): readonly RemoteMeshTask[]
+  nodes?(): readonly { readonly nodeId: string; readonly name: string }[]
+}
+
 /** Cordis service name of {@link AgentBookmarkRegistry}. */
 const CODE_AGENT_REGISTRY = 'codeAgentRegistry'
+/** Cordis service name of the app-level mesh service. */
+const MESH_SERVICE = 'mesh'
+/** Remote bookmark ids carry both sides because a local session id cannot address the Mesh window. */
+const REMOTE_BOOKMARK_PREFIX = 'remote:'
 /**
  * Backoff before the first-run runtime download is retried; the last entry is
  * the self-heal attempt. One dropped connection must not cost the user the ball
@@ -253,11 +275,15 @@ interface AgentBookmarkItem {
   readonly cwd: string
   readonly startedAt: number
   readonly endedAt?: number
-  readonly state: 'running' | 'completed' | 'stopped'
+  readonly state: 'running' | 'completed' | 'stopped' | 'ended'
   readonly outcome?: string
   readonly colorIndex: number
   readonly callerTitle: string
   readonly unread: boolean
+  /** Cross-device task: the chip uses the remote hue and opens the Mesh window. */
+  readonly remote?: boolean
+  /** Target device name, shown in the chip tooltip. */
+  readonly deviceName?: string
 }
 
 interface QuestionAnswer {
@@ -429,6 +455,8 @@ export class OrbRuntime {
    * gives a continued session a fresh unread bookmark for its next stretch.
    */
   private readonly readAgentIds = new Set<string>()
+  /** Finished remote tasks older than this run are history, not unread bookmarks. */
+  private readonly startedAt = Date.now()
   private jumpTarget: { readonly sessionId: string; readonly at: number } | undefined
   /** One-shot "open a settings section in the main window" request for its client plugin. */
   private settingsTarget: { readonly at: number; readonly section: string } | undefined
@@ -2733,11 +2761,9 @@ export class OrbRuntime {
    */
   private pollAgents(force = false): void {
     if (this.sockets.size === 0) return
-    const registry = this.agentRegistry()
-    if (registry === undefined) return
     let items: AgentBookmarkItem[]
     try {
-      items = this.agentItems(registry)
+      items = this.agentItems()
     } catch (error) {
       console.error(`dsh-orb: agent bookmarks failed: ${error instanceof Error ? error.message : String(error)}`)
       return
@@ -2758,9 +2784,18 @@ export class OrbRuntime {
     }
   }
 
+  private meshService(): RemoteMeshService | undefined {
+    try {
+      const mesh = this.ctx.get(MESH_SERVICE) as RemoteMeshService | undefined
+      return mesh !== undefined && typeof mesh.tasks === 'function' ? mesh : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   /** Running first (oldest start at the top), finished after (newest first); read ones dropped. */
-  private agentItems(registry: AgentBookmarkRegistry): AgentBookmarkItem[] {
-    const bookmarks = registry.list()
+  private agentItems(): AgentBookmarkItem[] {
+    const bookmarks = this.agentRegistry()?.list() ?? []
     // A running stretch is never read. Clearing here — not only at click time — is what re-arms a
     // continued session: the previous stretch was clicked away, this one starts running, and its
     // completion must raise an unread bookmark again.
@@ -2770,15 +2805,8 @@ export class OrbRuntime {
     const visible = bookmarks.filter((bookmark) => (
       bookmark.state === 'running' || !this.readAgentIds.has(bookmark.sessionId)
     ))
-    visible.sort((left, right) => {
-      const leftRunning = left.state === 'running'
-      const rightRunning = right.state === 'running'
-      if (leftRunning !== rightRunning) return leftRunning ? -1 : 1
-      if (leftRunning) return left.startedAt - right.startedAt
-      return (right.endedAt ?? 0) - (left.endedAt ?? 0)
-    })
     const titles = this.callerTitles?.byId
-    return visible.map((bookmark) => ({
+    const items = visible.map((bookmark): AgentBookmarkItem => ({
       sessionId: bookmark.sessionId,
       callerId: bookmark.callerId,
       task: bookmark.task,
@@ -2791,6 +2819,46 @@ export class OrbRuntime {
       ...(bookmark.endedAt === undefined ? {} : { endedAt: bookmark.endedAt }),
       ...(bookmark.outcome === undefined ? {} : { outcome: bookmark.outcome }),
     }))
+
+    // Cross-device tasks share the strip, but keep their own id so a click can open the
+    // interconnect window instead of the main window's local session view.
+    const mesh = this.meshService()
+    const devices = new Map((mesh?.nodes?.() ?? []).map(node => [node.nodeId, node.name]))
+    for (const task of mesh?.tasks() ?? []) {
+      const id = remoteBookmarkId(task.targetNodeId, task.sessionId)
+      const running = task.status === 'running' || task.status === 'waiting-input'
+      if (running) {
+        this.readAgentIds.delete(id)
+      } else if (task.updatedAt < this.startedAt) {
+        // A completed task from an earlier app run is Mesh history. Replaying every
+        // old task as unread after each launch would bury the current work.
+        continue
+      }
+      if (!running && this.readAgentIds.has(id)) continue
+      items.push({
+        sessionId: id,
+        callerId: task.callerSessionId ?? `remote:${task.targetNodeId}`,
+        task: (task.prompt ?? task.taskId).slice(0, 160),
+        cwd: '',
+        startedAt: task.createdAt,
+        state: remoteTaskState(task.status),
+        colorIndex: 0,
+        callerTitle: task.callerSessionId === undefined ? '' : (titles?.get(task.callerSessionId) ?? ''),
+        unread: !running && !this.readAgentIds.has(id),
+        remote: true,
+        ...(devices.has(task.targetNodeId) ? { deviceName: devices.get(task.targetNodeId) } : {}),
+        ...(running ? {} : { endedAt: task.updatedAt }),
+        ...(task.status === 'failed' || task.status === 'unknown' ? { outcome: task.status } : {}),
+      })
+    }
+    items.sort((left, right) => {
+      const leftRunning = left.state === 'running'
+      const rightRunning = right.state === 'running'
+      if (leftRunning !== rightRunning) return leftRunning ? -1 : 1
+      if (leftRunning) return left.startedAt - right.startedAt
+      return (right.endedAt ?? 0) - (left.endedAt ?? 0)
+    })
+    return items
   }
 
   private callerColor(callerId: string): number {
@@ -2856,6 +2924,18 @@ export class OrbRuntime {
    * bookmark with its outcome.
    */
   private async openAgent(sessionId: string): Promise<void> {
+    const remote = parseRemoteBookmarkId(sessionId)
+    if (remote !== undefined) {
+      const state = this.bookmarkState(sessionId)
+      if (state !== undefined && state !== 'running') {
+        this.readAgentIds.add(sessionId)
+        this.pollAgents(true)
+      }
+      // The task runs in another Host's Session. The main window cannot open that Session,
+      // so the click goes straight to the helper's interconnect window at this target.
+      this.broadcast({ type: 'open-mesh', nodeId: remote.nodeId, sessionId: remote.sessionId })
+      return
+    }
     if (!sessionId.startsWith('session-') || sessionId.length > 80) return
     const state = this.bookmarkState(sessionId)
     if (state !== undefined && state !== 'running') {
@@ -2871,6 +2951,13 @@ export class OrbRuntime {
    * registry is unavailable). A click falls back to a plain jump in that case.
    */
   private bookmarkState(sessionId: string): AgentBookmarkItem['state'] | undefined {
+    const remote = parseRemoteBookmarkId(sessionId)
+    if (remote !== undefined) {
+      const task = this.meshService()?.tasks().find(item => (
+        item.targetNodeId === remote.nodeId && item.sessionId === remote.sessionId
+      ))
+      return task === undefined ? undefined : remoteTaskState(task.status)
+    }
     try {
       return this.agentRegistry()?.list().find((bookmark) => bookmark.sessionId === sessionId)?.state
     } catch {
@@ -2886,6 +2973,15 @@ export class OrbRuntime {
    * only trace of the task, and stopping it stays `code_agent_stop`'s job.
    */
   private async dismissAgent(sessionId: string): Promise<void> {
+    const remote = parseRemoteBookmarkId(sessionId)
+    if (remote !== undefined) {
+      const state = this.bookmarkState(sessionId)
+      if (state === undefined || state === 'running') return
+      if (this.readAgentIds.has(sessionId)) return
+      this.readAgentIds.add(sessionId)
+      this.pollAgents(true)
+      return
+    }
     if (!sessionId.startsWith('session-') || sessionId.length > 80) return
     const state = this.bookmarkState(sessionId)
     if (state === undefined || state === 'running') return
@@ -2893,6 +2989,28 @@ export class OrbRuntime {
     this.readAgentIds.add(sessionId)
     this.pollAgents(true)
   }
+}
+
+function remoteBookmarkId(nodeId: string, sessionId: string): string {
+  return `${REMOTE_BOOKMARK_PREFIX}${nodeId}:${sessionId}`
+}
+
+function parseRemoteBookmarkId(value: string): { nodeId: string; sessionId: string } | undefined {
+  if (!value.startsWith(REMOTE_BOOKMARK_PREFIX) || value.length > 180) return undefined
+  const rest = value.slice(REMOTE_BOOKMARK_PREFIX.length)
+  const separator = rest.indexOf(':')
+  if (separator <= 0 || separator === rest.length - 1) return undefined
+  const nodeId = rest.slice(0, separator)
+  const sessionId = rest.slice(separator + 1)
+  if (nodeId.length > 80 || sessionId.length > 80 || sessionId.includes(':')) return undefined
+  return { nodeId, sessionId }
+}
+
+function remoteTaskState(status: RemoteMeshTask['status']): AgentBookmarkItem['state'] {
+  if (status === 'running' || status === 'waiting-input') return 'running'
+  if (status === 'done') return 'completed'
+  if (status === 'cancelled') return 'stopped'
+  return 'ended'
 }
 
 /** Per-profile Chromium data so desktop and `dsh web` do not share one lock. */

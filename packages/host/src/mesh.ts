@@ -150,19 +150,19 @@ export interface MeshOk {
 export interface MeshService {
   status(): MeshStatus
   nodes(): MeshNode[]
-  tree(): MeshTree
-  page(nodeId: string, sessionId: string, since?: number): MeshPage
-  stream(nodeId: string, sessionId: string, since: number): MeshPage
-  prompt(nodeId: string, sessionId: string, text: string): MeshOk
-  cancel(nodeId: string, sessionId: string): MeshOk
+  tree(): MeshTree | Promise<MeshTree>
+  page(nodeId: string, sessionId: string, since?: number): MeshPage | Promise<MeshPage>
+  stream(nodeId: string, sessionId: string, since: number): MeshPage | Promise<MeshPage>
+  prompt(nodeId: string, sessionId: string, text: string): MeshOk | Promise<MeshOk>
+  cancel(nodeId: string, sessionId: string): MeshOk | Promise<MeshOk>
   interactions(): MeshInteraction[]
   answer(answer: MeshInteractionAnswer): MeshOk
   tasks(): DeviceTask[]
   prefs(): MeshPrefs
   setPrefs(patch: unknown): MeshPrefs
-  pair(pairing: string, name?: string): MeshPairSuccess
-  unpair(): MeshOk
-  rename(name: string): MeshOk
+  pair(pairing: string, name?: string): MeshPairSuccess | Promise<MeshPairSuccess>
+  unpair(): MeshOk | Promise<MeshOk>
+  rename(name: string): MeshOk | Promise<MeshOk>
 }
 
 /** A route-visible failure carrying the contract's `error`, `message`, and optional `step`. */
@@ -667,6 +667,235 @@ export function parsePairing(pairing: string): { address: string; host: string; 
   return { address: `https://${host}:${port}`, host, code, fp }
 }
 
+interface PluginMeshLike {
+  status(): unknown
+  nodes(): unknown
+  tree(): unknown
+  page(nodeId: string, sessionId: string, maxMessages?: number): unknown
+  stream(nodeId: string, sessionId: string, since: number): unknown
+  prompt(nodeId: string, sessionId: string, text: string): unknown
+  cancel(nodeId: string, sessionId: string): unknown
+  interactions(): unknown
+  tasks(): unknown
+  prefs(): unknown
+  updatePrefs(patch: unknown): unknown
+  pair(input: unknown): unknown
+  unpair(): unknown
+  rename(name: string): unknown
+  createTaskSession(...args: unknown[]): unknown
+  waitTask(...args: unknown[]): unknown
+}
+
+/**
+ * Adapt the real `@dsh-mesh/plugin` service (nested device tree, raw Session
+ * snapshots) onto the flat shape this window has always consumed. Without this
+ * seam the Mesh page receives the plugin object and renders an empty tree.
+ */
+class PluginMeshService implements MeshService {
+  constructor(private readonly plugin: PluginMeshLike) {}
+
+  status(): MeshStatus {
+    const value = record(this.plugin.status())
+    const node = record(value?.node)
+    const server = record(value?.server)
+    return {
+      paired: value?.paired === true,
+      server: {
+        url: typeof server?.url === 'string' ? server.url : '',
+        fp: typeof server?.fingerprint === 'string' ? server.fingerprint : '',
+      },
+      node: node === undefined ? null : normalizeNode(node),
+      connection: value?.connection === 'connected' || value?.connection === 'connecting' || value?.connection === 'offline'
+        ? value.connection : 'unpaired',
+      peersOnline: typeof value?.peersOnline === 'number' ? value.peersOnline : 0,
+      peersTotal: typeof value?.peersTotal === 'number' ? value.peersTotal : 0,
+    }
+  }
+
+  nodes(): MeshNode[] {
+    const value = this.plugin.nodes()
+    return Array.isArray(value) ? value.flatMap(item => {
+      const node = record(item)
+      return node === undefined ? [] : [normalizeNode(node)]
+    }) : []
+  }
+
+  async tree(): Promise<MeshTree> {
+    const value = record(await this.plugin.tree())
+    const nodes: MeshNode[] = []
+    const workspaces: MeshWorkspace[] = []
+    const sessions: MeshSession[] = []
+    for (const item of Array.isArray(value?.nodes) ? value.nodes : []) {
+      const row = record(item)
+      if (row === undefined) continue
+      const node = normalizeNode(row)
+      nodes.push(node)
+      for (const workspaceItem of Array.isArray(row.workspaces) ? row.workspaces : []) {
+        const workspace = record(workspaceItem)
+        if (workspace === undefined || typeof workspace.workspaceId !== 'string') continue
+        const workspaceId = workspace.workspaceId
+        workspaces.push({
+          nodeId: node.nodeId,
+          workspaceId,
+          name: typeof workspace.title === 'string' ? workspace.title
+            : typeof workspace.name === 'string' ? workspace.name : workspaceId,
+          ...(typeof workspace.path === 'string' ? { path: workspace.path } : {}),
+        })
+        for (const sessionItem of Array.isArray(workspace.sessions) ? workspace.sessions : []) {
+          const session = record(sessionItem)
+          if (session === undefined || typeof session.sessionId !== 'string') continue
+          sessions.push({
+            nodeId: node.nodeId,
+            workspaceId,
+            sessionId: session.sessionId,
+            title: typeof session.title === 'string' ? session.title : session.sessionId,
+            status: normalizeSessionStatus(session.status),
+            controllable: session.controllable === true,
+            updatedAt: typeof session.updatedAt === 'number' ? session.updatedAt : 0,
+          })
+        }
+      }
+    }
+    return {
+      nodes,
+      workspaces,
+      sessions,
+      cursor: typeof value?.cursor === 'number' ? value.cursor : 0,
+    }
+  }
+
+  async page(nodeId: string, sessionId: string, since = 0): Promise<MeshPage> {
+    return pageFromSnapshot(nodeId, sessionId, await this.plugin.page(nodeId, sessionId, 200), since)
+  }
+
+  async stream(nodeId: string, sessionId: string, since: number): Promise<MeshPage> {
+    return this.page(nodeId, sessionId, since)
+  }
+
+  async prompt(nodeId: string, sessionId: string, text: string): Promise<MeshOk> {
+    await this.plugin.prompt(nodeId, sessionId, text)
+    return { ok: true }
+  }
+
+  async cancel(nodeId: string, sessionId: string): Promise<MeshOk> {
+    await this.plugin.cancel(nodeId, sessionId)
+    return { ok: true }
+  }
+
+  interactions(): MeshInteraction[] {
+    const value = this.plugin.interactions()
+    return Array.isArray(value) ? value as MeshInteraction[] : []
+  }
+
+  answer(_answer: MeshInteractionAnswer): MeshOk {
+    throw new MeshRequestError(501, 'not_supported', 'Remote approvals are not exposed in this build.')
+  }
+
+  tasks(): DeviceTask[] {
+    const value = this.plugin.tasks()
+    return Array.isArray(value) ? value as DeviceTask[] : []
+  }
+
+  prefs(): MeshPrefs {
+    const value = record(this.plugin.prefs())
+    return {
+      allowIncoming: value?.allowIncoming !== false,
+      allowedCallers: Array.isArray(value?.allowedCallers)
+        ? value.allowedCallers.filter((item): item is string => typeof item === 'string')
+        : [],
+      allowGuardedTools: value?.allowGuardedTools === true,
+      receiveDir: typeof value?.receiveDir === 'string' ? value.receiveDir : '',
+    }
+  }
+
+  setPrefs(patch: unknown): MeshPrefs {
+    this.plugin.updatePrefs(patch)
+    return this.prefs()
+  }
+
+  async pair(pairing: string, name?: string): Promise<MeshPairSuccess> {
+    const parsed = parsePairing(pairing)
+    if (parsed === undefined) {
+      throw new MeshRequestError(400, 'bad_pairing', '配对串格式不对，请从管理页重新复制', 1)
+    }
+    await this.plugin.pair({ serverUrl: parsed.address, code: parsed.code, fingerprint: parsed.fp })
+    const status = this.status()
+    const node = status.node ?? {
+      nodeId: 'local',
+      name: name?.trim() || 'local',
+      platform: 'linux' as const,
+      hostDeviceId: 'local',
+      online: true,
+    }
+    return {
+      ok: true,
+      node,
+      peers: this.nodes().filter(item => item.nodeId !== node.nodeId),
+    }
+  }
+
+  async unpair(): Promise<MeshOk> {
+    await this.plugin.unpair()
+    return { ok: true }
+  }
+
+  async rename(name: string): Promise<MeshOk> {
+    const node = record(await this.plugin.rename(name))
+    return { ok: true, ...(typeof node?.name === 'string' ? { name: node.name } : {}) }
+  }
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined
+}
+
+function normalizeNode(value: Record<string, unknown>): MeshNode {
+  const platform = value.platform === 'win32' || value.platform === 'android' || value.platform === 'linux' || value.platform === 'darwin'
+    ? value.platform : 'linux'
+  return {
+    nodeId: typeof value.nodeId === 'string' ? value.nodeId : 'local',
+    name: typeof value.name === 'string' ? value.name : 'local',
+    platform,
+    hostDeviceId: typeof value.hostDeviceId === 'string' ? value.hostDeviceId : '',
+    ...(typeof value.clientDeviceId === 'string' ? { clientDeviceId: value.clientDeviceId } : {}),
+    online: value.online !== false,
+    ...(typeof value.lastSeenAt === 'number' ? { lastSeenAt: value.lastSeenAt } : {}),
+    ...(typeof value.harnessVersion === 'string' ? { harnessVersion: value.harnessVersion } : {}),
+    ...(typeof value.appVersion === 'string' ? { appVersion: value.appVersion } : {}),
+  }
+}
+
+function normalizeSessionStatus(value: unknown): MeshSessionStatus {
+  return value === 'running' || value === 'waiting-approval' || value === 'waiting-question'
+    || value === 'failed' || value === 'unknown' ? value : 'idle'
+}
+
+function pageFromSnapshot(nodeId: string, sessionId: string, value: unknown, since: number): MeshPage {
+  const snapshot = record(value)
+  const records = Array.isArray(snapshot?.records) ? snapshot.records : []
+  const items: MeshFrame[] = []
+  for (const entry of records) {
+    const row = record(entry)
+    const event = record(row?.event)
+    if (event === undefined || typeof event.type !== 'string' || typeof event.seq !== 'number') continue
+    if (event.seq <= since) continue
+    items.push({
+      nodeId,
+      sessionId,
+      seq: event.seq,
+      event: {
+        type: event.type,
+        ...(event.data === undefined ? {} : { data: event.data }),
+      },
+    })
+  }
+  return {
+    items,
+    cursor: typeof snapshot?.cursor === 'number' ? snapshot.cursor : (items.at(-1)?.seq ?? since),
+  }
+}
+
 /** Prefer the plugin's process service; fall back to the static mock until R0 ships. */
 export function resolveMeshService(ctx: { get?(name: string): unknown }): MeshService {
   let candidate: unknown
@@ -675,8 +904,19 @@ export function resolveMeshService(ctx: { get?(name: string): unknown }): MeshSe
   } catch {
     candidate = undefined
   }
+  if (isPluginMeshService(candidate)) return new PluginMeshService(candidate)
   if (isMeshService(candidate)) return candidate
   return new MockMeshService()
+}
+
+function isPluginMeshService(value: unknown): value is PluginMeshLike {
+  const record = value as Record<string, unknown> | undefined
+  return record !== undefined
+    && typeof record.status === 'function'
+    && typeof record.tree === 'function'
+    && typeof record.page === 'function'
+    && typeof record.createTaskSession === 'function'
+    && typeof record.waitTask === 'function'
 }
 
 function isMeshService(value: unknown): value is MeshService {

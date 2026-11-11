@@ -13,4 +13,7 @@ contextBridge.exposeInMainWorld('dshMesh', {
   onAppearance(callback) {
     ipcRenderer.on('mesh:appearance', (_event, appearance) => callback(appearance))
   },
+  onOpenSession(callback) {
+    ipcRenderer.on('mesh:open-session', (_event, target) => callback(target))
+  },
 })

@@ -27,11 +27,12 @@ const state = {
   busy: false,
   error: '',
   collapsed: new Set(),
+  /** Bookmark click target waiting until the tree contains that Session. */
+  pendingOpen: null,
 }
 
 const els = {
   title: document.getElementById('mesh-title'),
-  mock: document.getElementById('mesh-mock'),
   summary: document.getElementById('mesh-summary'),
   dot: document.getElementById('mesh-dot'),
   refresh: document.getElementById('mesh-refresh'),
@@ -164,6 +165,11 @@ async function load() {
     state.interactions = Array.isArray(interactions) ? interactions : []
     state.tasks = Array.isArray(tasks) ? tasks : []
     const sessions = Array.isArray(state.tree.sessions) ? state.tree.sessions : []
+    const pending = state.pendingOpen
+    if (pending !== null && findSession(state.tree, pending.nodeId, pending.sessionId) !== undefined) {
+      state.selected = { nodeId: pending.nodeId, sessionId: pending.sessionId }
+      state.pendingOpen = null
+    }
     if (selectedSession() === undefined) {
       const first = sessions.find((session) => session.controllable === true) ?? sessions[0]
       state.selected = first === undefined ? null : { nodeId: first.nodeId, sessionId: first.sessionId }
@@ -189,6 +195,31 @@ async function selectSession(nodeId, sessionId) {
     showError(error)
   }
   render()
+}
+
+function readOpenTarget(payload) {
+  if (payload === null || typeof payload !== 'object') return null
+  const nodeId = payload.nodeId
+  const sessionId = payload.sessionId
+  if (typeof nodeId !== 'string' || typeof sessionId !== 'string' || nodeId === '' || sessionId === '') return null
+  return { nodeId, sessionId }
+}
+
+/** A bookmark click landed: select that remote task once the tree can resolve it. */
+async function applyOpenTarget(payload) {
+  const target = readOpenTarget(payload)
+  if (target === null) return
+  if (state.busy) {
+    state.pendingOpen = target
+    return
+  }
+  if (findSession(state.tree, target.nodeId, target.sessionId) !== undefined) {
+    state.pendingOpen = null
+    await selectSession(target.nodeId, target.sessionId)
+    return
+  }
+  state.pendingOpen = target
+  if (state.status !== null) await load()
 }
 
 /* ----- Actions ----- */
@@ -221,7 +252,7 @@ async function stopCurrent() {
   render()
   try {
     await request('POST', sessionPath(session, 'cancel'))
-    toast(t('已停止这一轮（静态假数据）', 'Stopped this turn (static mock)'))
+    toast(t('已停止这一轮', 'Stopped this turn'))
   } catch (error) {
     showError(error)
   } finally {
@@ -254,7 +285,7 @@ async function stopAllRemoteTasks() {
   }
   state.busy = false
   toast(failed === 0
-    ? t('已停止所有远程任务（静态假数据）', 'All remote tasks stopped (static mock)')
+    ? t('已停止所有远程任务', 'All remote tasks stopped')
     : t(`有 ${failed} 个任务没能停止`, `${failed} task(s) could not be stopped`))
   await load()
 }
@@ -292,7 +323,6 @@ function renderChrome() {
   document.documentElement.lang = zh() ? 'zh' : 'en'
   document.title = t('互联', 'Interconnect')
   els.title.textContent = t('互联', 'Interconnect')
-  els.mock.textContent = t('静态假数据', 'Static mock')
   els.refresh.textContent = t('刷新', 'Refresh')
   els.settings.textContent = t('设置', 'Settings')
   els.stopAll.textContent = t('停止所有远程任务', 'Stop all remote tasks')
@@ -603,6 +633,7 @@ function renderError() {
 /* ----- Wiring ----- */
 
 if (typeof api?.onAppearance === 'function') api.onAppearance(applyAppearance)
+if (typeof api?.onOpenSession === 'function') api.onOpenSession((target) => { void applyOpenTarget(target) })
 els.refresh.addEventListener('click', () => { void load() })
 els.settings.addEventListener('click', () => { api?.openSettings?.() })
 els.stopAll.addEventListener('click', () => { void stopAllRemoteTasks() })

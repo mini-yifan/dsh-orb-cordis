@@ -117,6 +117,8 @@ if (process.platform === 'darwin') app.setActivationPolicy?.('accessory')
 let win: BrowserWindow | undefined
 /** The interconnect window. Unlike the ball it is an ordinary framed, resizable window. */
 let meshWin: BrowserWindow | undefined
+/** Session to select once the interconnect page can take it (bookmark click). */
+let meshOpenTarget: { readonly nodeId: string; readonly sessionId: string } | undefined
 let tccWait: ((status: unknown) => void) | undefined
 let overlays: {
   appearance(payload: {
@@ -471,14 +473,25 @@ function openWindow(): BrowserWindow {
   return created
 }
 
+/** Send a waiting bookmark target once the Mesh page can receive it. */
+function sendMeshOpenTarget(window: BrowserWindow): void {
+  const target = meshOpenTarget
+  if (target === undefined || window.isDestroyed()) return
+  meshOpenTarget = undefined
+  window.webContents.send('mesh:open-session', target)
+}
+
 /**
  * The interconnect window: a normal framed window with a taskbar entry, unlike the
  * always-on-top transparent ball. One instance is kept; a second menu click focuses it.
  */
-function openMeshWindow(): void {
+function openMeshWindow(target?: { readonly nodeId: string; readonly sessionId: string }): void {
+  if (target !== undefined) meshOpenTarget = target
   if (meshWin && !meshWin.isDestroyed()) {
     if (!meshWin.isVisible()) meshWin.show()
     meshWin.focus()
+    // A page still loading will receive the target from did-finish-load below.
+    if (!meshWin.webContents.isLoading()) sendMeshOpenTarget(meshWin)
     return
   }
   const created = new BrowserWindow({
@@ -522,6 +535,7 @@ function openMeshWindow(): void {
   created.webContents.on('did-finish-load', () => {
     syncAppearance()
     if (!created.isVisible()) created.show()
+    sendMeshOpenTarget(created)
   })
   created.once('ready-to-show', () => { created.show() })
   created.on('closed', () => {
@@ -584,12 +598,18 @@ function connect(attempt: number): void {
   })
 }
 
+function readMeshOpenTarget(record: Record<string, unknown>): { nodeId: string; sessionId: string } | undefined {
+  if (typeof record.nodeId !== 'string' || typeof record.sessionId !== 'string') return undefined
+  if (record.nodeId === '' || record.sessionId === '' || record.nodeId.length > 80 || record.sessionId.length > 80) return undefined
+  return { nodeId: record.nodeId, sessionId: record.sessionId }
+}
+
 function deliver(message: unknown): void {
   if (overlays?.deliver(message)) return
   if (typeof message !== 'object' || message === null || !win) return
   const record = message as { type?: unknown }
   if (record.type === 'open-mesh') {
-    openMeshWindow()
+    openMeshWindow(readMeshOpenTarget(record as Record<string, unknown>))
     return
   }
   if (record.type === 'session') {

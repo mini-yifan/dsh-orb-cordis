@@ -114,6 +114,14 @@ describe('ball page render guards', () => {
     assert.match(code, /syncGif\(\)\n(?:\s*(?:\/\/[^\n]*|reportPinned\(\))\n)*\s+void syncStrip\(\)\n\}/)
   })
 
+  it('uses the remote hue and remote wording for cross-device bookmarks', () => {
+    const css = source('../assets/floating.css')
+    assert.match(code, /item\.remote === true\s*\? 'var\(--agent-remote\)'/)
+    assert.match(code, /messages\.agentOpenRemote/)
+    assert.match(code, /messages\.agentDismissRemote/)
+    assert.match(css, /--agent-remote: #d43f8d/)
+  })
+
   it('dismisses a finished chip from its own control instead of the chip body', () => {
     const css = source('../assets/floating.css')
     const preload = source('../preload.cjs')
