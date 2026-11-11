@@ -89,6 +89,7 @@ afterEach(async () => {
   // The desktop owner is a process-global record shared with the host; a test that published one
   // must not decide the next test's policy text.
   screenOwnerState().ownerId = ''
+  screenOwnerState().ballSessions = undefined
 })
 
 beforeEach(() => {

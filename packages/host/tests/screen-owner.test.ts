@@ -12,9 +12,12 @@ import { publishScreenOwner } from '../src/screen-owner.ts'
 describe('host screen-owner publication', () => {
   it('is read by the computer-use gate under the same process-global key', () => {
     try {
+      // The host adopts every conversation the ball shows, so both are the ball's own.
       publishScreenOwner('session-a')
       assert.equal(screenOwnerId(), 'session-a')
       assert.equal(desktopToolDenial('session-a', 'click', BALL_PRESET), undefined)
+      publishScreenOwner('session-b')
+      publishScreenOwner('session-a')
       assert.ok(desktopToolDenial('session-b', 'click', BALL_PRESET))
       assert.ok(desktopToolDenial('session-b', 'bash', BALL_PRESET))
       // Coordination tools keep working for the background conversation.
@@ -22,6 +25,9 @@ describe('host screen-owner publication', () => {
       assert.equal(desktopToolDenial('session-b', 'web_search', BALL_PRESET), undefined)
       // Nothing outside the ball is ever in scope, whatever conversation is on screen.
       assert.equal(desktopToolDenial('main-window-chat', 'bash', 'standard'), undefined)
+      // Nor is a main-window chat that runs the ball's own preset: membership decides, not the preset.
+      assert.equal(desktopToolDenial('main-window-chat', 'bash', BALL_PRESET), undefined)
+      assert.equal(desktopToolDenial('never-adopted', 'bash', BALL_PRESET), undefined)
     } finally {
       publishScreenOwner(undefined)
     }
