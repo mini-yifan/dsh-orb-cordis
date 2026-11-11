@@ -90,7 +90,8 @@
     - id: dsh-mesh
       name: 'dsh-orb/mesh'
       config:
-        incomingPreset: standard
+        incomingPreset: desktop
+        devComputerUse: false
     - id: ui-settings-orb
       name: dsh-orb
 
