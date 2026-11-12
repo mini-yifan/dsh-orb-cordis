@@ -187,9 +187,9 @@ TTS 不得拖慢 Agent。工具调用和后续生成继续进行，不等当前�
 
 交互以本文为准。按步骤落地见 [06-voice-plan.md](06-voice-plan.md)。本地唤醒、VAD、ASR、TTS 的模型、参数和已测指标见：
 
-- `/Users/gaoyifan/Desktop/Project/tts_native/docs/KWS-语音唤醒-落地实现文档.md`
-- `/Users/gaoyifan/Desktop/Project/tts_native/docs/VAD-ASR-语音输入-落地实现文档.md`
-- `/Users/gaoyifan/Desktop/Project/tts_native/docs/Matcha-TTS-落地实现文档.md`
+- `~/Projects/tts_native/docs/KWS-语音唤醒-落地实现文档.md`
+- `~/Projects/tts_native/docs/VAD-ASR-语音输入-落地实现文档.md`
+- `~/Projects/tts_native/docs/Matcha-TTS-落地实现文档.md`
 
 从这些材料带进产品的约束：
 

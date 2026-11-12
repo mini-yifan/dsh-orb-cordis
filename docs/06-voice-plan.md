@@ -437,7 +437,7 @@ dshHomePath('speech-to-text', 'sensevoice')/models/silero/silero_vad.onnx
 ## 13. 材料
 
 - 交互：[05-voice.md](05-voice.md)
-- 唤醒：`/Users/gaoyifan/Desktop/Project/tts_native/docs/KWS-语音唤醒-落地实现文档.md`，代码在 `tts_native/wake-lab`
-- 语音输入：`/Users/gaoyifan/Desktop/Project/tts_native/docs/VAD-ASR-语音输入-落地实现文档.md`，代码在 `tts_native/voice-lab`
-- TTS：`/Users/gaoyifan/Desktop/Project/tts_native/docs/Matcha-TTS-落地实现文档.md`，参考实现 `tts_native/tts-lab/reference/matcha-tts.mjs`
+- 唤醒：`~/Projects/tts_native/docs/KWS-语音唤醒-落地实现文档.md`，代码在 `tts_native/wake-lab`
+- 语音输入：`~/Projects/tts_native/docs/VAD-ASR-语音输入-落地实现文档.md`，代码在 `tts_native/voice-lab`
+- TTS：`~/Projects/tts_native/docs/Matcha-TTS-落地实现文档.md`，参考实现 `tts_native/tts-lab/reference/matcha-tts.mjs`
 - 官方 ASR 下载：DeepSeek Harness 的 `speechToText.prepare('sensevoice-local')`，资产清单在官方包 `speech-to-text-sensevoice/runtime/assets.json`
