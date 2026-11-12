@@ -331,7 +331,36 @@ body[data-ds-dark-theme] .mesh-session.is-active {
 }
 
 #mesh-transcript .am-body {
-  white-space: pre-wrap;
+  white-space: normal;
+}
+
+/* The Mesh window is narrower than the main transcript; keep Markdown
+ * headings from opening huge vertical gaps. */
+#mesh-transcript .md :where(h1, h2, h3) {
+  margin: 20px 0 10px;
+}
+
+#mesh-transcript .md p {
+  margin: 10px 0;
+}
+
+#mesh-transcript .md :where(ul, ol) {
+  margin: 10px 0;
+}
+
+#mesh-transcript .md-image {
+  max-width: 100%;
+}
+
+#mesh-transcript .md p > .md-image:only-child {
+  display: flex;
+  width: 100%;
+}
+
+#mesh-transcript .md p > .md-image:only-child .md-image-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mesh-reasoning {

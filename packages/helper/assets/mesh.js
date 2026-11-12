@@ -1,6 +1,7 @@
 // Interconnect window. The page only draws: every read and write goes through the
 // preload bridge, which forwards to orb-host's `/.dsh-orb/mesh/*` adapter.
 
+import { renderMarkdownFragment } from './markdown.js'
 import {
   attachmentsForSession,
   buildTranscript,
@@ -589,7 +590,9 @@ function renderBlock(block) {
   const article = element('article', 'block')
   article.dataset.kind = 'assistant'
   const root = element('div', 'am')
-  root.append(element('div', 'am-body', block.text))
+  const body = element('div', 'am-body')
+  body.append(renderMarkdownFragment(block.text, { copyLabel: t('复制', 'Copy') }))
+  root.append(body)
   article.append(root)
   return article
 }
@@ -736,6 +739,24 @@ els.refresh.addEventListener('click', () => { void load() })
 els.settings.addEventListener('click', () => { api?.openSettings?.() })
 els.stopAll.addEventListener('click', () => { void stopAllRemoteTasks() })
 els.stop.addEventListener('click', () => { void stopCurrent() })
+// Markdown links and code-block copy buttons are inside the transcript; the
+// page owns neither navigation nor the clipboard in this sandboxed renderer.
+els.transcript.addEventListener('click', (event) => {
+  const target = event.target instanceof Element ? event.target : null
+  if (target === null) return
+  const link = target.closest('a[href]')
+  if (link !== null) {
+    event.preventDefault()
+    api?.openExternal?.(link.getAttribute('href') ?? '')
+    return
+  }
+  const copy = target.closest('.cb-copy')
+  if (copy === null) return
+  const code = copy.closest('.cb')?.querySelector('code')
+  if (code === null || code === undefined) return
+  api?.copy?.(code.textContent ?? '')
+  toast(t('已复制', 'Copied'))
+})
 els.composer.addEventListener('submit', (event) => {
   event.preventDefault()
   void sendPrompt()

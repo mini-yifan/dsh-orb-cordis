@@ -67,6 +67,14 @@ describe('mesh window markup and wiring', () => {
     assert.equal(mesh.includes('innerHTML'), false)
   })
 
+  it('renders assistant text through the shared markdown renderer', () => {
+    assert.match(source('../assets/mesh.js'), /import \{ renderMarkdownFragment \} from '\.\/markdown\.js'/)
+    assert.match(mesh, /body\.append\(renderMarkdownFragment\(block\.text, \{ copyLabel: t\('复制', 'Copy'\) \}\)\)/)
+    assert.match(mesh, /els\.transcript\.addEventListener\('click'/)
+    assert.match(mesh, /api\?\.openExternal\?\.\(link\.getAttribute\('href'\)/)
+    assert.equal(mesh.includes('innerHTML'), false)
+  })
+
   it('long-polls the selected task and appends new durable events live', () => {
     assert.match(mesh, /function startLive\(\)/)
     assert.match(mesh, /async function liveLoop\(token, key, session\)/)
@@ -261,6 +269,8 @@ describe('mesh transcript model', () => {
 interface MeshPreloadApi {
   request?: (method: string, path: string, body?: unknown) => Promise<unknown>
   openSettings?: () => void
+  openExternal?: (url: string) => void
+  copy?: (text: string) => void
   onAppearance?: (callback: (value: unknown) => void) => void
 }
 
@@ -321,11 +331,17 @@ describe('mesh preload', () => {
     const answer = await bridge.api.request('GET', '/status')
     assert.deepEqual(answer, { ok: true, status: 200, body: { ok: true } })
     bridge.api.openSettings?.()
+    bridge.api.openExternal?.('https://example.com')
+    bridge.api.copy?.('code')
     bridge.api.onAppearance?.(() => {})
     assert.deepEqual(bridge.invoked, [
       ['orb:mesh-request', { method: 'GET', path: '/status', body: undefined }],
     ])
-    assert.deepEqual(bridge.sent, [['orb:mesh-open-settings', undefined]])
+    assert.deepEqual(bridge.sent, [
+      ['orb:mesh-open-settings', undefined],
+      ['orb:open-external', 'https://example.com'],
+      ['orb:copy', 'code'],
+    ])
     assert.deepEqual(bridge.listeners.map(([channel]) => channel), ['mesh:appearance'])
   })
 })

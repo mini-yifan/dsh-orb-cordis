@@ -695,6 +695,48 @@
   padding: 0 5px;
 }
 
+/* An image reference from another device cannot be fetched by this sandboxed
+ * renderer (and a Windows path is not meaningful here), so show a readable
+ * descriptor with the original path instead of a broken image. */
+.md .md-image {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-markdown-inline-code);
+  vertical-align: middle;
+}
+
+.md .md-image-icon {
+  flex: none;
+  opacity: 0.8;
+}
+
+.md .md-image-alt {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md .md-image-path {
+  display: inline;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--ds-font-family-code);
+  font-size: 0.85em !important;
+  color: var(--dsw-alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .md :where(h1, h2, h3, h4, h5, h6) code {
   font: inherit;
   font-family: var(--ds-font-family-code);

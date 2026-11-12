@@ -174,14 +174,35 @@ function mask(index) {
   return `\uE000${index}\uE001`
 }
 
+/** Image syntax is handled here because the Harness chat shows a readable
+ * descriptor instead of loading arbitrary remote images. A second private-use
+ * range keeps image masks from colliding with the math masks above. */
+const IMAGE_PATTERN = /!\[([^\]\n]*)\]\(\s*(?:<([^>\n]+)>|([^)\n]+?))\s*\)/g
+const IMAGE_MASK = (index) => `\uE200${index}\uE201`
+
+function imageCard(alt, target) {
+  const label = alt.trim()
+  const path = target.trim()
+  return '<span class="md-image">'
+    + '<span class="md-image-icon" aria-hidden="true">🖼</span>'
+    + (label === '' ? '' : `<span class="md-image-alt">${escapeHtml(label)}</span>`)
+    + (path === '' ? '' : `<code class="md-image-path">${escapeHtml(path)}</code>`)
+    + '</span>'
+}
+
 function renderLinks(text, inLink = false) {
+  const images = []
+  const masked = text.replace(IMAGE_PATTERN, (_token, alt, angled, bare) => {
+    images.push({ alt, target: (angled ?? bare ?? '').trim() })
+    return IMAGE_MASK(images.length - 1)
+  })
   let html = ''
   let cursor = 0
   // Local: the pass re-enters itself through a link label, and a shared global
   // pattern's `lastIndex` would jump back into the enclosing text.
   const pattern = /(\[[^\]\n]*\]\([^)\s]+\))|(<https?:\/\/[^>\s]+>)/g
-  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
-    html += renderDecorations(text.slice(cursor, match.index), inLink)
+  for (let match = pattern.exec(masked); match !== null; match = pattern.exec(masked)) {
+    html += renderDecorations(masked.slice(cursor, match.index), inLink)
     const token = match[0]
     if (match[1] !== undefined) {
       const split = token.indexOf('](')
@@ -191,7 +212,10 @@ function renderLinks(text, inLink = false) {
     }
     cursor = match.index + token.length
   }
-  html += renderDecorations(text.slice(cursor), inLink)
+  html += renderDecorations(masked.slice(cursor), inLink)
+  for (let index = 0; index < images.length; index += 1) {
+    html = html.split(IMAGE_MASK(index)).join(imageCard(images[index].alt, images[index].target))
+  }
   return html
 }
 
@@ -331,6 +355,15 @@ export function renderMarkdown(text, options = {}) {
   } finally {
     settled = outer
   }
+}
+
+/** Render into a DOM fragment for renderers that build nodes instead of
+ * assigning HTML. `renderMarkdown` escapes every text run and only emits its
+ * own anchors/classes, so the fragment carries no remote markup or handlers. */
+export function renderMarkdownFragment(text, options = {}) {
+  const template = document.createElement('template')
+  template.innerHTML = renderMarkdown(text, options)
+  return template.content
 }
 
 function renderDocument(text, options) {

@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('dshMesh', {
   openSettings() {
     ipcRenderer.send('orb:mesh-open-settings')
   },
+  openExternal(url) {
+    ipcRenderer.send('orb:open-external', url)
+  },
+  copy(text) {
+    ipcRenderer.send('orb:copy', text)
+  },
   onAppearance(callback) {
     ipcRenderer.on('mesh:appearance', (_event, appearance) => callback(appearance))
   },

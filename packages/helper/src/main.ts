@@ -364,7 +364,7 @@ ipcMain.on('orb:activity', (event) => {
 // Renderer clipboard APIs need a focused document; the ball rests unfocused,
 // so writes go through the main process, which has no such gate.
 ipcMain.on('orb:copy', (event, text) => {
-  if (!fromBall(event)) return
+  if (!fromBall(event) && !fromMesh(event)) return
   if (typeof text !== 'string' || text.length > 1_000_000) return
   clipboard.writeText(text)
 })
@@ -376,7 +376,7 @@ ipcMain.handle('orb:menu', async (event) => {
 })
 
 ipcMain.on('orb:open-external', (event, url) => {
-  if (!fromBall(event)) return
+  if (!fromBall(event) && !fromMesh(event)) return
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url) || url.length > 4000) return
   void shell.openExternal(url)
 })
