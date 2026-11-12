@@ -12,6 +12,7 @@ import {
   formatLastSeen,
   groupTree,
   interactionCanBeAnswered,
+  peerTree,
   sessionHint,
   sessionStatusLabel,
   toolCard,
@@ -116,7 +117,7 @@ describe('mesh window markup and wiring', () => {
     assert.match(mesh, /pendingOpen: null/)
     assert.match(mesh, /api\.onOpenSession\(/)
     assert.match(mesh, /async function applyOpenTarget/)
-    assert.match(mesh, /findSession\(state\.tree, pending\.nodeId, pending\.sessionId\)/)
+    assert.match(mesh, /findSession\(peers, pending\.nodeId, pending\.sessionId\)/)
     assert.match(source('../mesh-preload.cjs'), /onOpenSession\(callback\)/)
   })
 
@@ -175,6 +176,43 @@ describe('mesh transcript model', () => {
     assert.equal(findSession(tree, 'b', 's2').title, 'S2')
     assert.equal(findSession(tree, 'b', 'missing'), undefined)
     assert.equal(groupTree(undefined).length, 0)
+  })
+
+  it('shows peers only, keeping the local device out of the sidebar', () => {
+    const tree = {
+      nodes: [
+        { nodeId: 'a', name: 'A', online: true, self: true },
+        { nodeId: 'b', name: 'B', online: true },
+        { nodeId: 'c', name: 'C', online: false },
+      ],
+      workspaces: [
+        { nodeId: 'a', workspaceId: 'wa', name: 'WA' },
+        { nodeId: 'b', workspaceId: 'wb', name: 'WB' },
+        { nodeId: 'c', workspaceId: 'wc', name: 'WC' },
+      ],
+      sessions: [
+        { nodeId: 'a', workspaceId: 'wa', sessionId: 's1', title: 'S1', status: 'idle', controllable: false },
+        { nodeId: 'b', workspaceId: 'wb', sessionId: 's2', title: 'S2', status: 'idle', controllable: true },
+        { nodeId: 'c', workspaceId: 'wc', sessionId: 's3', title: 'S3', status: 'idle', controllable: false },
+      ],
+      cursor: 9,
+    }
+    const peers = peerTree(tree, 'a')
+    assert.deepEqual(peers.nodes.map((node) => node.nodeId), ['b', 'c'])
+    assert.deepEqual(peers.workspaces.map((workspace) => workspace.workspaceId), ['wb', 'wc'])
+    assert.deepEqual(peers.sessions.map((session) => session.sessionId), ['s2', 's3'])
+    assert.equal(peers.cursor, 9)
+    assert.deepEqual(peerTree(tree, '').nodes.map((node) => node.nodeId), ['b', 'c'])
+    assert.equal(peerTree({ nodes: [{ nodeId: 'x', self: true }] }, 'x').nodes.length, 0)
+  })
+
+  it('previews five sessions per workspace with a show-more row', () => {
+    assert.match(mesh, /const SESSION_PREVIEW = 5/)
+    assert.match(mesh, /const shown = expanded \? sessions : sessions\.slice\(0, SESSION_PREVIEW\)/)
+    assert.match(mesh, /展开其余 \$\{hidden\} 个会话/)
+    assert.match(mesh, /const groups = groupTree\(peerTreeNow\(\)\)/)
+    assert.match(css, /\.mesh-workspace-icon/)
+    assert.match(css, /\.mesh-more \{/)
   })
 
   it('reduces user, tool, approval, and result events into transcript rows', () => {

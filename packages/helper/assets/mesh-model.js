@@ -70,6 +70,21 @@ export function groupTree(tree) {
   }))
 }
 
+/** The Mesh window lists peers only; the current device lives in its header. */
+export function peerTree(tree, selfNodeId) {
+  const nodes = Array.isArray(tree?.nodes) ? tree.nodes : []
+  const self = typeof selfNodeId === 'string' ? selfNodeId : ''
+  const peers = nodes.filter((node) => node?.self !== true && (self === '' || node?.nodeId !== self))
+  const ids = new Set(peers.map((node) => node?.nodeId))
+  const keep = (row) => row !== null && typeof row === 'object' && ids.has(row.nodeId)
+  return {
+    nodes: peers,
+    workspaces: (Array.isArray(tree?.workspaces) ? tree.workspaces : []).filter(keep),
+    sessions: (Array.isArray(tree?.sessions) ? tree.sessions : []).filter(keep),
+    ...(typeof tree?.cursor === 'number' ? { cursor: tree.cursor } : {}),
+  }
+}
+
 export function findSession(tree, nodeId, sessionId) {
   const rows = Array.isArray(tree?.sessions) ? tree.sessions : []
   return rows.find((session) => session.nodeId === nodeId && session.sessionId === sessionId)

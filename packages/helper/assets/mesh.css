@@ -119,7 +119,7 @@ body[data-ds-dark-theme] .mesh-actions .mesh-danger {
 
 main {
   display: grid;
-  grid-template-columns: minmax(220px, 292px) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -127,17 +127,17 @@ main {
   min-height: 0;
   overflow: auto;
   border-right: 1px solid color-mix(in srgb, currentColor 10%, transparent);
-  padding: 8px 8px 20px;
+  padding: 10px 10px 24px;
 }
 
 #mesh-tree {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
 }
 
 .mesh-node {
-  border-radius: 10px;
+  border-radius: 12px;
 }
 
 .mesh-node-head {
@@ -147,7 +147,7 @@ main {
   width: 100%;
   border: 0;
   border-radius: 9px;
-  padding: 7px 8px;
+  padding: 9px 10px;
   background: transparent;
   color: inherit;
   text-align: start;
@@ -161,12 +161,14 @@ main {
 
 .mesh-node-head:focus-visible,
 .mesh-session:focus-visible,
+.mesh-more:focus-visible,
 .mesh-actions button:focus-visible {
   outline: 2px solid var(--dsw-static-blue-500, #3b82f6);
   outline-offset: 1px;
 }
 
 .mesh-node-name {
+  font-size: 13px;
   font-weight: 600;
   min-width: 0;
   overflow: hidden;
@@ -190,16 +192,30 @@ main {
 .mesh-node-body {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 2px 0 4px 16px;
+  gap: 1px;
+  padding: 2px 0 6px 4px;
+}
+
+.mesh-workspace {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin: 12px 0 3px;
+  padding: 0 10px;
+  color: var(--dsw-alias-label-primary, #111);
+}
+
+.mesh-workspace-icon {
+  flex: none;
+  opacity: 0.75;
 }
 
 .mesh-workspace-name {
-  margin: 6px 0 2px;
-  padding: 0 8px;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-secondary, #555);
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -208,20 +224,21 @@ main {
 .mesh-session {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
   border: 0;
   border-radius: 8px;
-  padding: 6px 8px;
+  padding: 6px 10px 6px 31px;
   background: transparent;
-  color: inherit;
+  color: var(--dsw-alias-label-secondary, #4b4b4b);
   text-align: start;
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .mesh-session:hover {
-  background: color-mix(in srgb, currentColor 5%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
 }
 
 .mesh-session.is-active {
@@ -234,35 +251,48 @@ body[data-ds-dark-theme] .mesh-session.is-active {
 }
 
 .mesh-session-title {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.mesh-lock {
+.mesh-session-meta {
   flex: none;
   margin-left: auto;
-  font-size: 10px;
-  color: var(--dsw-alias-label-tertiary, #777);
-}
-
-.mesh-session-badge {
-  flex: none;
-  margin-left: auto;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 10px;
-  line-height: 16px;
-  color: var(--dsw-alias-label-secondary, #555);
-  background: color-mix(in srgb, currentColor 7%, transparent);
+  font-size: 10.5px;
+  color: var(--dsw-alias-label-tertiary, #888);
   white-space: nowrap;
 }
 
-.mesh-session-badge.is-waiting,
-.mesh-session-badge.is-running {
+.mesh-session-meta[data-state='running'],
+.mesh-session-meta[data-state='waiting-approval'],
+.mesh-session-meta[data-state='waiting-question'] {
   color: #b54708;
-  background: color-mix(in srgb, #f79009 14%, transparent);
+}
+
+.mesh-more {
+  align-self: flex-start;
+  border: 0;
+  border-radius: 7px;
+  padding: 5px 10px 5px 31px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary, #888);
+  font-size: 12px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.mesh-more:hover {
+  color: var(--dsw-alias-label-primary, #111);
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.mesh-tree-empty {
+  margin: 12px 10px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary, #888);
 }
 
 #mesh-detail {

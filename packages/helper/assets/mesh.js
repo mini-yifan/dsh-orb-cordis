@@ -1,6 +1,7 @@
 // Interconnect window. The page only draws: every read and write goes through the
 // preload bridge, which forwards to orb-host's `/.dsh-orb/mesh/*` adapter.
 
+import { FOLDER, icon } from './icons.js'
 import { renderMarkdownFragment } from './markdown.js'
 import {
   attachmentsForSession,
@@ -10,6 +11,7 @@ import {
   formatLastSeen,
   groupTree,
   interactionCanBeAnswered,
+  peerTree,
   sessionHint,
   sessionStatusLabel,
   toolCard,
@@ -28,6 +30,8 @@ const state = {
   busy: false,
   error: '',
   collapsed: new Set(),
+  /** Workspaces the reader expanded past the session preview. */
+  expanded: new Set(),
   /** Bookmark click target waiting until the tree contains that Session. */
   pendingOpen: null,
 }
@@ -62,6 +66,8 @@ let toastTimer
 /** A generation token retires the previous session's long poll on every switch. */
 let liveToken = 0
 let liveKey = ''
+/** Sessions shown per workspace before the “show more” row. */
+const SESSION_PREVIEW = 5
 
 function zh() {
   return state.locale === 'zh'
@@ -111,13 +117,52 @@ function sessionPath(session, action) {
 }
 
 function selectedSession() {
-  return state.selected === null
-    ? undefined
-    : findSession(state.tree, state.selected.nodeId, state.selected.sessionId)
+  if (state.selected === null || state.selected.nodeId === selfNodeId()) return undefined
+  return findSession(state.tree, state.selected.nodeId, state.selected.sessionId)
 }
 
 function nodeById(nodeId) {
   return (state.tree.nodes ?? []).find((node) => node.nodeId === nodeId)
+}
+
+function selfNodeId() {
+  const nodeId = state.status?.node?.nodeId
+  return typeof nodeId === 'string' ? nodeId : ''
+}
+
+/** Trees shown to the reader omit the device they are already looking at. */
+function peerTreeNow() {
+  return peerTree(state.tree, selfNodeId())
+}
+
+function workspaceKey(nodeId, workspaceId) {
+  return `${nodeId}\u0000${workspaceId}`
+}
+
+const RAW_SESSION_TITLE = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** A task prompt or a short context line beats a raw UUID in the sidebar. */
+function sessionTitle(session) {
+  const title = typeof session.title === 'string' ? session.title.trim() : ''
+  if (title !== '' && title !== session.sessionId && !RAW_SESSION_TITLE.test(title)) return title
+  const task = state.tasks.find((row) => (
+    row?.targetNodeId === session.nodeId && row?.sessionId === session.sessionId
+  ))
+  const prompt = typeof task?.prompt === 'string' ? task.prompt.split('\n')[0].trim() : ''
+  if (prompt !== '') return prompt.length > 80 ? `${prompt.slice(0, 80)}…` : prompt
+  const suffix = String(session.sessionId).replace(/^session-/, '').slice(0, 8)
+  return t(`会话 ${suffix}`, `Session ${suffix}`)
+}
+
+function sessionMeta(session) {
+  if (session.status !== 'idle') {
+    return { text: sessionStatusLabel(session.status, zh()), state: session.status }
+  }
+  const parts = []
+  if (session.controllable !== true) parts.push(t('只读', 'Read-only'))
+  const time = formatLastSeen(session.updatedAt, Date.now(), zh())
+  if (time !== '') parts.push(time)
+  return { text: parts.join(' · '), state: '' }
 }
 
 function toast(message) {
@@ -169,14 +214,20 @@ async function load() {
     state.tree = tree && typeof tree === 'object' ? tree : { nodes: [], workspaces: [], sessions: [] }
     state.interactions = Array.isArray(interactions) ? interactions : []
     state.tasks = Array.isArray(tasks) ? tasks : []
-    const sessions = Array.isArray(state.tree.sessions) ? state.tree.sessions : []
+    const peers = peerTreeNow()
+    const sessions = Array.isArray(peers.sessions) ? peers.sessions : []
     const pending = state.pendingOpen
-    if (pending !== null && findSession(state.tree, pending.nodeId, pending.sessionId) !== undefined) {
-      state.selected = { nodeId: pending.nodeId, sessionId: pending.sessionId }
-      state.pendingOpen = null
+    if (pending !== null) {
+      const target = findSession(peers, pending.nodeId, pending.sessionId)
+      if (target !== undefined) {
+        state.selected = { nodeId: pending.nodeId, sessionId: pending.sessionId }
+        state.expanded.add(workspaceKey(target.nodeId, target.workspaceId))
+        state.pendingOpen = null
+      }
     }
     if (selectedSession() === undefined) {
-      const first = sessions.find((session) => session.controllable === true) ?? sessions[0]
+      const ordered = [...sessions].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+      const first = ordered.find((session) => session.controllable === true) ?? ordered[0]
       state.selected = first === undefined ? null : { nodeId: first.nodeId, sessionId: first.sessionId }
     }
     if (state.selected !== null) {
@@ -308,8 +359,11 @@ async function applyOpenTarget(payload) {
     state.pendingOpen = target
     return
   }
-  if (findSession(state.tree, target.nodeId, target.sessionId) !== undefined) {
+  const peers = peerTreeNow()
+  const targetSession = findSession(peers, target.nodeId, target.sessionId)
+  if (targetSession !== undefined) {
     state.pendingOpen = null
+    state.expanded.add(workspaceKey(targetSession.nodeId, targetSession.workspaceId))
     await selectSession(target.nodeId, target.sessionId)
     return
   }
@@ -441,16 +495,21 @@ function renderTop() {
     els.summary.textContent = `${t('本机', 'This device')}：${node.name ?? '—'} · ${server.url ?? '—'} · ${t('已连接', 'Connected')} ${status.peersOnline ?? 0}/${status.peersTotal ?? 0}`
     els.dot.className = `mesh-dot ${status.connection === 'connected' ? 'is-online' : 'is-offline'}`
   }
-  const sessions = (state.tree.sessions ?? []).filter((session) => session.controllable === true)
+  const sessions = peerTreeNow().sessions.filter((session) => session.controllable === true)
   els.stopAll.disabled = state.busy || sessions.length === 0
   els.refresh.disabled = state.busy
 }
 
 function renderTree() {
   els.tree.replaceChildren()
-  const groups = groupTree(state.tree)
+  const groups = groupTree(peerTreeNow())
+    .sort((left, right) => {
+      const offline = (left.node.online === false ? 1 : 0) - (right.node.online === false ? 1 : 0)
+      if (offline !== 0) return offline
+      return String(left.node.name ?? left.node.nodeId).localeCompare(String(right.node.name ?? right.node.nodeId))
+    })
   if (groups.length === 0) {
-    els.tree.append(element('p', 'mesh-node-state', t('还没有可查看的设备', 'No device to show yet')))
+    els.tree.append(element('p', 'mesh-tree-empty', t('还没有其他设备', 'No other devices yet')))
     return
   }
   for (const group of groups) {
@@ -473,24 +532,65 @@ function renderTree() {
     wrapper.append(head)
     if (!collapsed) {
       const body = element('div', 'mesh-node-body')
-      for (const workspace of group.workspaces) {
-        body.append(element('h3', 'mesh-workspace-name', workspace.name ?? workspace.workspaceId))
-        for (const session of workspace.sessions) {
+      const workspaces = group.workspaces.map((workspace) => {
+        const sessions = [...workspace.sessions].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+        return {
+          workspace,
+          sessions,
+          latest: sessions.length === 0 ? 0 : (sessions[0].updatedAt ?? 0),
+        }
+      }).sort((left, right) => (
+        right.latest - left.latest
+        || String(left.workspace.name ?? left.workspace.workspaceId)
+          .localeCompare(String(right.workspace.name ?? right.workspace.workspaceId))
+      ))
+      for (const { workspace, sessions } of workspaces) {
+        const row = element('div', 'mesh-workspace')
+        const folder = icon(FOLDER, 14)
+        folder.classList.add('mesh-workspace-icon')
+        row.append(folder, element('span', 'mesh-workspace-name', workspace.name ?? workspace.workspaceId))
+        body.append(row)
+        const key = workspaceKey(node.nodeId, workspace.workspaceId)
+        const expanded = state.expanded.has(key)
+        const shown = expanded ? sessions : sessions.slice(0, SESSION_PREVIEW)
+        for (const session of shown) {
           const active = state.selected !== null
             && state.selected.nodeId === session.nodeId
             && state.selected.sessionId === session.sessionId
+          const title = sessionTitle(session)
+          const meta = sessionMeta(session)
           const button = element('button', `mesh-session${active ? ' is-active' : ''}`)
           button.type = 'button'
           button.dataset.nodeId = session.nodeId
           button.dataset.sessionId = session.sessionId
-          button.title = session.controllable === true ? session.title : sessionHint(zh())
-          button.append(element('span', 'mesh-session-title', session.title))
-          if (session.controllable !== true) button.append(element('span', 'mesh-lock', t('只读', 'Read-only')))
-          if (typeof session.status === 'string' && session.status !== 'idle') {
-            button.append(element('span', `mesh-session-badge is-${session.status}`, sessionStatusLabel(session.status, zh())))
+          button.title = session.controllable === true ? title : sessionHint(zh())
+          if (active) button.setAttribute('aria-current', 'true')
+          button.append(element('span', 'mesh-session-title', title))
+          if (meta.text !== '') {
+            const marker = element('span', 'mesh-session-meta', meta.text)
+            if (meta.state !== '') marker.dataset.state = meta.state
+            button.append(marker)
           }
           button.addEventListener('click', () => { void selectSession(session.nodeId, session.sessionId) })
           body.append(button)
+        }
+        const hidden = sessions.length - shown.length
+        if (hidden > 0) {
+          const more = element('button', 'mesh-more', t(`展开其余 ${hidden} 个会话`, `Show ${hidden} more`))
+          more.type = 'button'
+          more.addEventListener('click', () => {
+            state.expanded.add(key)
+            renderTree()
+          })
+          body.append(more)
+        } else if (expanded && sessions.length > SESSION_PREVIEW) {
+          const less = element('button', 'mesh-more', t('收起', 'Show less'))
+          less.type = 'button'
+          less.addEventListener('click', () => {
+            state.expanded.delete(key)
+            renderTree()
+          })
+          body.append(less)
         }
       }
       wrapper.append(body)
