@@ -3,6 +3,28 @@ import { describe, it } from 'node:test'
 import { resolveMeshService } from '../src/mesh.ts'
 
 describe('real mesh service adapter', () => {
+  it('switches from the fallback to the real service when the plugin publishes later', () => {
+    let candidate: unknown
+    const mesh = resolveMeshService({ get: () => candidate })
+    assert.notEqual((mesh.status() as { server: { fp: string } }).server.fp, 'real-fp')
+    candidate = {
+      status: () => ({
+        paired: true,
+        server: { url: 'https://mesh.example', fingerprint: 'real-fp' },
+        node: { nodeId: 'node-a', name: 'Mac2', platform: 'darwin', hostDeviceId: 'host-a', online: true },
+        connection: 'connected',
+        peersOnline: 1,
+        peersTotal: 1,
+      }),
+      nodes: () => [],
+      tree: async () => ({ nodes: [], cursor: 0 }),
+      page: async () => ({ records: [], cursor: 0 }),
+      createTaskSession: async () => ({}),
+      waitTask: async () => ({}),
+    }
+    assert.equal((mesh.status() as { server: { fp: string } }).server.fp, 'real-fp')
+  })
+
   it('flattens the plugin tree and its nested workspaces and sessions', async () => {
     const plugin = {
       status: () => ({

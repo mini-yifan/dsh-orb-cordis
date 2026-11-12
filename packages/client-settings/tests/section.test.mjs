@@ -1710,7 +1710,7 @@ describe('settings section', () => {
       ['/.dsh-orb/mesh/status', '/.dsh-orb/mesh/nodes'],
     )
     assert.equal(find(view, (node) => node.children?.includes('尚未加入互联')).length, 1)
-    assert.equal(find(view, (node) => node.children?.includes('静态假数据')).length, 1)
+    assert.equal(find(view, (node) => node.children?.includes('静态假数据')).length, 0)
     assert.equal(find(view, (node) => node.props?.placeholder === 'dshmesh://…').length, 1)
 
     // An empty form never reaches the service.

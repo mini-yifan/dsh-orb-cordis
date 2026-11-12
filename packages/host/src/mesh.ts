@@ -896,17 +896,43 @@ function pageFromSnapshot(nodeId: string, sessionId: string, value: unknown, sin
   }
 }
 
-/** Prefer the plugin's process service; fall back to the static mock until R0 ships. */
+/**
+ * Resolve the plugin service lazily. Route registration happens before the
+ * app-level mesh plugin necessarily publishes its service; capturing the mock
+ * there made the first window permanently show fake devices (书房 Mac /
+ * 公司 Windows) while the Mesh window, opened later, saw the real one.
+ */
 export function resolveMeshService(ctx: { get?(name: string): unknown }): MeshService {
-  let candidate: unknown
-  try {
-    candidate = ctx.get?.('mesh')
-  } catch {
-    candidate = undefined
+  const fallback = new MockMeshService()
+  let cachedSource: unknown
+  let cached: MeshService | undefined
+  const current = (): MeshService => {
+    let candidate: unknown
+    try {
+      candidate = ctx.get?.('mesh')
+    } catch {
+      candidate = undefined
+    }
+    if (candidate === cachedSource && cached !== undefined) return cached
+    if (isPluginMeshService(candidate)) {
+      cachedSource = candidate
+      cached = new PluginMeshService(candidate)
+      return cached
+    }
+    if (isMeshService(candidate)) {
+      cachedSource = candidate
+      cached = candidate
+      return cached
+    }
+    return fallback
   }
-  if (isPluginMeshService(candidate)) return new PluginMeshService(candidate)
-  if (isMeshService(candidate)) return candidate
-  return new MockMeshService()
+  return new Proxy({} as MeshService, {
+    get(_target, property) {
+      const service = current()
+      const value = Reflect.get(service, property, service) as unknown
+      return typeof value === 'function' ? value.bind(service) : value
+    },
+  })
 }
 
 function isPluginMeshService(value: unknown): value is PluginMeshLike {

@@ -1287,7 +1287,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dsh-orb-set-hero-text' },
             h('h2', { className: 'dsh-orb-set-title' }, text.mesh.nav),
             h('p', { className: 'dsh-orb-set-intro' }, text.mesh.intro)),
-          h('span', { className: 'dsh-orb-mesh-mock' }, text.mesh.mock)),
+        ),
         state.status === 'loading'
           ? h('p', { className: 'dsh-orb-mesh-note', role: 'status' }, text.mesh.loading)
           : null,
@@ -3558,7 +3558,6 @@ window.__ModuleLoader__.load({
 .dsh-orb-set .dsh-orb-set-voice-mic-text { flex: 1; min-width: 0; margin: 0; font-size: 12px; line-height: 1.45; color: inherit; }
 
 /* Interconnect */
-.dsh-orb-mesh-mock { flex: none; align-self: flex-start; margin-left: auto; padding: 2px 9px; border-radius: 999px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); font-size: 10.5px; line-height: 17px; color: color-mix(in srgb, currentColor 55%, transparent); }
 .dsh-orb-mesh-note { margin: 0; font-size: 12.5px; color: color-mix(in srgb, currentColor 55%, transparent); }
 .dsh-orb-mesh-load-error { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .dsh-orb-mesh-load-error .dsh-orb-set-error { flex: 1; min-width: 220px; margin: 0; }
