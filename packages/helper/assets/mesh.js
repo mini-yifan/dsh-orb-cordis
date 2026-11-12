@@ -246,6 +246,20 @@ function mergePage(items) {
   state.page = { ...page, items: merged.slice(-500) }
 }
 
+/** A live turn boundary also moves the header and the left-hand badge, not just the transcript. */
+function applyLiveSessionState(items) {
+  let changed = false
+  for (const item of items) {
+    const type = item?.event?.type
+    if (type !== 'turn/start' && type !== 'turn/end') continue
+    const session = findSession(state.tree, item.nodeId, item.sessionId)
+    if (session === undefined) continue
+    session.status = type === 'turn/start' ? 'running' : 'idle'
+    changed = true
+  }
+  return changed
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -264,7 +278,9 @@ async function liveLoop(token, key, session) {
         mergePage(incoming)
         if (typeof result.cursor === 'number') state.page.cursor = Math.max(cursor, result.cursor)
         cursor = pageCursor()
+        const stateChanged = applyLiveSessionState(incoming)
         renderDetail()
+        if (stateChanged) renderTree()
       } else if (typeof result?.cursor === 'number' && result.cursor > cursor) {
         cursor = result.cursor
       }

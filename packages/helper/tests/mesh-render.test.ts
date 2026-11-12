@@ -73,6 +73,8 @@ describe('mesh window markup and wiring', () => {
     assert.match(mesh, /sessionPath\(session, 'stream'\)\}\?since=/)
     assert.match(mesh, /mergePage\(incoming\)/)
     assert.match(mesh, /renderDetail\(\)/)
+    assert.match(mesh, /applyLiveSessionState\(incoming\)/)
+    assert.match(mesh, /if \(stateChanged\) renderTree\(\)/)
     assert.match(mesh, /const follow = els\.transcript\.scrollHeight/)
   })
 
