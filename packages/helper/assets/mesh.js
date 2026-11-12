@@ -58,6 +58,9 @@ const els = {
 }
 
 let toastTimer
+/** A generation token retires the previous session's long poll on every switch. */
+let liveToken = 0
+let liveKey = ''
 
 function zh() {
   return state.locale === 'zh'
@@ -151,6 +154,7 @@ async function loadPage() {
 }
 
 async function load() {
+  stopLive()
   state.busy = true
   render()
   try {
@@ -174,7 +178,12 @@ async function load() {
       const first = sessions.find((session) => session.controllable === true) ?? sessions[0]
       state.selected = first === undefined ? null : { nodeId: first.nodeId, sessionId: first.sessionId }
     }
-    if (state.selected !== null) await loadPage()
+    if (state.selected !== null) {
+      await loadPage()
+      startLive()
+    } else {
+      stopLive()
+    }
     state.error = ''
   } catch (error) {
     showError(error)
@@ -185,16 +194,85 @@ async function load() {
 }
 
 async function selectSession(nodeId, sessionId) {
+  stopLive()
   state.selected = { nodeId, sessionId }
   state.error = ''
   render()
   try {
     await loadPage()
+    startLive()
   } catch (error) {
     state.page = null
     showError(error)
   }
   render()
+}
+
+function stopLive() {
+  liveToken += 1
+  liveKey = ''
+}
+
+function startLive() {
+  const session = selectedSession()
+  if (session === undefined) {
+    stopLive()
+    return
+  }
+  const key = `${session.nodeId}\u0000${session.sessionId}`
+  if (key === liveKey) return
+  liveKey = key
+  const token = ++liveToken
+  void liveLoop(token, key, session)
+}
+
+function pageCursor() {
+  const cursor = state.page?.cursor
+  if (typeof cursor === 'number' && Number.isFinite(cursor)) return Math.max(0, cursor)
+  const items = Array.isArray(state.page?.items) ? state.page.items : []
+  return items.reduce((max, item) => typeof item?.seq === 'number' ? Math.max(max, item.seq) : max, 0)
+}
+
+function mergePage(items) {
+  const page = state.page ?? { items: [], cursor: 0 }
+  const bySeq = new Map()
+  for (const item of Array.isArray(page.items) ? page.items : []) {
+    if (typeof item?.seq === 'number') bySeq.set(item.seq, item)
+  }
+  for (const item of items) {
+    if (typeof item?.seq === 'number') bySeq.set(item.seq, item)
+  }
+  const merged = [...bySeq.values()].sort((left, right) => left.seq - right.seq)
+  state.page = { ...page, items: merged.slice(-500) }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Long-poll the selected session and append each durable event as it lands. */
+async function liveLoop(token, key, session) {
+  let cursor = pageCursor()
+  while (token === liveToken && liveKey === key) {
+    const current = selectedSession()
+    if (current === undefined || `${current.nodeId}\u0000${current.sessionId}` !== key) break
+    try {
+      const result = await request('GET', `${sessionPath(session, 'stream')}?since=${Math.max(0, cursor)}`)
+      if (token !== liveToken || liveKey !== key) break
+      const incoming = Array.isArray(result?.items) ? result.items : []
+      if (incoming.length > 0) {
+        mergePage(incoming)
+        if (typeof result.cursor === 'number') state.page.cursor = Math.max(cursor, result.cursor)
+        cursor = pageCursor()
+        renderDetail()
+      } else if (typeof result?.cursor === 'number' && result.cursor > cursor) {
+        cursor = result.cursor
+      }
+    } catch {
+      if (token !== liveToken || liveKey !== key) break
+      await delay(1_000)
+    }
+  }
 }
 
 function readOpenTarget(payload) {
@@ -459,6 +537,8 @@ function renderTranscript(session) {
   const interactions = state.interactions.filter((interaction) => (
     interaction.nodeId === session.nodeId && interaction.sessionId === session.sessionId
   ))
+  const previousTop = els.transcript.scrollTop
+  const follow = els.transcript.scrollHeight - previousTop - els.transcript.clientHeight < 40
   const { blocks, interactions: shown } = buildTranscript(state.page?.items ?? [], interactions)
   els.transcript.replaceChildren()
   if (blocks.length === 0 && shown.length === 0) {
@@ -467,7 +547,9 @@ function renderTranscript(session) {
   }
   for (const block of blocks) els.transcript.append(renderBlock(block))
   for (const interaction of shown) els.transcript.append(renderInteraction(interaction))
-  els.transcript.scrollTop = els.transcript.scrollHeight
+  // A live append follows the tail only while the reader is already there; a
+  // reader inspecting earlier output keeps their place.
+  els.transcript.scrollTop = follow ? els.transcript.scrollHeight : previousTop
 }
 
 function renderBlock(block) {

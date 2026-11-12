@@ -769,7 +769,12 @@ class PluginMeshService implements MeshService {
   }
 
   async stream(nodeId: string, sessionId: string, since: number): Promise<MeshPage> {
-    return this.page(nodeId, sessionId, since)
+    const value = record(await this.plugin.stream(nodeId, sessionId, since))
+    const items = Array.isArray(value?.items) ? value.items as MeshFrame[] : []
+    return {
+      items,
+      cursor: typeof value?.cursor === 'number' ? value.cursor : (items.at(-1)?.seq ?? since),
+    }
   }
 
   async prompt(nodeId: string, sessionId: string, text: string): Promise<MeshOk> {

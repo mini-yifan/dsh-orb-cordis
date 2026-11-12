@@ -67,6 +67,15 @@ describe('mesh window markup and wiring', () => {
     assert.equal(mesh.includes('innerHTML'), false)
   })
 
+  it('long-polls the selected task and appends new durable events live', () => {
+    assert.match(mesh, /function startLive\(\)/)
+    assert.match(mesh, /async function liveLoop\(token, key, session\)/)
+    assert.match(mesh, /sessionPath\(session, 'stream'\)\}\?since=/)
+    assert.match(mesh, /mergePage\(incoming\)/)
+    assert.match(mesh, /renderDetail\(\)/)
+    assert.match(mesh, /const follow = els\.transcript\.scrollHeight/)
+  })
+
   it('stops all remote tasks only after an explicit confirmation', () => {
     assert.match(mesh, /async function stopAllRemoteTasks\(\)/)
     assert.match(mesh, /filter\(\(session\) => session\.controllable === true\)/)
