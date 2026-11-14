@@ -1711,6 +1711,15 @@ describe('settings section', () => {
     )
     assert.equal(find(view, (node) => node.children?.includes('尚未加入互联')).length, 1)
     assert.equal(find(view, (node) => node.children?.includes('静态假数据')).length, 0)
+    // The primary path is now a single switch; the pairing string lives under
+    // "pair manually" for deployments without a web portal.
+    assert.equal(find(view, (node) => node.props?.role === 'switch').length, 1)
+    assert.equal(find(view, (node) => node.props?.placeholder === 'dshmesh://…').length, 0)
+
+    const manualToggle = find(view, (node) => node.type === 'button' && node.children?.includes('手动配对'))[0]
+    assert.ok(manualToggle)
+    manualToggle.props.onClick()
+    view = page.renderMesh()
     assert.equal(find(view, (node) => node.props?.placeholder === 'dshmesh://…').length, 1)
 
     // An empty form never reaches the service.
@@ -1744,13 +1753,16 @@ describe('settings section', () => {
     let view = page.renderMesh()
     await page.flush()
     view = page.renderMesh()
-    const manual = find(view, (node) => node.type === 'button' && node.children?.includes('手动填写'))[0]
+    const manual = find(view, (node) => node.type === 'button' && node.children?.includes('手动配对'))[0]
     manual.props.onClick()
     view = page.renderMesh()
+    // The address/code/fingerprint trio sits behind a nested disclosure.
+    const more = find(view, (node) => node.type === 'details')[0]
+    assert.ok(more)
     const byPlaceholder = (placeholder) => find(view, (node) => node.props?.placeholder === placeholder)[0]
     byPlaceholder('YOUR_SERVER_IP:443').props.onChange({ target: { value: 'https://YOUR_SERVER_IP:443/' } })
     byPlaceholder('8 位配对码').props.onChange({ target: { value: 'testpair' } })
-    byPlaceholder('43 位服务器指纹').props.onChange({ target: { value: MESH_FP } })
+    byPlaceholder('43 位服务器指纹（自签证书才需要）').props.onChange({ target: { value: MESH_FP } })
     view = page.renderMesh()
     const connect = find(view, (node) => node.type === 'button' && node.children?.includes('连接'))[0]
     connect.props.onClick()
@@ -1808,6 +1820,65 @@ describe('settings section', () => {
     assert.equal(find(view, (node) => node.children?.includes('尚未加入互联')).length, 1)
   })
 
+  it('shows the switch as the primary path and opens the approval URL', async () => {
+    const page = loadSection({
+      answer(path, options) {
+        if (path === '/.dsh-orb/mesh/link') {
+          assert.equal(options.method, 'POST')
+          return {
+            ok: true,
+            status: 200,
+            async text() {
+              return JSON.stringify({ approvalUrl: 'https://mesh.example.com/link?t=abc' })
+            },
+          }
+        }
+        // The UI asks the host to open a real browser tab, then waits for the
+        // approval. Return success for both so the flow can complete.
+        if (path === '/.dsh-orb/mesh/open-external' || path === '/.dsh-orb/mesh/link/finish') {
+          return { ok: true, status: 200, async text() { return '{"ok":true}' } }
+        }
+        return undefined
+      },
+    })
+    let view = page.renderMesh()
+    await page.flush()
+    view = page.renderMesh()
+
+    const toggle = find(view, (node) => node.props?.role === 'switch')[0]
+    assert.ok(toggle, 'the interconnect switch is the primary control')
+    assert.equal(toggle.props['aria-checked'], 'false')
+
+    // No default server configured => the UI asks for an address instead of
+    // silently calling an unset endpoint.
+    toggle.props.onClick()
+    await settle()
+    view = page.renderMesh()
+    const linkCalls = page.calls.filter((call) => call.path === '/.dsh-orb/mesh/link')
+    assert.equal(linkCalls.length, 0)
+
+    const serverInput = find(view, (node) => node.props?.placeholder === 'https://mesh.example.com')[0]
+    assert.ok(serverInput)
+    serverInput.props.onChange({ target: { value: 'https://mesh.example.com' } })
+    view = page.renderMesh()
+    const retry = find(view, (node) => node.props?.role === 'switch')[0]
+    retry.props.onClick()
+    await settle()
+
+    const sent = page.calls.find((call) => call.path === '/.dsh-orb/mesh/link')
+    assert.ok(sent)
+    assert.equal(JSON.parse(sent.options.body).serverUrl, 'https://mesh.example.com')
+
+    // Once approval completes the copy hint is cleared; the flow succeeded.
+    view = page.renderMesh()
+    assert.equal(find(view, (node) => node.children?.includes('https://mesh.example.com/link?t=abc')).length, 0)
+    assert.equal(
+      page.calls.some((call) => call.path === '/.dsh-orb/mesh/open-external'),
+      true,
+      'the host was asked to open the approval URL in a real browser',
+    )
+  })
+
   it('turns every docs/18 §3.2 pairing error into its own message', async () => {
     let failure = null
     const page = loadSection({
@@ -1817,6 +1888,8 @@ describe('settings section', () => {
     })
     let view = page.renderMesh()
     await page.flush()
+    view = page.renderMesh()
+    find(view, (node) => node.type === 'button' && node.children?.includes('手动配对'))[0].props.onClick()
     view = page.renderMesh()
     const pairingInput = find(view, (node) => node.props?.placeholder === 'dshmesh://…')[0]
     pairingInput.props.onChange({ target: { value: `dshmesh://YOUR_SERVER_IP:443/pair?v=1&code=TESTPAIR&fp=${MESH_FP}` } })

@@ -85,6 +85,9 @@
       name: 'dsh-orb/host'
       config:
         autoStart: true
+        # Interconnect server offered by the "Join interconnect" switch.
+        # Empty in the published source tree; a distribution sets its own.
+        defaultServer: ''
     # Orb Mesh: pairing, the multi-device tree and the Host half. The runtime
     # stays idle until the user pastes a pairing string in Settings -> 互联.
     - id: dsh-mesh

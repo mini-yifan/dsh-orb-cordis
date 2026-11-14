@@ -270,7 +270,18 @@ window.__ModuleLoader__.load({
         loadError: '无法读取互联状态。',
         retry: '重试',
         unpaired: '尚未加入互联',
-        unpairedHint: '把管理页给的配对串粘贴到下面。配对码只在这一次连接中使用，不保存在本机。',
+        unpairedHint: '打开开关，浏览器会打开登录页；用邮箱验证码登录并授权后，这台设备就加入你的账号。',
+        connectToggle: '加入互联',
+        connectToggleHint: '打开后在浏览器里用邮箱验证码登录，授权这台设备。',
+        waitingApproval: '已打开浏览器，等你在网页里完成授权…',
+        approvalFallback: '浏览器没有自动打开？复制这个地址：',
+        linked: '这台设备已加入互联。',
+        server: '服务器',
+        defaultServerLabel: '默认服务器',
+        customServerLabel: '其他服务器',
+        serverAddress: '服务器地址',
+        serverAddressPlaceholder: 'https://mesh.example.com',
+        serverRequired: '请填写服务器地址。',
         pairing: '配对串',
         pairingPlaceholder: 'dshmesh://…',
         pairingRequired: '请先粘贴配对串，或展开「手动填写」。',
@@ -278,19 +289,18 @@ window.__ModuleLoader__.load({
         namePlaceholder: '留空则使用默认名称',
         connect: '连接',
         connecting: '正在连接…',
-        manual: '手动填写',
-        manualHint: '地址、配对码和指纹会拼成同一条配对串。',
+        manual: '手动配对',
+        manualHint: '没有网页门户时，用管理页给的配对串。',
         address: '地址',
         addressPlaceholder: 'YOUR_SERVER_IP:443',
         code: '配对码',
         codePlaceholder: '8 位配对码',
         fingerprint: '指纹',
-        fingerprintPlaceholder: '43 位服务器指纹',
+        fingerprintPlaceholder: '43 位服务器指纹（自签证书才需要）',
         paired: '已连接',
         connectingState: '正在连接',
         offlineState: '离线',
         unpairedState: '未连接',
-        server: '服务器地址',
         fingerprintLabel: '证书指纹',
         localName: '本机名称',
         saveName: '保存名称',
@@ -584,7 +594,18 @@ window.__ModuleLoader__.load({
         loadError: 'Could not read the interconnect status.',
         retry: 'Retry',
         unpaired: 'Not connected yet',
-        unpairedHint: 'Paste the pairing string from the management page below. The pairing code is used for this request only and is not stored on this computer.',
+        unpairedHint: 'Turn the switch on to open the sign-in page. After approving with an email code, this device joins your account.',
+        connectToggle: 'Join interconnect',
+        connectToggleHint: 'Opens the browser to sign in with an email code and approve this device.',
+        waitingApproval: 'Browser opened. Finish approving there…',
+        approvalFallback: 'Did the browser not open? Copy this address:',
+        linked: 'This device joined the interconnect.',
+        server: 'Server',
+        defaultServerLabel: 'Default server',
+        customServerLabel: 'Another server',
+        serverAddress: 'Server address',
+        serverAddressPlaceholder: 'https://mesh.example.com',
+        serverRequired: 'Enter a server address.',
         pairing: 'Pairing string',
         pairingPlaceholder: 'dshmesh://…',
         pairingRequired: 'Paste a pairing string first, or open the manual fields.',
@@ -592,19 +613,18 @@ window.__ModuleLoader__.load({
         namePlaceholder: 'Leave empty for the default name',
         connect: 'Connect',
         connecting: 'Connecting…',
-        manual: 'Fill in manually',
-        manualHint: 'Address, pairing code, and fingerprint are combined into one pairing string.',
+        manual: 'Pair manually',
+        manualHint: 'Use the pairing string from the management page when there is no web portal.',
         address: 'Address',
         addressPlaceholder: 'YOUR_SERVER_IP:443',
         code: 'Pairing code',
         codePlaceholder: '8-character code',
         fingerprint: 'Fingerprint',
-        fingerprintPlaceholder: '43-character server fingerprint',
+        fingerprintPlaceholder: '43-character fingerprint (self-signed only)',
         paired: 'Connected',
         connectingState: 'Connecting',
         offlineState: 'Offline',
         unpairedState: 'Not connected',
-        server: 'Server address',
         fingerprintLabel: 'Certificate fingerprint',
         localName: 'This device name',
         saveName: 'Save name',
@@ -1064,6 +1084,12 @@ window.__ModuleLoader__.load({
       const [code, setCode] = React.useState('')
       const [fingerprint, setFingerprint] = React.useState('')
       const [editName, setEditName] = React.useState('')
+      // Hosted-mode switch: one toggle that opens the browser and waits for the
+      // approval, instead of pasting a pairing string.
+      const [serverChoice, setServerChoice] = React.useState('default')
+      const [customServer, setCustomServer] = React.useState('')
+      const [linkStage, setLinkStage] = React.useState('idle')
+      const [approveUrl, setApproveUrl] = React.useState('')
       const requestSeq = React.useRef(0)
 
       async function load() {
@@ -1092,20 +1118,26 @@ window.__ModuleLoader__.load({
       }, [])
 
       function composedPairing() {
+        // The address/code/fingerprint trio is optional: when the copied pairing
+        // string is present it is authoritative, and the trio only fills in when
+        // the user pasted nothing.
+        const direct = pairing.trim()
+        if (direct !== '') return direct
         const host = address.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '')
-        if (host === '' || code.trim() === '' || fingerprint.trim() === '') return ''
-        return `dshmesh://${host}/pair?v=1&code=${encodeURIComponent(code.trim().toUpperCase())}&fp=${encodeURIComponent(fingerprint.trim())}`
+        if (host === '' || code.trim() === '') return ''
+        const fp = fingerprint.trim()
+        // A public certificate needs no pin, so an empty fingerprint is valid.
+        return `dshmesh://${host}/pair?v=1&code=${encodeURIComponent(code.trim().toUpperCase())}${fp === '' ? '' : `&fp=${encodeURIComponent(fp)}`}`
       }
 
       async function connect() {
         if (busy) return
-        const value = manual ? composedPairing() : pairing.trim()
+        const value = composedPairing()
         if (value === '') {
           setNotice('')
           setActionError(text.mesh.pairingRequired)
           return
-        }
-        setBusy(true)
+        }        setBusy(true)
         setActionError('')
         setNotice('')
         try {
@@ -1127,6 +1159,96 @@ window.__ModuleLoader__.load({
           await load()
         } catch (error) {
           setActionError(meshErrorMessage(error.code, error.body, text, value))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      /**
+       * Hosted mode: open the browser to approve this device, then wait for the
+       * plugin to receive its credentials.
+       *
+       * The server call blocks until approval, so the browser is launched from
+       * the approval URL returned in the response — but we open the window
+       * immediately with a placeholder and swap the location once the URL
+       * exists, otherwise popup blockers reject a delayed `window.open`.
+       */
+      async function toggleLink() {
+        if (busy) return
+        setBusy(true)
+        setActionError('')
+        setNotice('')
+        setApproveUrl('')
+        setLinkStage('starting')
+
+        const target = effectiveChoice === 'custom' ? customServer.trim() : defaultServer()
+        if (target === '') {
+          setBusy(false)
+          setLinkStage('idle')
+          setActionError(text.mesh.serverRequired)
+          window.setTimeout?.(() => {
+            const input = document.querySelector?.('.dsh-orb-mesh-server-input')
+            if (input && typeof input.focus === 'function') input.focus()
+          }, 40)
+          return
+        }
+
+        // Open a placeholder window synchronously inside the click handler.
+        // A window opened after an await is treated as a popup and blocked.
+        let popup = null
+        try { popup = window.open?.('', '_blank') ?? null } catch { popup = null }
+
+        try {
+          // Step 1: create the link. Returns immediately with the approval URL;
+          // it must not wait for approval or we would never get the URL to open.
+          const started = await meshCall('/link', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              serverUrl: target,
+              ...(name.trim() === '' ? {} : { name: name.trim() }),
+            }),
+          })
+          const url = started && typeof started.approvalUrl === 'string' ? started.approvalUrl : ''
+          if (url === '') throw new Error('服务器没有返回授权地址')
+          setApproveUrl(url)
+          setLinkStage('waiting')
+
+          // The settings page runs inside Electron, where window.open is blocked
+          // for remote URLs. Ask the host process to open a real browser tab; the
+          // URL is still rendered below so the user can copy it if that fails.
+          let opened = false
+          try {
+            await meshCall('/open-external', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ url }),
+            })
+            opened = true
+          } catch { opened = false }
+          if (!opened) {
+            if (popup && !popup.closed) {
+              try { popup.location.href = url } catch { popup = null }
+            }
+            if (!popup) {
+              try { window.open?.(url, '_blank', 'noopener') } catch { /* user can copy */ }
+            }
+          } else if (popup && !popup.closed) {
+            // The system browser has it; close the blank popup we reserved.
+            try { popup.close() } catch { /* ignore */ }
+          }
+
+          // Step 2: wait for the browser approval. This is the long call the
+          // spinner covers.
+          await meshCall('/link/finish', { method: 'POST' })
+          setLinkStage('idle')
+          setApproveUrl('')
+          await load()
+          setNotice(text.mesh.linked)
+        } catch (error) {
+          if (popup && !popup.closed) { try { popup.close() } catch { /* ignore */ } }
+          setLinkStage('idle')
+          setActionError(meshErrorMessage(error.code, error.body, text, target))
         } finally {
           setBusy(false)
         }
@@ -1171,6 +1293,11 @@ window.__ModuleLoader__.load({
 
       const snap = state.snapshot
       const paired = snap !== null && snap !== undefined && snap.paired === true
+      /** Operator-configured default server, empty when none is bundled. */
+      const defaultServer = () => (snap && typeof snap.defaultServer === 'string' ? snap.defaultServer : '')
+      // Without a bundled default there is nothing to select, so the address
+      // field is always visible.
+      const effectiveChoice = defaultServer() === '' ? 'custom' : serverChoice
       const connection = snap && typeof snap.connection === 'string' ? snap.connection : 'unpaired'
       const connectionLabel = connection === 'connected'
         ? text.mesh.paired
@@ -1181,17 +1308,59 @@ window.__ModuleLoader__.load({
       const pairCard = h('section', { className: 'dsh-orb-set-card' },
         cardHead('mesh', text.mesh.unpaired, text.mesh.unpairedHint),
         h('div', { className: 'dsh-orb-set-card-body' },
-          h('label', { className: 'dsh-orb-set-field' },
-            h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.pairing),
-            h('input', {
-              className: 'dsh-orb-set-input',
-              value: pairing,
-              placeholder: text.mesh.pairingPlaceholder,
-              autoComplete: 'off',
-              spellCheck: false,
+          // Primary path: one switch. Turning it on opens the browser to sign in
+          // with an email code and approve this device.
+          h('div', { className: 'dsh-orb-mesh-toggle-row' },
+            h('div', { className: 'dsh-orb-mesh-toggle-copy' },
+              h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.connectToggle),
+              h('p', { className: 'dsh-orb-set-field-hint' }, text.mesh.connectToggleHint)),
+            h('button', {
+              type: 'button',
+              className: `dsh-orb-mesh-toggle${busy ? ' is-busy' : ''}`,
+              role: 'switch',
+              'aria-checked': busy ? 'true' : 'false',
+              'aria-label': text.mesh.connectToggle,
               disabled: busy,
-              onChange: (event) => { setPairing(event.target.value) },
-            })),
+              onClick: () => { void toggleLink() },
+            }, h('span', { className: 'dsh-orb-mesh-toggle-knob' }))),
+          busy
+            ? h('p', { className: 'dsh-orb-set-field-hint' }, text.mesh.waitingApproval)
+            : null,
+          approveUrl === ''
+            ? null
+            : h('p', { className: 'dsh-orb-set-field-hint' },
+                text.mesh.approvalFallback,
+                h('br'),
+                h('code', { className: 'dsh-orb-mesh-approval-url' }, approveUrl)),
+          h('label', { className: 'dsh-orb-set-field' },
+            h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.server),
+            h('select', {
+              className: 'dsh-orb-set-input',
+              value: effectiveChoice,
+              disabled: busy,
+              onChange: (event) => { setServerChoice(event.target.value) },
+            },
+              defaultServer() === ''
+                // No bundled default: only a custom address makes sense, and the
+                // hint explains why so the field does not look broken.
+                ? h('option', { value: 'custom' }, text.mesh.customServerLabel)
+                : h('option', { value: 'default' }, `${text.mesh.defaultServerLabel} · ${defaultServer()}`),
+              defaultServer() === ''
+                ? null
+                : h('option', { value: 'custom' }, text.mesh.customServerLabel))),
+          effectiveChoice === 'custom'
+            ? h('label', { className: 'dsh-orb-set-field' },
+                h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.serverAddress),
+                h('input', {
+                  className: 'dsh-orb-set-input dsh-orb-mesh-server-input',
+                  value: customServer,
+                  placeholder: text.mesh.serverAddressPlaceholder,
+                  autoComplete: 'off',
+                  spellCheck: false,
+                  disabled: busy,
+                  onChange: (event) => { setCustomServer(event.target.value) },
+                }))
+            : null,
           h('label', { className: 'dsh-orb-set-field' },
             h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.name),
             h('input', {
@@ -1204,12 +1373,6 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dsh-orb-set-actions' },
             h('button', {
               type: 'button',
-              className: 'dsh-orb-set-button dsh-orb-set-primary',
-              disabled: busy,
-              onClick: () => { void connect() },
-            }, busy ? text.mesh.connecting : text.mesh.connect),
-            h('button', {
-              type: 'button',
               className: 'dsh-orb-set-button dsh-orb-set-ghost',
               'aria-expanded': manual ? 'true' : 'false',
               onClick: () => { setManual(!manual) },
@@ -1217,39 +1380,61 @@ window.__ModuleLoader__.load({
           manual
             ? h('div', { className: 'dsh-orb-mesh-manual' },
                 h('p', { className: 'dsh-orb-set-field-hint' }, text.mesh.manualHint),
-                h('div', { className: 'dsh-orb-mesh-manual-fields' },
-                  h('label', { className: 'dsh-orb-set-field' },
-                    h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.address),
-                    h('input', {
-                      className: 'dsh-orb-set-input',
-                      value: address,
-                      placeholder: text.mesh.addressPlaceholder,
-                      disabled: busy,
-                      onChange: (event) => { setAddress(event.target.value) },
-                    })),
-                  h('label', { className: 'dsh-orb-set-field' },
-                    h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.code),
-                    h('input', {
-                      className: 'dsh-orb-set-input',
-                      value: code,
-                      placeholder: text.mesh.codePlaceholder,
-                      disabled: busy,
-                      onChange: (event) => { setCode(event.target.value) },
-                    })),
-                  h('label', { className: 'dsh-orb-set-field' },
-                    h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.fingerprint),
-                    h('input', {
-                      className: 'dsh-orb-set-input',
-                      value: fingerprint,
-                      placeholder: text.mesh.fingerprintPlaceholder,
-                      disabled: busy,
-                      onChange: (event) => { setFingerprint(event.target.value) },
-                    }))))
+                h('label', { className: 'dsh-orb-set-field' },
+                  h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.pairing),
+                  h('input', {
+                    className: 'dsh-orb-set-input',
+                    value: pairing,
+                    placeholder: text.mesh.pairingPlaceholder,
+                    autoComplete: 'off',
+                    spellCheck: false,
+                    disabled: busy,
+                    onChange: (event) => { setPairing(event.target.value) },
+                  })),
+                h('div', { className: 'dsh-orb-set-actions' },
+                  h('button', {
+                    type: 'button',
+                    className: 'dsh-orb-set-button dsh-orb-set-primary',
+                    disabled: busy,
+                    onClick: () => { void connect() },
+                  }, busy ? text.mesh.connecting : text.mesh.connect)),
+                h('details', { className: 'dsh-orb-mesh-manual-more' },
+                  h('summary', null, text.mesh.manual),
+                  h('div', { className: 'dsh-orb-mesh-manual-fields' },
+                    h('label', { className: 'dsh-orb-set-field' },
+                      h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.address),
+                      h('input', {
+                        className: 'dsh-orb-set-input',
+                        value: address,
+                        placeholder: text.mesh.addressPlaceholder,
+                        disabled: busy,
+                        onChange: (event) => { setAddress(event.target.value) },
+                      })),
+                    h('label', { className: 'dsh-orb-set-field' },
+                      h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.code),
+                      h('input', {
+                        className: 'dsh-orb-set-input',
+                        value: code,
+                        placeholder: text.mesh.codePlaceholder,
+                        disabled: busy,
+                        onChange: (event) => { setCode(event.target.value) },
+                      })),
+                    h('label', { className: 'dsh-orb-set-field' },
+                      h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.fingerprint),
+                      h('input', {
+                        className: 'dsh-orb-set-input',
+                        value: fingerprint,
+                        placeholder: text.mesh.fingerprintPlaceholder,
+                        disabled: busy,
+                        onChange: (event) => { setFingerprint(event.target.value) },
+                      })))))
             : null))
-
       const pairedCard = snap === null || snap === undefined ? null : h('section', { className: 'dsh-orb-set-card' },
         cardHead('mesh', text.mesh.nav, null,
           h('span', { className: `dsh-orb-mesh-state is-${connection}` }, connectionLabel)),
+        snap && snap.error
+          ? h('p', { className: 'dsh-orb-set-error' }, snap.error)
+          : null,
         h('div', { className: 'dsh-orb-set-card-body' },
           h('dl', { className: 'dsh-orb-mesh-facts' },
             meshFact(text.mesh.server, snap.server && snap.server.url ? snap.server.url : '—', true),
@@ -3562,7 +3747,40 @@ window.__ModuleLoader__.load({
 .dsh-orb-mesh-load-error { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .dsh-orb-mesh-load-error .dsh-orb-set-error { flex: 1; min-width: 220px; margin: 0; }
 .dsh-orb-mesh-manual { margin-top: 14px; padding-top: 14px; border-top: 1px dashed color-mix(in srgb, currentColor 13%, transparent); }
+.dsh-orb-mesh-manual-more { margin-top: 12px; }
+.dsh-orb-mesh-manual-more > summary { cursor: pointer; font-size: 12.5px; color: color-mix(in srgb, currentColor 60%, transparent); }
 .dsh-orb-mesh-manual-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 16px; margin-top: 8px; }
+
+/* Hosted-mode switch: one control instead of a pairing string. */
+.dsh-orb-mesh-toggle-row { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+.dsh-orb-mesh-toggle-copy { flex: 1; min-width: 0; }
+.dsh-orb-mesh-toggle-copy .dsh-orb-set-field-hint { margin: 4px 0 0; }
+.dsh-orb-mesh-toggle {
+  flex: none;
+  width: 48px;
+  height: 28px;
+  padding: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.dsh-orb-mesh-toggle .dsh-orb-mesh-toggle-knob {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 22%);
+  transform: translateX(0);
+  transition: transform 150ms cubic-bezier(.32, .72, 0, 1);
+}
+.dsh-orb-mesh-toggle.is-busy { background: var(--dsw-static-blue-500, #4d6bfe); cursor: progress; }
+.dsh-orb-mesh-toggle.is-busy .dsh-orb-mesh-toggle-knob { transform: translateX(20px); }
+.dsh-orb-mesh-toggle:focus-visible { outline: 2px solid var(--dsw-static-blue-500, #4d6bfe); outline-offset: 2px; }
+.dsh-orb-mesh-toggle:disabled { cursor: progress; }
+.dsh-orb-mesh-approval-url { display: inline-block; margin-top: 4px; padding: 4px 7px; border-radius: 6px; background: color-mix(in srgb, currentColor 7%, transparent); font-family: var(--ds-font-family-code, monospace); font-size: 11.5px; overflow-wrap: anywhere; user-select: all; }
 .dsh-orb-mesh-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 18px; margin: 0 0 14px; }
 .dsh-orb-mesh-fact { min-width: 0; }
 .dsh-orb-mesh-fact dt { font-size: 11.5px; color: color-mix(in srgb, currentColor 55%, transparent); }

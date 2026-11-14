@@ -7,6 +7,7 @@ import { TccMonitor } from './tcc.ts'
 import { suppressDockTile } from './dock-suppression.ts'
 import { profileDirectory, ProfileStore } from './preferences.ts'
 import { registerOrbRoutes } from './routes.ts'
+import { openSystemUrl } from './selection.ts'
 import { installOrbServices, watchOrbPermissions } from './services.ts'
 import { watchAppearance } from './appearance.ts'
 import { OrbRuntime, type OrbContext } from './orb.ts'
@@ -36,7 +37,7 @@ export type { OrbContext }
  * @param ctx - host services named in {@link inject}.
  * @param config - patch config. `autoStart: false` skips the helper until settings turn it back on.
  */
-export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): void {
+export function apply(ctx: OrbContext, config: { autoStart?: boolean; defaultServer?: string } = {}): void {
   // Before any UI work: this process shares the app's bundle identity, so the first
   // UI transaction (a selection) makes the Dock grow a second identical icon.
   suppressDockTile()
@@ -85,7 +86,10 @@ export function apply(ctx: OrbContext, config: { autoStart?: boolean } = {}): vo
   ctx.effect(() => {
     const detachQuestions = runtime.attachQuestions()
     const detachPermissions = watchOrbPermissions(ctx, store)
-    const detachRoutes = registerOrbRoutes({ ctx, store, tcc, control: runtime })
+    const detachRoutes = registerOrbRoutes({
+      ctx, store, tcc, control: runtime,
+      ...(config.defaultServer === undefined ? {} : { defaultServer: config.defaultServer }),
+    })
     // Theme and locale follow the official settings document; a missing
     // settings service leaves the ball on its system defaults.
     const detachAppearance = watchAppearance(ctx, (appearance) => { runtime.setAppearance(appearance) })

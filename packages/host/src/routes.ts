@@ -37,6 +37,19 @@ const PREFIX = '/.dsh-orb'
 const MESH_PREFIX = `${PREFIX}/mesh`
 const HELPER_HEADER = 'x-dsh-orb-helper'
 
+/**
+ * The default interconnect server, if the operator configured one.
+ *
+ * Intentionally an environment value rather than a constant: this source tree is
+ * published, and a baked-in domain would make every fork point at someone else's
+ * server by default. A distribution can set `DSH_ORB_DEFAULT_MESH_SERVER`.
+ */
+function defaultMeshServer(deps?: { defaultServer?: string }): string {
+  const fromConfig = (deps?.defaultServer ?? '').trim()
+  if (fromConfig !== '') return fromConfig
+  return (process.env.DSH_ORB_DEFAULT_MESH_SERVER ?? '').trim()
+}
+
 interface RouteContext {
   readonly webServer: {
     register(route: {
@@ -59,6 +72,14 @@ interface RouteContext {
 /** Side effects that have to reach the live ball. */
 export interface OrbControl {
   helperAuthorized(token: string): boolean
+  /**
+   * Open an http(s) URL in the user's default browser.
+   *
+   * The settings page runs inside Electron, where `window.open` is blocked for
+   * remote URLs. The host process can open a real browser tab, which is what the
+   * interconnect approval flow needs.
+   */
+  openExternal?(url: string): void
   publishChrome(): Promise<void>
   setOverlayModel(selection: AgentModelSelection): Promise<void>
   setBackgroundModel(selection: AgentModelSelection): Promise<void>
@@ -122,6 +143,12 @@ interface RouteDeps {
   readonly control: OrbControl
   /** Tests inject a fresh service; production resolves `mesh` from the plugin or the mock. */
   readonly mesh?: MeshService
+  /**
+   * Server offered when the interconnect switch is turned on without an address.
+   * Comes from the patch config so a distribution can set its own endpoint
+   * without the published source tree naming one.
+   */
+  readonly defaultServer?: string
 }
 
 /** Mount `/.dsh-orb` and return the disposer. */
@@ -356,7 +383,7 @@ async function handle(deps: RouteDeps, mesh: MeshService, req: IncomingMessage, 
   // The helper's Mesh window talks to this bridge with its socket token. The routes are
   // not platform-gated: settings can read Mesh status on a host without a ball.
   if (path === MESH_PREFIX || path.startsWith(`${MESH_PREFIX}/`)) {
-    await handleMesh(mesh, method, path.slice(MESH_PREFIX.length), url, req, res)
+    await handleMesh(mesh, method, path.slice(MESH_PREFIX.length), url, req, res, { defaultServer: deps.defaultServer, openExternal: deps.control.openExternal?.bind(deps.control) })
     return
   }
   if ((method === 'GET' || method === 'HEAD') && path === `${PREFIX}/avatar`) {
@@ -553,10 +580,13 @@ async function handleMesh(
   url: URL,
   req: IncomingMessage,
   res: ServerResponse,
+  options: { defaultServer?: string; openExternal?: (url: string) => void } = {},
 ): Promise<void> {
   try {
     if (method === 'GET' && rest === '/status') {
-      sendJson(res, 200, mesh.status())
+      // `defaultServer` lets the UI offer "use the default server" without
+      // hardcoding a domain in the renderer.
+      sendJson(res, 200, { ...mesh.status(), defaultServer: defaultMeshServer(options) })
       return
     }
     if (method === 'GET' && rest === '/nodes') {
@@ -600,6 +630,49 @@ async function handleMesh(
     }
     if (method === 'POST' && rest === '/unpair') {
       sendJson(res, 200, await mesh.unpair())
+      return
+    }
+    if (method === 'POST' && rest === '/link') {
+      // Hosted mode: create the approval link and wait for the browser. The
+      // default server is resolved host-side so no domain is baked into the UI.
+      const body = asRecord(await readJson(req))
+      const requested = typeof body?.serverUrl === 'string' ? body.serverUrl.trim() : ''
+      const serverUrl = requested !== '' ? requested : defaultMeshServer(options)
+      if (serverUrl === '') {
+        throw new MeshRequestError(400, 'server_required', '没有配置默认互联服务器，请填写服务器地址')
+      }
+      if (typeof mesh.link !== 'function') {
+        throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持网页授权')
+      }
+      const name = typeof body?.name === 'string' ? body.name.trim() : ''
+      sendJson(res, 200, await mesh.link(serverUrl, name === '' ? undefined : name))
+      return
+    }
+    if (method === 'POST' && rest === '/open-external') {
+      const body = asRecord(await readJson(req))
+      const raw = typeof body?.url === 'string' ? body.url.trim() : ''
+      let parsed: URL
+      try { parsed = new URL(raw) } catch {
+        throw new MeshRequestError(400, 'invalid_url', '链接格式不正确')
+      }
+      // Only http(s): this route must never launch a local file or app scheme.
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        throw new MeshRequestError(400, 'invalid_url', '只允许打开 http 或 https 链接')
+      }
+      if (typeof options.openExternal !== 'function') {
+        throw new MeshRequestError(501, 'not_supported', '当前环境无法打开浏览器')
+      }
+      options.openExternal(parsed.toString())
+      sendJson(res, 200, { ok: true })
+      return
+    }
+    if (method === 'POST' && rest === '/link/finish') {
+      // Step 2: the UI opened the browser, now wait for the approval and adopt
+      // the credentials. This call is the long one the spinner covers.
+      if (typeof mesh.finishLink !== 'function') {
+        throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持网页授权')
+      }
+      sendJson(res, 200, await mesh.finishLink())
       return
     }
     if (method === 'POST' && rest === '/name') {

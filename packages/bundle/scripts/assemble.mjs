@@ -90,6 +90,9 @@ const meshVendor = join(bundleRoot, 'vendor', 'mesh')
 if (!existsSync(meshVendor)) {
   throw new Error('assemble: packages/bundle/vendor/mesh is missing. Run `node scripts/sync-mesh.mjs` first.')
 }
+// `fs.cp` nests the source inside an existing destination directory, which
+// produced `dist/mesh/mesh` on a rebuild and left the stale bundle in place.
+await rm(join(dist, 'mesh'), { recursive: true, force: true })
 await cp(meshVendor, join(dist, 'mesh'), { recursive: true })
 
 // The host reaches the helper at ../helper/lib/main.js and the selection monitor at ../native-selection/src.

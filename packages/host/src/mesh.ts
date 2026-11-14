@@ -113,6 +113,7 @@ export interface MeshStatus {
   connection: 'unpaired' | 'connecting' | 'connected' | 'offline'
   peersOnline: number
   peersTotal: number
+  error?: string
 }
 
 /** One frame of a session page/stream: the raw DSH event, addressed by node and session. */
@@ -161,8 +162,23 @@ export interface MeshService {
   prefs(): MeshPrefs
   setPrefs(patch: unknown): MeshPrefs
   pair(pairing: string, name?: string): MeshPairSuccess | Promise<MeshPairSuccess>
+  /**
+   * Hosted mode step 1: create a device-approval link.
+   * Optional so older backends keep working.
+   */
+  link?(serverUrl: string, deviceName?: string): Promise<MeshLinkResult>
+  /** Hosted mode step 2: wait for approval and adopt the credentials. */
+  finishLink?(): Promise<MeshLinkResult>
   unpair(): MeshOk | Promise<MeshOk>
   rename(name: string): MeshOk | Promise<MeshOk>
+}
+
+/** What the hosted-mode link flow hands back to the settings UI. */
+export interface MeshLinkResult {
+  /** Page the user must open to sign in and approve this device. */
+  approvalUrl?: string
+  paired?: boolean
+  [key: string]: unknown
 }
 
 /** A route-visible failure carrying the contract's `error`, `message`, and optional `step`. */
@@ -645,7 +661,16 @@ export class MockMeshService implements MeshService {
   }
 }
 
-/** Parse the frozen `dshmesh://host:port/pair?v=1&code=…&fp=…` pairing string (18 §4.1). */
+/**
+ * Parse the frozen `dshmesh://host:port/pair?v=1&code=…&fp=…` pairing string (18 §4.1).
+ *
+ * An empty `fp` is valid: the deployment serves a publicly trusted certificate
+ * and the client verifies with the platform CA store. A non-empty `fp` must be a
+ * full 43-character SPKI digest, which is what self-hosted setups pin.
+ *
+ * Loopback hosts resolve to plain HTTP so a local development server can be
+ * paired without a certificate.
+ */
 export function parsePairing(pairing: string): { address: string; host: string; code: string; fp: string } | undefined {
   if (typeof pairing !== 'string' || pairing.length > 2048) return undefined
   let url: URL
@@ -660,11 +685,13 @@ export function parsePairing(pairing: string): { address: string; host: string; 
   const code = url.searchParams.get('code') ?? ''
   const fp = url.searchParams.get('fp') ?? ''
   if (!/^[A-Z0-9]{8}$/.test(code)) return undefined
-  if (!/^[A-Za-z0-9_-]{43}$/.test(fp)) return undefined
+  if (fp !== '' && !/^[A-Za-z0-9_-]{43}$/.test(fp)) return undefined
   const host = url.hostname
   if (host === '') return undefined
-  const port = url.port === '' ? '443' : url.port
-  return { address: `https://${host}:${port}`, host, code, fp }
+  const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
+  const port = url.port === '' ? (loopback ? '80' : '443') : url.port
+  const scheme = loopback ? 'http' : 'https'
+  return { address: `${scheme}://${host}:${port}`, host, code, fp }
 }
 
 interface PluginMeshLike {
@@ -680,6 +707,10 @@ interface PluginMeshLike {
   prefs(): unknown
   updatePrefs(patch: unknown): unknown
   pair(input: unknown): unknown
+  /** Hosted-mode step 1: create the link, return the approval URL. */
+  startLink?(serverUrl: string, deviceName?: string): unknown
+  /** Hosted-mode step 2: wait for approval and adopt the credentials. */
+  finishLink?(): unknown
   unpair(): unknown
   rename(name: string): unknown
   createTaskSession(...args: unknown[]): unknown
@@ -709,6 +740,7 @@ class PluginMeshService implements MeshService {
         ? value.connection : 'unpaired',
       peersOnline: typeof value?.peersOnline === 'number' ? value.peersOnline : 0,
       peersTotal: typeof value?.peersTotal === 'number' ? value.peersTotal : 0,
+      ...(typeof value?.error === 'string' ? { error: value.error } : {}),
     }
   }
 
@@ -837,6 +869,30 @@ class PluginMeshService implements MeshService {
       node,
       peers: this.nodes().filter(item => item.nodeId !== node.nodeId),
     }
+  }
+
+  /**
+   * Hosted mode: the plugin creates the link, we surface the approval URL, then
+   * it blocks until the browser approves and its credentials are adopted.
+   */
+  /** Step 1: create the link. Returns the URL the caller must open. */
+  async link(serverUrl: string, deviceName?: string): Promise<MeshLinkResult> {
+    if (typeof this.plugin.startLink !== 'function') {
+      throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持网页授权')
+    }
+    const value = record(await this.plugin.startLink(serverUrl, deviceName))
+    return {
+      ...(value ?? {}),
+      ...(typeof value?.approvalUrl === 'string' ? { approvalUrl: value.approvalUrl } : {}),
+    }
+  }
+
+  /** Step 2: wait for the browser approval and adopt the credentials. */
+  async finishLink(): Promise<MeshLinkResult> {
+    if (typeof this.plugin.finishLink !== 'function') {
+      throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持网页授权')
+    }
+    return (record(await this.plugin.finishLink()) ?? {}) as MeshLinkResult
   }
 
   async unpair(): Promise<MeshOk> {

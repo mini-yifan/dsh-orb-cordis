@@ -1865,6 +1865,11 @@ export class OrbRuntime {
   }
 
   /** True when the helper presented this socket token. */
+  /** Open a URL in the user's default browser (used by the interconnect flow). */
+  openExternal(url: string): void {
+    openSystemUrl(url)
+  }
+
   helperAuthorized(token: string): boolean {
     return tokensMatch(token, this.token)
   }
