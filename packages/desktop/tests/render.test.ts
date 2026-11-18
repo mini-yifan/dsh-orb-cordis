@@ -92,3 +92,36 @@ test('never emits a ref the model cannot address', () => {
   }))
   for (const ref of rendered.refs) assert.match(ref, /^@[^:]+:e\d+$/)
 })
+test('a character cut says so, and does not send the model to max_nodes', () => {
+  // The QQ run failed four times looking for an input box because the message
+  // list exhausted a 6000-character budget and the note only mentioned nodes.
+  const wide = {
+    app: 'QQ', snapshotId: 's1', refCount: 40, complete: true,
+    tree: {
+      role: 'window',
+      children: Array.from({ length: 40 }, (_, i) => ({
+        role: 'button', name: `message ${String(i)} `.repeat(8), ref: `@s1:e${String(i)}`, actions: ['Click'],
+      })),
+    },
+  }
+  const rendered = renderSnapshot(wide, { maxNodes: 500, maxChars: 1200 })
+  assert.equal(rendered.truncated, true)
+  assert.match(rendered.text, /character budget, not by node count/)
+  assert.match(rendered.text, /Raising max_nodes will not help/)
+})
+
+test('a node cut still points at max_nodes', () => {
+  const many = {
+    app: 'Notes', snapshotId: 's1', refCount: 80, complete: true,
+    tree: {
+      role: 'window',
+      children: Array.from({ length: 80 }, (_, i) => ({
+        role: 'button', name: `b${String(i)}`, ref: `@s1:e${String(i)}`, actions: ['Click'],
+      })),
+    },
+  }
+  const rendered = renderSnapshot(many, { maxNodes: 5, maxChars: 100_000 })
+  assert.equal(rendered.truncated, true)
+  assert.match(rendered.text, /node budget/)
+  assert.doesNotMatch(rendered.text, /character budget, not by node count/)
+})

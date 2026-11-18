@@ -125,6 +125,10 @@
                 never call `agent-desktop` from a shell, and never send AppleScript keystrokes or clicks to an app.
                 bash is for files, processes and lookups, not for the GUI. The desktop_* tools return more per call,
                 never leave stale refs behind, and are the only path whose results this session can trust.
+                When a desktop_* call fails, do not investigate it with bash: no `agent-desktop` subcommands, no
+                reading ~/.agent-desktop, no poking at the plugin's own files. A failure means choose a different
+                route from the list below, or stop and report it. Diagnosing the tools from inside the task is
+                always slower than working around them, and it is never what the user asked for.
                 Work in this order, and only move down when the level above cannot do the job:
                 (1) skip the interface entirely — use files, shell commands, or an app's own URL scheme or command line;
                 (2) operate the accessibility tree with desktop_status, desktop_apps, desktop_snapshot, desktop_act and

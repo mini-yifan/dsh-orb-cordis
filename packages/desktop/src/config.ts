@@ -11,7 +11,13 @@ export interface Config {
   readonly enabled?: boolean
   /** Most tree nodes rendered per snapshot. Default: 140. */
   readonly maxNodes?: number
-  /** Most characters rendered per snapshot. Default: 6000. */
+  /**
+   * Most characters rendered per snapshot. Default: 12000.
+   *
+   * A chat window's message list alone can exceed the old 6000 before the input
+   * box is reached, and the tool had no argument to raise it, so the model could
+   * not find the control it needed no matter how it re-snapshotted.
+   */
   readonly maxChars?: number
   /** Keep the operated window's ribbon on screen this long after the last action. Default: 4000. */
   readonly frameHoldMs?: number
@@ -62,7 +68,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
   return {
     enabled: config.enabled !== false,
     maxNodes: positive(config.maxNodes, 140, 'maxNodes'),
-    maxChars: positive(config.maxChars, 6000, 'maxChars'),
+    maxChars: positive(config.maxChars, 12_000, 'maxChars'),
     idleCloseMs: positive(config.idleCloseMs, 600_000, 'idleCloseMs'),
     frameHoldMs: positive(config.frameHoldMs, 4_000, 'frameHoldMs'),
     repeatWindowMs: positive(config.repeatWindowMs, 12_000, 'repeatWindowMs'),

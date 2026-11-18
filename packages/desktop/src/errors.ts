@@ -18,7 +18,12 @@ const GUIDANCE: Record<string, Guidance> = {
     next: 'The interface changed and that ref is dead. Take a new snapshot of the app and use a new ref.',
   },
   SNAPSHOT_NOT_FOUND: {
-    next: 'That snapshot expired. Take a new one.',
+    // Not always age: a ref read through one storage namespace cannot be used by
+    // another, and calling that "expired" sends the model into a retry loop that
+    // looks like a race. Name both causes so the model stops guessing.
+    next: 'That snapshot cannot be found from this session. Either it is old, or it was taken through a '
+      + 'different snapshot namespace than the one acting on it. Take a fresh snapshot of the app you are '
+      + 'acting on, with the same tool that will act, and use a ref from that result.',
   },
   AMBIGUOUS_TARGET: {
     next: 'More than one element matches and the library will not guess. Address a control that is unique,'

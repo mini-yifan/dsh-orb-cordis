@@ -27,6 +27,7 @@ import {
   screenLockOwner,
 } from './guard.ts'
 import { chooseWindow } from './frame.ts'
+import { agentSessionId } from './sessions.ts'
 import { POLICY } from './ffi.ts'
 import { renderSnapshot } from './render.ts'
 import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData, WindowInfo } from './protocol.ts'
@@ -136,7 +137,11 @@ async function readTreeFor(
   config: ResolvedConfig,
 ): Promise<{ text: string, refs: readonly string[], thin: boolean }> {
   if (known.windowId !== undefined && known.windowId !== '') {
-    const read = await snapshotWindow(known.windowId, {}, AbortSignal.timeout(30_000))
+    const read = await snapshotWindow(
+      known.windowId,
+      { session: agentSessionId(call.sessionId) },
+      AbortSignal.timeout(30_000),
+    )
     if (read.ok && read.data !== undefined) {
       const rendered = renderSnapshot(read.data, { maxNodes: config.maxNodes, maxChars: config.maxChars })
       call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
@@ -498,7 +503,10 @@ export function registerDesktopTools(
         if (windowId !== undefined && windowId !== '') {
           const read = await snapshotWindow(
             windowId,
-            args.depth === undefined ? {} : { depth: args.depth },
+            {
+              session: agentSessionId(call.sessionId),
+              ...args.depth === undefined ? {} : { depth: args.depth },
+            },
             exec.signal,
           )
           if (!read.ok || read.data === undefined) {
@@ -509,7 +517,11 @@ export function registerDesktopTools(
           }
           const rendered = renderSnapshot(read.data, {
             maxNodes: args.max_nodes ?? config.maxNodes,
-            maxChars: config.maxChars,
+            // Asking for more nodes means the model needs more of the tree; a
+            // fixed character budget would cut it at the same place every time.
+            maxChars: args.max_nodes === undefined
+              ? config.maxChars
+              : Math.max(config.maxChars, args.max_nodes * 120),
           })
           call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
           const thin = rendered.refs.length < MIN_USEFUL_REFS

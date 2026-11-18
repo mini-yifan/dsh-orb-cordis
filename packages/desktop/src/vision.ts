@@ -745,10 +745,25 @@ export function normalizeRawNode(node: RawTreeNode, depth: number): DesktopNode 
  */
 export async function snapshotWindow(
   windowId: string,
-  options: { depth?: number, interactive?: boolean, compact?: boolean },
+  options: {
+    depth?: number
+    interactive?: boolean
+    compact?: boolean
+    /**
+     * Snapshot namespace. Must be the same `dsh_<session>` the resident child
+     * uses, or the refs this read produces are invisible to desktop_act: each
+     * session keeps its own ref store, and a ref from another store fails with
+     * SNAPSHOT_NOT_FOUND. Omit only when the caller cannot know it, accepting
+     * that the refs then live in the session-less store.
+     */
+    session?: string
+  },
   signal: AbortSignal,
 ): Promise<Envelope<SnapshotData>> {
   const args = ['snapshot', '--window-id', windowId, '--timeout-ms', '15000']
+  if (options.session !== undefined && options.session !== '') {
+    args.push('--session', options.session)
+  }
   if (options.interactive !== false) args.push('-i')
   if (options.compact !== false) args.push('--compact')
   args.push('--max-depth', String(Math.min(8, Math.max(1, options.depth ?? 3))))

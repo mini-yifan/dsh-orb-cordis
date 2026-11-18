@@ -32,7 +32,7 @@ export interface RenderedTree {
 }
 
 const DEFAULT_MAX_NODES = 140
-const DEFAULT_MAX_CHARS = 6000
+const DEFAULT_MAX_CHARS = 12_000
 const MAX_NAME = 80
 const MAX_VALUE = 120
 
@@ -87,6 +87,10 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
   let nodes = 0
   let chars = 0
   let truncated = false
+  // Which budget stopped the walk. The two need different advice: a node cut is
+  // answered by a bigger max_nodes, a character cut by a narrower read, and
+  // telling the model the wrong one sends it retrying the same call.
+  let cutBy: 'nodes' | 'chars' | undefined
 
   const head = [`app "${snapshot.app || 'unknown'}"`]
   if (snapshot.windowTitle !== undefined && snapshot.windowTitle !== '') {
@@ -101,6 +105,7 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
     if (truncated) return
     if (nodes >= maxNodes || chars >= maxChars) {
       truncated = true
+      cutBy = nodes >= maxNodes ? 'nodes' : 'chars'
       return
     }
     if (isAnonymousWrapper(node)) {
@@ -143,7 +148,10 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
     lines.push('note: the observation budget ran out; treat this as partial and re-snapshot deeper only where needed.')
   }
   if (truncated) {
-    lines.push('note: output cut at the node budget; re-snapshot with a deeper level or a larger max_nodes for the part you need.')
+    lines.push(cutBy === 'chars'
+      ? 'note: output cut by the character budget, not by node count. Raising max_nodes will not help: '
+        + 'drill into one region instead (a --root read of the container you need) or read the window at a lower depth.'
+      : 'note: output cut at the node budget; re-snapshot with a deeper level or a larger max_nodes for the part you need.')
   }
   return { text: lines.join('\n'), refs, elements, nodes, truncated }
 }
