@@ -210,7 +210,11 @@
           - id: tool-desktop
             name: 'dsh-orb/desktop'
             config:
-              postActionWaitMs: 600
+              # A background worker cannot tell whether anyone is at the machine,
+              # so physical pointer input is off by default: an unattended click
+              # moves the user's cursor with nobody watching. Turn this on for a
+              # desktop the user is actually sitting at.
+              coordinateClick: false
           - id: tool-mesh-return-files
             name: 'dsh-orb/mesh/return-files'
 

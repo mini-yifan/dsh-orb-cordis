@@ -31,6 +31,7 @@ import { cliName, nativeKey, packagedCliDir } from './native-paths.ts'
 import type { WindowInfo } from './protocol.ts'
 import { requireImageRoute } from './route.ts'
 import { sessionState } from './session-state.ts'
+import { withScreenLock } from './gui-lock.ts'
 import { chooseWindow } from './frame.ts'
 
 /** Coordinates are pixels of the screenshot the model was shown. */
@@ -633,16 +634,31 @@ export function registerVisionTools(ctx: Context, config: ResolvedConfig): void 
       const point = picturePointToScreen(observation.geometry, args.x, args.y)
       const pointX = point.x
       const pointY = point.y
-      const clicked = await runCli<unknown>(
-        [
-          'mouse-click',
-          '--headed',
-          '--xy', `${String(pointX)},${String(pointY)}`,
-          '--button', args.button ?? 'left',
-          '--count', String(args.count ?? 1),
-        ],
-        exec.signal,
-      )
+      // Join the shared GUI lock: the foreground Computer Use session moves the
+      // same pointer, and a click taken outside it can land on its work.
+      let clicked: Envelope<unknown>
+      try {
+        clicked = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>(
+          [
+            'mouse-click',
+            '--headed',
+            '--xy', `${String(pointX)},${String(pointY)}`,
+            '--button', args.button ?? 'left',
+            '--count', String(args.count ?? 1),
+          ],
+          exec.signal,
+        ))
+      } catch (error) {
+        // The picture is spent either way: a busy screen must not become a retry loop.
+        observation.spent = true
+        const busy = error instanceof Error && error.message.includes('operating the screen')
+        return {
+          text: busy
+            ? 'SCREEN_BUSY: another session is using the pointer, so this click was not sent.\n'
+              + 'The picture is spent. Report the conflict; do not retry.'
+            : `desktop_click_xy failed before sending\n${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
       // One picture, one gesture: spend it whether or not delivery was proven,
       // so a failed click cannot become a repeated click.
       observation.spent = true
