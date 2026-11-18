@@ -140,18 +140,20 @@
                 always slower than working around them, and it is never what the caller asked for.
                 Work in this order, and only move down when the level above cannot do the job:
                 (1) skip the interface entirely — use files, shell commands, or an app's own URL scheme or command line;
-                (2) use the desktop tool. This is the default. One call does one thing and returns the window as it
-                now looks, so one call is one step. Point is [x, y] on a 0–1000 grid over the picture you were just
-                given: (0,0) is its top-left, (1000,1000) its bottom-right. Read the position off the picture; never
-                compute pixels or screen coordinates. Start with action=launch or action=see, then click, type,
-                press, scroll, drag. A window without an accessibility tree works exactly as well here.
+                (2) the GUI tools. This is the default, and it is the same set the foreground Computer Use mode has:
+                desktop_open_app to start or raise an app, desktop_see to look, desktop_click, desktop_input_text,
+                desktop_hotkey, desktop_scroll, desktop_drag, desktop_wait. One call does one thing and returns the
+                window as it now looks, so one call is one step. Point is [x, y] on a 0–1000 grid over the picture you
+                were just given: (0,0) is its top-left, (1000,1000) its bottom-right. Read the position off the
+                picture; never compute pixels or screen coordinates. A window without an accessibility tree works
+                exactly as well here.
                 (3) use desktop_inspect to read the accessibility tree and desktop_act on a ref, when a picture
                 cannot settle it: the exact identity of a control in a dense list, a field that must be set
                 atomically, or an action that must not touch the pointer. desktop_act runs headless and does not
-                steal focus. When desktop_inspect answers tree_thin, stop reading and go back to the desktop tool.
+                steal focus. When desktop_inspect answers tree_thin, stop reading and go back to the GUI tools.
                 Never address the same control through both paths in one breath: a ref and a point for one control
                 is how double presses happen.
-                A desktop click raises its window first and moves the real pointer, so whoever is at the machine
+                A GUI action raises its window first and moves the real pointer, so whoever is at the machine
                 sees it. That is expected, and it is not a reason to stop or to explain yourself.
                 The picture in each result is what happened. Never repeat a click or a key to "make sure", and
                 never repeat a submit: decide from the result you already have.
@@ -218,11 +220,16 @@
             name: 'dsh-orb/desktop/cli-path'
           # The tools, not just the PATH. `cli-path` above keeps `agent-desktop` on
           # the child shell PATH for the levels that still shell out; this row adds
-          # the connected tools: `desktop` (one action, one new picture, points on a
-          # 0–1000 grid, text pasted without losing the clipboard) and the
-          # accessibility pair `desktop_inspect` / `desktop_act`.
+          # the connected tools: the Computer Use gesture set (see, click,
+          # input_text, hotkey, scroll, drag, wait, open_app — each returning the
+          # next picture, points on a 0–1000 grid, text pasted without losing the
+          # clipboard) and the accessibility pair `desktop_inspect` / `desktop_act`.
           - id: tool-desktop
             name: 'dsh-orb/desktop'
+            config:
+              # The app has a moment to paint before the result is captured; 600 is
+              # what Computer Use uses. A slow machine can raise this.
+              postActionWaitMs: 600
           - id: tool-mesh-return-files
             name: 'dsh-orb/mesh/return-files'
 

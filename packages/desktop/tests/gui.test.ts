@@ -187,6 +187,12 @@ test('a window the model names explicitly is still returned, hidden or not', () 
 })
 
 test('a key combo is translated into the CLI vocabulary', () => {
+  // The tools take the array form: ["cmd", "c"] cannot be mis-parsed.
+  assert.equal(cliCombo(['cmd', 'c']), 'cmd+c')
+  assert.equal(cliCombo(['Return']), 'return')
+  assert.equal(cliCombo(['cmd', 'Shift', '4']), 'cmd+shift+4')
+  assert.equal(cliCombo(['Option']), 'alt')
+  assert.equal(cliCombo([]), '')
   assert.equal(cliCombo('Return'), 'return')
   assert.equal(cliCombo('Enter'), 'return')
   assert.equal(cliCombo('ESC'), 'escape')
@@ -251,17 +257,26 @@ const exec = {
   signal: AbortSignal.timeout(5_000),
 }
 
-test('registers exactly one visual tool', () => {
+test('registers one tool per gesture, the Computer Use set', () => {
   const { tools } = harness({ images: true })
-  assert.deepEqual([...tools.keys()], ['desktop'])
+  assert.deepEqual([...tools.keys()].sort(), [
+    'desktop_click',
+    'desktop_drag',
+    'desktop_hotkey',
+    'desktop_input_text',
+    'desktop_open_app',
+    'desktop_scroll',
+    'desktop_see',
+    'desktop_wait',
+  ])
 })
 
 test('a text-only model is refused before any window is touched', async () => {
   const { tools } = harness({ images: false })
-  const tool = tools.get('desktop')
+  const tool = tools.get('desktop_see')
   assert.ok(tool)
   await assert.rejects(
-    () => tool.execute({ action: 'see' }, exec),
+    () => tool.execute({}, exec),
     /needs a model that declares image input.*desktop_inspect/s,
   )
 })

@@ -514,19 +514,41 @@ fail-fast，不发排队点击（排队会让点击在瞄准时刻之后才落�
 结论：不是"视觉比辅助功能准"，而是**辅助功能路径把一次点击拆成了两个轮次，并且在坏天气里
 额外收了 3–5 个轮次**。QQ 这类 Electron 客户端的主窗口本身几乎没有可用的树。
 
-### 17.2 新工具面：9 个 → 3 个
+### 17.2 新工具面：沿用 Computer Use 的手势集
 
-| 工具 | 作用 | 路径 |
-|---|---|---|
-| `desktop` | 看一眼 → 指一个点 → 拿回下一张图。动作：`see` `click` `type` `press` `scroll` `drag` `launch` | 视觉（默认） |
-| `desktop_inspect` | 读窗口的辅助功能树，给出 ref | 辅助功能 |
-| `desktop_act` | 按 ref 执行（14 种语义动作），headless，不动指针不抢焦点 | 辅助功能 |
+第一版把 8 个动作压进了一个 `desktop` 工具（`action: see|click|...`）。形状能跑
+（25 步那次没有任何参数错误），但它是错的形状：Computer Use 好用的地方正是**一个手势一个
+工具**——工具名就是意图，每个工具的参数表只包含它自己用得上的字段。把它们塞进一个联合
+参数表，模型要同时记住 13 个字段里哪 5 个属于当前动作，UI 上也只剩 `desktop {...}`。
 
-删掉：`desktop_status`、`desktop_apps`、`desktop_wait`、`desktop_raise`、`desktop_release`、
-`desktop_see`、`desktop_click_xy`。原来的 `desktop_snapshot` 改名为 `desktop_inspect`。
+所以现在是同一套手势、同一个命名习惯：
 
-"窗口在前台吗 / 这个 app 有哪些窗口 / 刚才成功了吗"这三个问题，现在都由
-`desktop` 返回的那行 `window QQ w-35248 720x640 front=yes tree=no` 和它附的图回答。
+| 工具 | 作用 |
+|---|---|
+| `desktop_open_app` | 启动或激活一个 app，返回它的窗口图 |
+| `desktop_see` | 看一眼（CU 不需要它，因为 CU 一开场就注入首帧；后台模式不注入，所以要有显式的看） |
+| `desktop_click` | 点一个 0–1000 位置，返回新图 |
+| `desktop_input_text` | 输入文字（可先点一下聚焦、可 replace、可 submit），返回新图 |
+| `desktop_hotkey` | 按组合键，`keys` 是数组（`["cmd","c"]`，不会解析错） |
+| `desktop_scroll` | 在某点滚轮，返回新图 |
+| `desktop_drag` | 从一点拖到另一点，返回新图 |
+| `desktop_wait` | 等一下再取图 |
+| `desktop_inspect` | 读辅助功能树，给出 ref |
+| `desktop_act` | 按 ref 执行（14 种语义动作），headless，不动指针不抢焦点 |
+
+删掉：`desktop_status`、`desktop_apps`、`desktop_raise`、`desktop_release`、
+`desktop_click_xy`。原来的 `desktop_snapshot` 改名为 `desktop_inspect`。
+
+和 CU 有意保留的两处差别：每一处都多一个 `window` 参数（后台 worker 通常是被指定了 app，
+而不是接管用户眼前的窗口）；没有 `open_in_browser` / `open_in_finder` / `long_press`
+——前两个就是 `open` 一条 shell 命令（第 1 层），第三个在桌面上几乎用不到。
+
+"窗口在前台吗 / 这个 app 有哪些窗口 / 刚才成功了吗"这三个问题，现在都由每个结果里那行
+`window QQ w-35248 720x640 front=yes tree=no` 和它附的图回答。
+
+顺带补上 CU 有、第一版漏掉的一件事：**动作后等一拍再拍图**（`postActionWaitMs`，默认 400，
+preset 里按 CU 设成 600）。点击会立刻返回，app 还没画完；立刻截图递给模型的是一张半成品，
+它会对着还在移动的控件瞄。
 
 ### 17.3 四条让一轮变短的规则
 

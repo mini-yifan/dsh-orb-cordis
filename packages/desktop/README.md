@@ -5,11 +5,14 @@ Desktop control for the orb's **background** agent.
 The background agent gets two routes to the same machine, and one of them is the
 default:
 
-- **`desktop`** — look at one window, point at what you see, get the next
-  picture back. This is the default because it is what a measured task came out
-  fastest on: 8 turns instead of 55, 23 s instead of 174 s. It moves the real
-  pointer and raises the window it acts on, so it disturbs whoever is at the
-  machine, exactly like the foreground Computer Use mode.
+- **The GUI tools** — `desktop_open_app`, `desktop_see`, `desktop_click`,
+  `desktop_input_text`, `desktop_hotkey`, `desktop_scroll`, `desktop_drag`,
+  `desktop_wait`. This is the Computer Use gesture set, retargeted at a named
+  window, and it is the default because it is what a measured task came out
+  fastest on: 8 turns instead of 55, 23 s instead of 174 s. Each call does one
+  thing and returns the window as it now looks. It moves the real pointer and
+  raises the window it acts on, so it disturbs whoever is at the machine,
+  exactly like the foreground Computer Use mode.
 - **`desktop_inspect` / `desktop_act`** — read the accessibility tree, act on a
   ref. Headless: no pointer movement, no focus stealing. This is the fallback for
   the cases a picture cannot settle, and the route to take when the user is

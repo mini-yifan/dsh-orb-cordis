@@ -23,6 +23,14 @@ export interface Config {
   readonly frameHoldMs?: number
   /** Refuse an identical action repeated within this window. Default: 12000. */
   readonly repeatWindowMs?: number
+  /**
+   * How long to wait after an input before capturing the result. Default: 400.
+   *
+   * A click returns before the app has painted, so capturing immediately hands
+   * the model a half-drawn window and it aims at a control that is still moving.
+   * Computer Use uses 600 for the same reason; a slow machine can raise this.
+   */
+  readonly postActionWaitMs?: number
   /** A borrowed foreground is returned after this long. Default: 90000. */
   readonly raiseMaxMs?: number
   /** App lease lifetime. Default: 120000. */
@@ -39,6 +47,7 @@ export interface ResolvedConfig extends GuardConfig {
   readonly idleCloseMs: number
   readonly frameHoldMs: number
   readonly repeatWindowMs: number
+  readonly postActionWaitMs: number
 }
 
 function positive(value: number | undefined, fallback: number, name: string): number {
@@ -60,6 +69,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     idleCloseMs: positive(config.idleCloseMs, 600_000, 'idleCloseMs'),
     frameHoldMs: positive(config.frameHoldMs, 4_000, 'frameHoldMs'),
     repeatWindowMs: positive(config.repeatWindowMs, 12_000, 'repeatWindowMs'),
+    postActionWaitMs: positive(config.postActionWaitMs, 400, 'postActionWaitMs'),
     raiseMaxMs: positive(config.raiseMaxMs, DEFAULT_GUARD_CONFIG.raiseMaxMs, 'raiseMaxMs'),
     leaseMs: positive(config.leaseMs, DEFAULT_GUARD_CONFIG.leaseMs, 'leaseMs'),
   }

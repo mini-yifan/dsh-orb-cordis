@@ -1,56 +1,48 @@
 /**
- * The desktop agent's one GUI tool: look at a window, name a point, get the next
- * picture back.
+ * The visual route: one tool per gesture, and every gesture answers with the
+ * window as it now looks.
  *
- * This is the background preset's counterpart of the foreground Computer Use
- * tools, and it exists because of a measurement. A real QQ task took 55 model
- * turns and 174 seconds through the accessibility tree, against 8 turns and 23
- * seconds in Computer Use. The gap was not tool latency — `list-windows` costs
- * 0.23 s and a window capture 0.31 s — it was round trips: seeing cost one call,
- * acting cost another, and every `AMBIGUOUS_TARGET` or thin tree cost a third.
+ * These tools are the foreground Computer Use set, retargeted at a named window
+ * instead of "whatever is frontmost": `click`, `input_text`, `scroll`, `hotkey`,
+ * `drag`, `wait`, `open_app`. The shape is deliberately the same, because that
+ * shape is what makes the mode fast — one call does one thing and returns the
+ * next picture, so a step is a step and never two. Two differences are forced by
+ * being a background worker:
  *
- * So the shape here is the phone's `after()`, applied to a desktop window:
+ * - there is no first frame injected at session start, so `desktop_see` exists to
+ *   take the first look on purpose;
+ * - a window can be named, because the worker is usually told which app to
+ *   operate rather than being handed whatever the user has in front.
  *
- * - one call is one step, and the step returns the window as it now looks;
- * - a point is `[x, y]` on a 0–1000 grid over the picture the model was given,
- *   never a pixel and never a screen coordinate, so no scale factor, shadow
- *   padding or window rectangle ever enters the model's arithmetic;
- * - a pointer action raises its window first, because the click is delivered at
- *   absolute screen coordinates and would otherwise land on whatever is on top;
- * - text is pasted through the clipboard and the clipboard is put back, so a
- *   window with no accessibility tree can still be filled in.
+ * Points are `[x, y]` on a 0–1000 grid over the picture in the previous result.
+ * That removes the pixel arithmetic, the scale factor, the window rectangle and
+ * the drop-shadow padding from every click — and it survives the attachment
+ * store downscaling the picture, because a fraction does not care.
  *
- * The accessibility tree is still here, one door over: `desktop_inspect` reads
- * it and `desktop_act` acts on a ref. That pair is the fallback for the cases a
- * picture cannot settle — an element whose exact identity matters, a control
- * that is invisible in a dense list, a field that must be set atomically.
+ * The accessibility tree is still here, one door over: `desktop_inspect` reads it
+ * and `desktop_act` acts on a ref. That pair is the fallback for the cases a
+ * picture cannot settle, and the route that does not disturb the user.
  * @module @dsh-orb/desktop/src/gui
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { ResolvedConfig } from './config.ts'
 import type { WindowInfo } from './protocol.ts'
-import { failureText, typeImageValue, type ImageValue } from './vision.ts'
+import { failureText, storePicture, typeImageValue, type ImageValue } from './vision.ts'
 import { activateApp } from './activate.ts'
 import { canPasteAtFocus, typeAtFocus } from './hid.ts'
 import { withScreenLock } from './gui-lock.ts'
 import { requireImageRoute } from './route.ts'
 import { sessionState } from './session-state.ts'
-import {
-  captureWindow,
-  listWindows,
-  picturePadding,
-  runCli,
-  storePicture,
-} from './vision.ts'
+import { captureWindow, listWindows, picturePadding, runCli } from './vision.ts'
 
 /** A point is a fraction of the picture on a 0–1000 grid, on both axes. */
 export const POINT_SPAN = 1000
 
-/** How long a window has to appear after `launch` before the action gives up. */
+/** How long a window has to appear after `desktop_open_app` before it gives up. */
 const LAUNCH_WAIT_MS = 12_000
 
 /** A click settles before the next keystroke: focus moves on the run loop, not instantly. */
@@ -99,21 +91,21 @@ interface Frame {
   readonly spanY: number
 }
 
-/** One decoded action argument, validated before anything touches the screen. */
-interface ActionArgs {
-  action: string
-  window?: string
-  app?: string
-  point?: readonly number[]
-  to?: readonly number[]
-  text?: string
-  keys?: string
-  direction?: string
-  amount?: number
-  button?: string
-  count?: number
-  replace?: boolean
-  enter?: boolean
+/** What one gesture needs, after the tool has validated its own arguments. */
+interface Gesture {
+  readonly window?: string
+  readonly app?: string
+  readonly point?: readonly [number, number]
+  readonly to?: readonly [number, number]
+  readonly text?: string
+  readonly keys?: readonly string[]
+  readonly direction?: string
+  readonly amount?: number
+  readonly button?: string
+  readonly count?: number
+  readonly replace?: boolean
+  readonly submit?: boolean
+  readonly seconds?: number
 }
 
 /**
@@ -124,13 +116,11 @@ interface ActionArgs {
  */
 export function pointToScreen(
   frame: Pick<Frame, 'left' | 'top' | 'spanX' | 'spanY'>,
-  point: readonly number[],
+  point: readonly [number, number],
 ): { readonly x: number, readonly y: number } {
-  const x = point[0] ?? 0
-  const y = point[1] ?? 0
   return {
-    x: Math.round(frame.left + (x / POINT_SPAN) * frame.spanX),
-    y: Math.round(frame.top + (y / POINT_SPAN) * frame.spanY),
+    x: Math.round(frame.left + (point[0] / POINT_SPAN) * frame.spanX),
+    y: Math.round(frame.top + (point[1] / POINT_SPAN) * frame.spanY),
   }
 }
 
@@ -193,6 +183,10 @@ function isSubstantial(window: WindowInfo): boolean {
   const bounds = window.bounds
   if (bounds === undefined) return false
   return bounds.width >= MIN_TARGET_WIDTH && bounds.height >= MIN_TARGET_HEIGHT
+}
+
+function area(rect: Rect): number {
+  return rect.width * rect.height
 }
 
 /**
@@ -299,10 +293,6 @@ export function chooseTarget(
   return { siblings: [], why: 'no window is in front and none was named' }
 }
 
-function area(rect: Rect): number {
-  return rect.width * rect.height
-}
-
 /** Keys a model writes, in the CLI's vocabulary. */
 const CLI_KEYS: Record<string, string> = {
   enter: 'return',
@@ -329,15 +319,19 @@ const CLI_KEYS: Record<string, string> = {
 }
 
 /**
- * Normalize a key combo for `agent-desktop press`.
- * @param combo - for example `Return`, `cmd+c`, `Shift+Tab`.
- * @returns the CLI's form, for example `return`, `cmd+c`.
+ * Normalize a key combination for `agent-desktop`.
+ *
+ * Accepts the array form the tools take (`["cmd", "c"]`) and the string form a
+ * test or a human writes (`cmd+c`).
+ * @param combo - key names in order, or one `+`-joined combo.
+ * @returns the CLI's form, for example `cmd+c`.
  */
-export function cliCombo(combo: string): string {
-  return combo
-    .split('+')
+export function cliCombo(combo: string | readonly string[]): string {
+  const parts = typeof combo === 'string' ? combo.split('+') : [...combo]
+  return parts
     .map(part => part.trim().toLowerCase())
     .map(part => CLI_KEYS[part] ?? part)
+    .filter(part => part !== '')
     .join('+')
 }
 
@@ -382,7 +376,7 @@ function withPicture(lead: string, fresh: Observed): Observed {
  * @param point - model-supplied array.
  * @returns the same point, or undefined when it is malformed.
  */
-function validPoint(point: readonly number[] | undefined): readonly [number, number] | undefined {
+export function validPoint(point: readonly number[] | undefined): readonly [number, number] | undefined {
   if (point === undefined || point.length !== 2) return undefined
   const x = point[0]
   const y = point[1]
@@ -391,8 +385,36 @@ function validPoint(point: readonly number[] | undefined): readonly [number, num
   return [x, y]
 }
 
+/** The tool output every visual tool shares: a sentence, a window id, a picture. */
+const PICTURE_OUTPUT = {
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      text: { type: 'string', required: true },
+      window_id: { type: 'string' },
+      image: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          attachmentId: { type: 'string', required: true },
+          mediaType: { type: 'string', required: true },
+          bytes: { type: 'integer', required: true },
+          width: { type: 'integer', required: true },
+          height: { type: 'integer', required: true },
+        },
+      },
+    },
+  },
+  render: (_args: unknown, value: { text: string, image?: ImageValue }): ContentBlock[] => {
+    const blocks: ContentBlock[] = [{ type: 'text', text: value.text }]
+    if (value.image !== undefined) blocks.push({ type: 'image', attachment: typeImageValue(value.image) })
+    return blocks
+  },
+} as const
+
 /**
- * Register the GUI tool.
+ * Register the visual tools.
  * @param ctx - preset context carrying tools and attachments.
  * @param config - resolved tunables.
  * @param dependencies - injectable side effects, so tests never touch a screen.
@@ -410,7 +432,7 @@ export function registerGuiTools(
   const activate = dependencies.activate ?? activateApp
   /** The picture each session last received. */
   const frames = new Map<string, Frame>()
-  /** When each (window, action) last landed, for the repeat guard. */
+  /** When each (window, gesture) last landed, for the repeat guard. */
   const landed = new Map<string, number>()
 
   const sessionKey = (exec: { agent?: { id?: string } }): string => {
@@ -444,7 +466,7 @@ export function registerGuiTools(
       return {
         text: `${lead}\nthis window could not be captured: ${failureText(captured)}\n`
           + 'It may be minimized, closing, or on a display this machine cannot raster. '
-          + `Call desktop with action=see and window=${target.windowId} once it is visible, `
+          + `Call desktop_see with window=${target.windowId} once it is visible, `
           + 'or look at another window.',
         window_id: target.windowId,
       }
@@ -470,8 +492,8 @@ export function registerGuiTools(
    * is also false for a window on another Space, and focusing one of those does
    * work. Only when the attempt fails is the off-screen state used as the
    * explanation, because `focus-window` answers "focus did not settle" for a
-   * hidden helper window — which reads like a transport failure and sends the
-   * model looking for another window.
+   * hidden window — which reads like a transport failure and sends the model
+   * looking for another window.
    * @param target - window to raise.
    * @param windows - every window, to name what is on screen instead.
    * @param signal - cooperative cancellation.
@@ -500,427 +522,641 @@ export function registerGuiTools(
     return `could not bring ${target.appName} (${target.windowId}) to the front, so a click would land in `
       + `another app: ${failureText(raised)}\n`
       + `${target.appName} would not take focus. It may be minimized or behind a full-screen app. `
-      + 'Try action=launch with its name, or pick another window.'
+      + 'Try desktop_open_app with its name, or pick another window.'
   }
 
+  /**
+   * Resolve the target, refuse a point that does not fit the last picture, then
+   * hand both back to the gesture.
+   * @param gesture - the call's arguments.
+   * @param exec - tool execution.
+   * @param key - session key.
+   * @param needsPoint - whether this gesture aims at a point in the last picture.
+   * @returns the target, the frame, and the app's other windows.
+   */
+  const prepare = async (
+    gesture: Gesture,
+    exec: ToolExecution,
+    key: string,
+    needsPoint: boolean,
+  ): Promise<{
+    target?: Target
+    frame?: Frame
+    note: string
+    windows: readonly WindowInfo[]
+    refusal?: Observed
+  }> => {
+    const listed = await listWindows(exec.signal)
+    if (!listed.ok || listed.data === undefined) {
+      const code = listed.error?.code ?? 'UNKNOWN'
+      const hint = code === 'TIMEOUT'
+        ? '\nThe screen may be locked, or an app is not answering. No picture can be taken in that state. '
+          + 'Do not retry: report what is blocked.'
+        : ''
+      return { note: '', windows: [], refusal: { text: `could not list windows\n${failureText(listed)}${hint}` } }
+    }
+    const frame = frames.get(key)
+    const chosen = chooseTarget(listed.data, gesture, frame?.windowId)
+    if (chosen.target === undefined) {
+      return { note: '', windows: listed.data, refusal: { text: `WINDOW_NOT_FOUND: ${chosen.why}` } }
+    }
+    const target = chosen.target
+    const note = chosen.siblings.length === 0
+      ? ''
+      : `other ${target.appName} windows: ${chosen.siblings
+        .slice(0, 6)
+        .map(window => `${window.windowId} ${String(window.bounds.width)}x${String(window.bounds.height)}`)
+        .join(' | ')}`
+
+    if (!needsPoint) return { target, note, windows: listed.data }
+
+    if (gesture.point === undefined) {
+      return {
+        target,
+        note,
+        windows: listed.data,
+        refusal: await observe(target, exec.signal, 'no point given; here is the window to point at.', key, note),
+      }
+    }
+    if (frame === undefined) {
+      const fresh = await observe(target, exec.signal, 'no picture yet — here is the window.', key, note)
+      return {
+        target,
+        note,
+        windows: listed.data,
+        refusal: withPicture(
+          'NO_PICTURE: a point refers to the picture from the previous result, and this session has none. '
+          + 'Use the picture below and make the call again.',
+          fresh,
+        ),
+      }
+    }
+    if (frame.windowId !== target.windowId) {
+      const fresh = await observe(target, exec.signal, 'that point belonged to another window; here is this one.', key, note)
+      return {
+        target,
+        note,
+        windows: listed.data,
+        refusal: withPicture(
+          `WRONG_WINDOW: the last picture was ${frame.appName} (${frame.windowId}), not `
+          + `${target.appName} (${target.windowId}). Use the picture below and make the call again.`,
+          fresh,
+        ),
+      }
+    }
+    if (!frameStillValid(frame, target.bounds)) {
+      const fresh = await observe(target, exec.signal, 'the window moved or resized; here it is again.', key, note)
+      return {
+        target,
+        note,
+        windows: listed.data,
+        refusal: withPicture(
+          'VIEWPORT_CHANGED: the window moved or resized after that picture, so its points no longer mean the '
+          + 'same controls. Use the picture below and make the call again.',
+          fresh,
+        ),
+      }
+    }
+    return { target, frame, note, windows: listed.data }
+  }
+
+  /**
+   * Refuse an identical gesture repeated inside the guard window.
+   * @param target - window the gesture addresses.
+   * @param name - gesture name.
+   * @param guard - extra identity, for example the point or the keys.
+   * @param note - window-list note to include.
+   * @param exec - tool execution.
+   * @param key - session key.
+   * @returns a refusal with a fresh picture, or undefined to proceed.
+   */
+  const repeated = async (
+    target: Target,
+    name: string,
+    guard: string,
+    note: string,
+    exec: ToolExecution,
+    key: string,
+  ): Promise<Observed | undefined> => {
+    const id = [target.windowId, name, guard].join('\u0000')
+    const when = landed.get(id)
+    if (when !== undefined && Date.now() - when < config.repeatWindowMs) {
+      const fresh = await observe(
+        target,
+        exec.signal,
+        `that ${name} already ran ${String(Math.round((Date.now() - when) / 1000))}s ago and may have landed.`,
+        key,
+        note,
+      )
+      return withPicture('IDENTICAL_ACTION: it was not sent again. Decide from the picture below.', fresh)
+    }
+    return undefined
+  }
+
+  /** Record that a gesture landed, for {@link repeated}. */
+  const remember = (target: Target, name: string, guard: string): void => {
+    landed.set([target.windowId, name, guard].join('\u0000'), Date.now())
+  }
+
+  /** A settled picture: the app has had a moment to paint the result. */
+  const settle = async (): Promise<void> => {
+    await new Promise(resolve => setTimeout(resolve, config.postActionWaitMs))
+  }
+
+  /** Common prelude: image route, lock check. Returns a refusal or undefined. */
+  const admit = async (exec: ToolExecution): Promise<Observed | undefined> => {
+    await requireImageRoute(ctx, exec)
+    const screen = await sessionState()
+    if (screen.locked) {
+      return {
+        text: 'SCREEN_LOCKED: this Mac is locked, so no picture can be taken and no click can land. '
+          + 'Unlocking needs the password and is not something this worker can do. Stop trying desktop tools: '
+          + 'finish what you can without the screen, then report what is blocked and what the user must do.',
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * Point one gesture at its window, refuse stale pictures, and report refusals
+   * as a finished result.
+   * @returns the window and frame, or a response to return as-is.
+   */
+  const aim = async (
+    gesture: Gesture,
+    exec: ToolExecution,
+    key: string,
+    needsPoint: boolean,
+  ): Promise<
+    { target: Target, frame?: Frame, note: string, windows: readonly WindowInfo[] } | { response: Observed }
+  > => {
+    const ready = await prepare(gesture, exec, key, needsPoint)
+    if (ready.refusal !== undefined) return { response: ready.refusal }
+    return {
+      target: ready.target as Target,
+      ...ready.frame === undefined ? {} : { frame: ready.frame },
+      note: ready.note,
+      windows: ready.windows,
+    }
+  }
+
+  // ── the gestures ───────────────────────────────────────────────────────────
+
   ctx.tools.register(defineTool({
-    name: 'desktop',
+    name: 'desktop_see',
     description:
-      'Operate one desktop window. Every call does one thing and returns a new picture of that window, '
-      + 'so one call is one step — no separate look, no separate status check. '
-      + 'point is [x, y] on a 0–1000 grid over the picture you were just given: (0,0) is its top-left, '
-      + '(1000,1000) its bottom-right. Read the position off the picture; never compute pixels or screen coordinates. '
-      + 'Actions: see (show a window), click, type (text into the focused field, optional point to click first and '
-      + 'enter to submit), press (one key combo), scroll, drag, launch (start or activate an app). '
-      + 'A click raises the window first, because the pointer is real. Windows with no accessibility tree work '
-      + 'exactly as well here as native ones. When an app has several windows the result names them: pass window '
-      + 'to pick one.',
+      'Show one window as a picture. Every other desktop tool already returns a picture of what it did, so '
+      + 'this is for the first look, or for looking again after something outside these tools changed the window '
+      + '(a bash command, a web fetch, a background job). Nothing is written to the Desktop and nothing is copied '
+      + 'to the clipboard. Points in the other tools are [x, y] on a 0–1000 grid over this picture.',
     parameters: {
-      action: {
-        type: 'string',
-        required: true,
-        enum: ['see', 'click', 'type', 'press', 'scroll', 'drag', 'launch'],
-        description: 'What to do.',
-      },
       window: {
         type: 'string',
-        description: 'Window id from a previous result, for example w-35248. Omit to use this session\'s last window.',
+        description: 'Window id from a previous result, for example w-35248. Omit to use the window this session last saw.',
       },
-      app: {
-        type: 'string',
-        description: 'Application name, for launch, or to pick an app\'s window when you have no id yet.',
-      },
+      app: { type: 'string', description: 'Application name, when you have no window id yet.' },
+    },
+    output: PICTURE_OUTPUT,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const blocked = await admit(exec)
+      if (blocked !== undefined) return blocked
+      const aimed = await aim({ ...pick(args, ['window', 'app']) }, exec, sessionKey(exec), false)
+      if ('response' in aimed) return aimed.response
+      return await observe(aimed.target, exec.signal, 'here is the window.', sessionKey(exec), aimed.note)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_click',
+    description:
+      'Click at a 0–1000 position on the picture from the previous result, then return the new picture. '
+      + 'The window is raised first, because the pointer is real and the click goes to absolute screen coordinates. '
+      + 'Use left (default) or right; count 2 is a double-click. Never click the same place again to "make sure" — '
+      + 'the picture in this result is what happened.',
+    parameters: {
       point: {
         type: 'array',
+        required: true,
         items: { type: 'number' },
-        description: '[x, y] on the 0–1000 grid over the picture, not pixels. For click, type, scroll.',
+        description: '[x, y] as a 0–1000 fraction of the picture, not pixels.',
       },
-      to: {
-        type: 'array',
-        items: { type: 'number' },
-        description: '[x, y] on the 0–1000 grid, the end of a drag.',
-      },
-      text: {
-        type: 'string',
-        description: 'What to type.',
-      },
-      replace: {
-        type: 'boolean',
-        description: 'For type: select the field\'s existing content first. Default: false.',
-      },
-      enter: {
-        type: 'boolean',
-        description: 'For type: press Return after typing. Default: false.',
-      },
-      keys: {
-        type: 'string',
-        description: 'For press: one combo, for example Return, escape, cmd+c, cmd+shift+4.',
-      },
-      direction: {
-        type: 'string',
-        enum: ['up', 'down', 'left', 'right'],
-        description: 'For scroll.',
-      },
-      amount: {
-        type: 'integer',
-        description: 'For scroll: 1 (smallest) to 10 (largest). Default: 3.',
-      },
+      window: { type: 'string', description: 'Window id. Omit to use the window this session last saw.' },
       button: {
         type: 'string',
         enum: ['left', 'right', 'middle'],
-        description: 'For click. Default: left.',
+        description: 'Mouse button. Default: left.',
       },
-      count: {
-        type: 'integer',
-        description: 'For click: 1 or 2. Default: 1.',
-      },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          text: { type: 'string', required: true },
-          window_id: { type: 'string' },
-          image: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              attachmentId: { type: 'string', required: true },
-              mediaType: { type: 'string', required: true },
-              bytes: { type: 'integer', required: true },
-              width: { type: 'integer', required: true },
-              height: { type: 'integer', required: true },
-            },
-          },
-        },
-      },
-      render: (_args, value): ContentBlock[] => {
-        const blocks: ContentBlock[] = [{ type: 'text', text: value.text }]
-        if (value.image !== undefined) blocks.push({ type: 'image', attachment: typeImageValue(value.image) })
-        return blocks
+      count: { type: 'integer', description: '1 for a single click, 2 for a double-click. Default: 1.' },
+      modifiers: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Modifiers held only for this click: cmd, shift, alt, ctrl.',
       },
     },
+    output: PICTURE_OUTPUT,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      await requireImageRoute(ctx, exec)
+      const blocked = await admit(exec)
+      if (blocked !== undefined) return blocked
+      const point = validPoint(args.point as readonly number[] | undefined)
+      if (point === undefined) return { text: 'INVALID_ARGS: point must be [x, y] with both on a 0–1000 grid.' }
       const key = sessionKey(exec)
-      const screen = await sessionState()
-      if (screen.locked) {
-        return {
-          text: 'SCREEN_LOCKED: this Mac is locked, so no picture can be taken and no click can land. '
-            + 'Unlocking needs the password and is not something this worker can do. Stop trying desktop tools: '
-            + 'finish what you can without the screen, then report what is blocked and what the user must do.',
-        }
+      const gesture: Gesture = { ...pick(args, ['window']), point, ...args.button === undefined ? {} : { button: String(args.button) }, ...args.count === undefined ? {} : { count: Number(args.count) } }
+      const aimed = await aim(gesture, exec, key, true)
+      if ('response' in aimed) return aimed.response
+      const guard = `${point.join(',')}/${String(gesture.count ?? 1)}/${String(gesture.button ?? 'left')}`
+      const again = await repeated(aimed.target, 'click', guard, aimed.note, exec, key)
+      if (again !== undefined) return again
+      const blockedFront = await ensureFront(aimed.target, aimed.windows, exec.signal)
+      if (blockedFront !== undefined) {
+        const fresh = await observe(aimed.target, exec.signal, 'nothing was sent.', key, aimed.note)
+        return withPicture(blockedFront, fresh)
       }
-      const action = String(args.action)
-      const parsed: ActionArgs = {
-        action,
-        ...typeof args.window === 'string' && args.window !== '' ? { window: args.window } : {},
-        ...typeof args.app === 'string' && args.app !== '' ? { app: args.app } : {},
-        ...Array.isArray(args.point) ? { point: args.point as readonly number[] } : {},
-        ...Array.isArray(args.to) ? { to: args.to as readonly number[] } : {},
-        ...typeof args.text === 'string' ? { text: args.text } : {},
-        ...typeof args.keys === 'string' && args.keys !== '' ? { keys: args.keys } : {},
-        ...typeof args.direction === 'string' ? { direction: args.direction } : {},
-        ...typeof args.amount === 'number' ? { amount: args.amount } : {},
-        ...typeof args.button === 'string' ? { button: args.button } : {},
-        ...typeof args.count === 'number' ? { count: args.count } : {},
-        ...args.replace === true ? { replace: true } : {},
-        ...args.enter === true ? { enter: true } : {},
+      const at = pointToScreen(aimed.frame as Frame, point)
+      const clicked = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
+        'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
+        '--button', gesture.button ?? 'left',
+        '--count', String(gesture.count ?? 1),
+        ...Array.isArray(args.modifiers)
+          ? (args.modifiers as unknown[])
+            .map(name => CLI_KEYS[String(name).toLowerCase()] ?? String(name).toLowerCase())
+            .flatMap(name => ['--modifiers', name])
+          : [],
+      ], exec.signal))
+      if (!clicked.ok) {
+        const fresh = await observe(aimed.target, exec.signal, 'the click was not delivered.', key, aimed.note)
+        return withPicture(failureText(clicked), fresh)
       }
+      remember(aimed.target, 'click', guard)
+      await settle()
+      return await observe(
+        aimed.target,
+        exec.signal,
+        `clicked ${fmtPoint(point)} — screen (${String(at.x)},${String(at.y)}).`,
+        key,
+        aimed.note,
+      )
+    },
+  }))
 
-      // Launch first: it is the one action that may need a window that does not exist yet.
-      if (action === 'launch') {
-        const name = parsed.app ?? parsed.window
-        if (name === undefined) return { text: 'INVALID_ARGS: launch needs an app name.' }
-        try {
-          await activate(name)
-        } catch (error) {
-          return {
-            text: `LAUNCH_FAILED: ${error instanceof Error ? error.message : String(error)}`,
-          }
+  ctx.tools.register(defineTool({
+    name: 'desktop_input_text',
+    description:
+      'Type text into a window, then return the new picture. With point, click there first so the field takes focus; '
+      + 'without it, type into whatever already has keyboard focus. replace selects the field\'s content first; '
+      + 'submit presses Return afterwards. The text is delivered by pasting, and the clipboard is put back exactly '
+      + 'as it was — this works in windows that expose no accessibility tree.',
+    parameters: {
+      text: { type: 'string', required: true, description: 'Characters to type.' },
+      point: {
+        type: 'array',
+        items: { type: 'number' },
+        description: '[x, y] as a 0–1000 fraction of the picture; the click focuses the field. Omit to use the focused field.',
+      },
+      window: { type: 'string', description: 'Window id. Omit to use the window this session last saw.' },
+      replace: { type: 'boolean', description: 'Select the field\'s existing content first. Default: false.' },
+      submit: { type: 'boolean', description: 'Press Return after typing. Default: false.' },
+    },
+    output: PICTURE_OUTPUT,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const blocked = await admit(exec)
+      if (blocked !== undefined) return blocked
+      const text = typeof args.text === 'string' ? args.text : ''
+      if (text === '') return { text: 'INVALID_ARGS: text is required.' }
+      if (!canPasteAtFocus()) {
+        return {
+          text: 'PLATFORM_NOT_SUPPORTED: typing needs a pasteboard round trip, which this plugin only implements '
+            + 'on macOS. Use desktop_inspect and desktop_act here.',
         }
-        // Only an on-screen window counts as "launched". QQ keeps thirteen
-        // windows and surfaces one; counting a hidden one would report success
-        // with a blank picture and send the model hunting.
-        //
-        // An app that owns windows but shows none is not still starting — it is
-        // closed to its menu bar. Give that state 1.5 s and then say so, instead
-        // of waiting the full deadline for a window that cannot appear.
-        const deadline = Date.now() + LAUNCH_WAIT_MS
-        let found: WindowInfo | undefined
-        let listed = await listWindows(exec.signal)
-        let onlyHiddenSince: number | undefined
-        while (Date.now() < deadline) {
-          const own = listed.ok && listed.data !== undefined
-            ? listed.data.filter(window => sameApp(window.appName, name))
-            : []
-          found = preferredWindow(own)
-          if (found?.visible === false) found = undefined
-          if (found !== undefined) break
-          if (own.length > 0 && !own.some(window => window.visible !== false)) {
-            onlyHiddenSince ??= Date.now()
-            if (Date.now() - onlyHiddenSince > 1_500) break
-          } else {
-            onlyHiddenSince = undefined
-          }
-          await new Promise(resolve => setTimeout(resolve, 250))
-          listed = await listWindows(exec.signal)
+      }
+      const point = args.point === undefined ? undefined : validPoint(args.point as readonly number[])
+      if (args.point !== undefined && point === undefined) {
+        return { text: 'INVALID_ARGS: point must be [x, y] with both on a 0–1000 grid.' }
+      }
+      const key = sessionKey(exec)
+      const gesture: Gesture = {
+        ...pick(args, ['window']),
+        ...point === undefined ? {} : { point },
+        replace: args.replace === true,
+        submit: args.submit === true,
+      }
+      const aimed = await aim(gesture, exec, key, point !== undefined)
+      if ('response' in aimed) return aimed.response
+      const blockedFront = await ensureFront(aimed.target, aimed.windows, exec.signal)
+      if (blockedFront !== undefined) {
+        const fresh = await observe(aimed.target, exec.signal, 'nothing was sent.', key, aimed.note)
+        return withPicture(blockedFront, fresh)
+      }
+      const at = point === undefined ? undefined : pointToScreen(aimed.frame as Frame, point)
+      const failure = await withScreenLock(exec.agent?.id, async (): Promise<string | undefined> => {
+        if (at !== undefined) {
+          const clicked = await runCli<unknown>([
+            'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
+            '--button', 'left', '--count', '1',
+          ], exec.signal)
+          if (!clicked.ok) return failureText(clicked)
+          // The field takes keyboard focus on its own run-loop turn.
+          await new Promise(resolve => setTimeout(resolve, FOCUS_SETTLE_MS))
         }
+        await typeAtFocus(text, {
+          ...gesture.replace === true ? { replace: true } : {},
+          ...gesture.submit === true ? { enter: true } : {},
+        }, exec.signal)
+        return undefined
+      })
+      if (failure !== undefined) {
+        const fresh = await observe(aimed.target, exec.signal, 'the focus click failed, so nothing was typed.', key, aimed.note)
+        return withPicture(failure, fresh)
+      }
+      await settle()
+      return await observe(
+        aimed.target,
+        exec.signal,
+        `typed ${String(text.length)} character(s)`
+        + `${gesture.submit === true ? ' and pressed Return' : ''}`
+        + `${gesture.replace === true ? ' (replacing the field)' : ''}.`,
+        key,
+        aimed.note,
+      )
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_scroll',
+    description:
+      'Scroll the window at a 0–1000 position on the picture from the previous result, then return the new picture. '
+      + 'Scrolls the wheel over that point, so the list under it moves, not the whole window. '
+      + 'Direction defaults to down; amount is 1 (smallest) to 10 (largest).',
+    parameters: {
+      point: {
+        type: 'array',
+        required: true,
+        items: { type: 'number' },
+        description: '[x, y] as a 0–1000 fraction of the picture, not pixels.',
+      },
+      window: { type: 'string', description: 'Window id. Omit to use the window this session last saw.' },
+      direction: {
+        type: 'string',
+        enum: ['up', 'down', 'left', 'right'],
+        description: 'Scroll direction. Default: down.',
+      },
+      amount: { type: 'integer', description: 'Scroll magnitude, 1 to 10. Default: 3.' },
+    },
+    output: PICTURE_OUTPUT,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const blocked = await admit(exec)
+      if (blocked !== undefined) return blocked
+      const point = validPoint(args.point as readonly number[] | undefined)
+      if (point === undefined) return { text: 'INVALID_ARGS: point must be [x, y] with both on a 0–1000 grid.' }
+      const key = sessionKey(exec)
+      const direction = typeof args.direction === 'string' ? args.direction : 'down'
+      const gesture: Gesture = {
+        ...pick(args, ['window']),
+        point,
+        direction,
+        ...args.amount === undefined ? {} : { amount: Number(args.amount) },
+      }
+      const aimed = await aim(gesture, exec, key, true)
+      if ('response' in aimed) return aimed.response
+      const blockedFront = await ensureFront(aimed.target, aimed.windows, exec.signal)
+      if (blockedFront !== undefined) {
+        const fresh = await observe(aimed.target, exec.signal, 'nothing was sent.', key, aimed.note)
+        return withPicture(blockedFront, fresh)
+      }
+      const at = pointToScreen(aimed.frame as Frame, point)
+      const magnitude = Math.min(10, Math.max(1, Number(gesture.amount ?? 3)))
+      const lines = magnitude * 3
+      const dy = direction === 'up' ? lines : direction === 'down' ? -lines : 0
+      const dx = direction === 'right' ? lines : direction === 'left' ? -lines : 0
+      const scrolled = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
+        'mouse-wheel', '--x', String(at.x), '--y', String(at.y),
+        ...dy !== 0 ? ['--dy', String(dy)] : [],
+        ...dx !== 0 ? ['--dx', String(dx)] : [],
+      ], exec.signal))
+      if (!scrolled.ok) {
+        const fresh = await observe(aimed.target, exec.signal, 'the scroll was not delivered.', key, aimed.note)
+        return withPicture(failureText(scrolled), fresh)
+      }
+      await settle()
+      return await observe(aimed.target, exec.signal, `scrolled ${direction} at ${fmtPoint(point)}.`, key, aimed.note)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_hotkey',
+    description:
+      'Press a key combination in the window, then return the new picture. '
+      + 'Keys are names in order, for example ["cmd", "c"] or ["Return"]. '
+      + 'The window is raised first, because keys go to the focused app.',
+    parameters: {
+      keys: {
+        type: 'array',
+        required: true,
+        items: { type: 'string' },
+        description: 'Key names in order, for example ["cmd", "shift", "4"].',
+      },
+      window: { type: 'string', description: 'Window id. Omit to use the window this session last saw.' },
+    },
+    output: PICTURE_OUTPUT,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const blocked = await admit(exec)
+      if (blocked !== undefined) return blocked
+      const listed = Array.isArray(args.keys) ? (args.keys as unknown[]).map(key => String(key)) : []
+      if (listed.length === 0) return { text: 'INVALID_ARGS: keys must contain at least one key.' }
+      const key = sessionKey(exec)
+      const combo = cliCombo(listed)
+      const gesture: Gesture = { ...pick(args, ['window']), keys: listed }
+      const aimed = await aim(gesture, exec, key, false)
+      if ('response' in aimed) return aimed.response
+      const again = await repeated(aimed.target, 'hotkey', combo, aimed.note, exec, key)
+      if (again !== undefined) return again
+      const blockedFront = await ensureFront(aimed.target, aimed.windows, exec.signal)
+      if (blockedFront !== undefined) {
+        const fresh = await observe(aimed.target, exec.signal, 'nothing was sent.', key, aimed.note)
+        return withPicture(blockedFront, fresh)
+      }
+      const sent = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>(
+        ['press', '--window-id', aimed.target.windowId, combo],
+        exec.signal,
+      ))
+      if (!sent.ok) {
+        const fresh = await observe(aimed.target, exec.signal, 'the key was not delivered.', key, aimed.note)
+        return withPicture(failureText(sent), fresh)
+      }
+      remember(aimed.target, 'hotkey', combo)
+      await settle()
+      return await observe(aimed.target, exec.signal, `pressed ${combo}.`, key, aimed.note)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_drag',
+    description:
+      'Drag from one 0–1000 position to another on the picture from the previous result, then return the new picture. '
+      + 'Both points are fractions of the same picture. The window is raised first.',
+    parameters: {
+      from: {
+        type: 'array',
+        required: true,
+        items: { type: 'number' },
+        description: '[x, y] as a 0–1000 fraction of the picture, not pixels.',
+      },
+      to: {
+        type: 'array',
+        required: true,
+        items: { type: 'number' },
+        description: '[x, y] as a 0–1000 fraction of the picture, not pixels.',
+      },
+      window: { type: 'string', description: 'Window id. Omit to use the window this session last saw.' },
+    },
+    output: PICTURE_OUTPUT,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const blocked = await admit(exec)
+      if (blocked !== undefined) return blocked
+      const from = validPoint(args.from as readonly number[] | undefined)
+      const to = validPoint(args.to as readonly number[] | undefined)
+      if (from === undefined || to === undefined) {
+        return { text: 'INVALID_ARGS: from and to must both be [x, y] on a 0–1000 grid.' }
+      }
+      const key = sessionKey(exec)
+      const gesture: Gesture = { ...pick(args, ['window']), point: from, to }
+      const aimed = await aim(gesture, exec, key, true)
+      if ('response' in aimed) return aimed.response
+      const blockedFront = await ensureFront(aimed.target, aimed.windows, exec.signal)
+      if (blockedFront !== undefined) {
+        const fresh = await observe(aimed.target, exec.signal, 'nothing was sent.', key, aimed.note)
+        return withPicture(blockedFront, fresh)
+      }
+      const start = pointToScreen(aimed.frame as Frame, from)
+      const end = pointToScreen(aimed.frame as Frame, to)
+      const dragged = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
+        'drag', '--headed',
+        '--from-xy', `${String(start.x)},${String(start.y)}`,
+        '--to-xy', `${String(end.x)},${String(end.y)}`,
+      ], exec.signal))
+      if (!dragged.ok) {
+        const fresh = await observe(aimed.target, exec.signal, 'the drag was not delivered.', key, aimed.note)
+        return withPicture(failureText(dragged), fresh)
+      }
+      await settle()
+      return await observe(aimed.target, exec.signal, `dragged ${fmtPoint(from)} → ${fmtPoint(to)}.`, key, aimed.note)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_wait',
+    description:
+      'Pause, then return a fresh picture of the window without moving the pointer. '
+      + 'Use for a page reload, a loader, or a window that is still painting; do not use it as a substitute for '
+      + 'reading the picture the last action already returned.',
+    parameters: {
+      seconds: {
+        type: 'number',
+        description: 'How long to pause, 1 to 120. Default: 1.',
+      },
+      window: { type: 'string', description: 'Window id. Omit to use the window this session last saw.' },
+    },
+    output: PICTURE_OUTPUT,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const blocked = await admit(exec)
+      if (blocked !== undefined) return blocked
+      const seconds = Math.min(120, Math.max(1, Number(args.seconds ?? 1)))
+      const key = sessionKey(exec)
+      const aimed = await aim({ ...pick(args, ['window']) }, exec, key, false)
+      if ('response' in aimed) return aimed.response
+      await new Promise(resolve => setTimeout(resolve, seconds * 1000))
+      return await observe(aimed.target, exec.signal, `waited ${String(seconds)}s.`, key, aimed.note)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_open_app',
+    description:
+      'Bring an app to the front, or launch it, then return the picture of its window. '
+      + 'Use the name the user said, or a bundle identifier. If the app is running but shows no window, the result '
+      + 'says so instead of handing back a window nobody can see.',
+    parameters: {
+      name: { type: 'string', required: true, description: 'Application name or bundle identifier.' },
+    },
+    output: PICTURE_OUTPUT,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const blocked = await admit(exec)
+      if (blocked !== undefined) return blocked
+      const name = typeof args.name === 'string' ? args.name.trim() : ''
+      if (name === '') return { text: 'INVALID_ARGS: name is required.' }
+      const key = sessionKey(exec)
+      try {
+        await activate(name)
+      } catch (error) {
+        return { text: `OPEN_FAILED: ${error instanceof Error ? error.message : String(error)}` }
+      }
+      // Only an on-screen window counts as "opened". QQ keeps thirteen windows
+      // and surfaces one; counting a hidden one would report success with a blank
+      // picture and send the model hunting.
+      //
+      // An app that owns windows but shows none is not still starting — it is
+      // minimized or closed to its menu bar. Give that state 1.5 s and then say
+      // so, instead of waiting the full deadline for a window that cannot appear.
+      const deadline = Date.now() + LAUNCH_WAIT_MS
+      let found: WindowInfo | undefined
+      let listed = await listWindows(exec.signal)
+      let onlyHiddenSince: number | undefined
+      while (Date.now() < deadline) {
         const own = listed.ok && listed.data !== undefined
           ? listed.data.filter(window => sameApp(window.appName, name))
           : []
-        const hidden = own.filter(window => window.visible === false).length
-        if (found === undefined) {
-          const names = listed.ok && listed.data !== undefined
-            ? [...new Set(listed.data.map(window => window.appName))].slice(0, 12).join(', ')
-            : 'unavailable'
-          if (own.length > 0) {
-            return {
-              text: `LAUNCH_FAILED: ${name} is running but has no window on screen: `
-                + `${String(own.length)} window(s) of it exist and none is visible. It is minimized, or closed to `
-                + 'its menu bar. Bring it up from the Dock or menu bar, or quit it and launch it again, then use '
-                + 'action=see. Do not click a window that is not on screen: it cannot be focused, so nothing in it '
-                + 'will work.',
-            }
+        found = preferredWindow(own)
+        if (found?.visible === false) found = undefined
+        if (found !== undefined) break
+        if (own.length > 0 && !own.some(window => window.visible !== false)) {
+          onlyHiddenSince ??= Date.now()
+          if (Date.now() - onlyHiddenSince > 1_500) break
+        } else {
+          onlyHiddenSince = undefined
+        }
+        await new Promise(resolve => setTimeout(resolve, 250))
+        listed = await listWindows(exec.signal)
+      }
+      const own = listed.ok && listed.data !== undefined
+        ? listed.data.filter(window => sameApp(window.appName, name))
+        : []
+      const hidden = own.filter(window => window.visible === false).length
+      if (found === undefined) {
+        const names = listed.ok && listed.data !== undefined
+          ? [...new Set(listed.data.map(window => window.appName))].slice(0, 12).join(', ')
+          : 'unavailable'
+        if (own.length > 0) {
+          return {
+            text: `OPEN_FAILED: ${name} is running but has no window on screen: `
+              + `${String(own.length)} window(s) of it exist and none is visible. It is minimized, or closed to `
+              + 'its menu bar. Bring it up from the Dock or menu bar, or quit it and launch it again, then use '
+              + 'desktop_see. Do not click a window that is not on screen: it cannot be focused, so nothing in it '
+              + 'will work.',
           }
-          return { text: `LAUNCH_FAILED: ${name} is not running after ${String(LAUNCH_WAIT_MS / 1000)}s `
-            + `and shows no window. Open windows belong to: ${names}` }
         }
-        const prefix = hidden === 0
-          ? `${name} is up.`
-          : `${name} is up. ${String(hidden)} other window(s) of it are not on screen; they cannot be clicked, `
-            + 'so do not go looking for them.'
-        return await observe({
-          windowId: found.id,
-          appName: found.appName,
-          title: found.title,
-          bounds: found.bounds as Rect,
-          focused: found.focused,
-          accessible: found.accessible === true,
-          visible: found.visible !== false,
-        }, exec.signal, prefix, key)
+        return { text: `OPEN_FAILED: ${name} is not running after ${String(LAUNCH_WAIT_MS / 1000)}s `
+          + `and shows no window. Open windows belong to: ${names}` }
       }
-
-      const listed = await listWindows(exec.signal)
-      if (!listed.ok || listed.data === undefined) {
-        const code = listed.error?.code ?? 'UNKNOWN'
-        const hint = code === 'TIMEOUT'
-          ? '\nThe screen may be locked, or an app is not answering. No picture can be taken in that state. '
-            + 'Do not retry: report what is blocked.'
-          : ''
-        return { text: `desktop failed\n${failureText(listed)}${hint}` }
-      }
-      const current = frames.get(key)
-      const chosen = chooseTarget(listed.data, parsed, current?.windowId)
-      if (chosen.target === undefined) {
-        return { text: `WINDOW_NOT_FOUND: ${chosen.why}` }
-      }
-      let target = chosen.target
-      const siblingNote = chosen.siblings.length === 0
-        ? ''
-        : `\nother ${target.appName} windows: ${chosen.siblings
-          .slice(0, 6)
-          .map(window => `${window.windowId} ${String(window.bounds.width)}x${String(window.bounds.height)}`
-            + (window.title === '' ? '' : ` ${window.title.replace(/[\r\n]+/g, ' ').slice(0, 40)}`))
-          .join(' | ')}`
-
-      /** Show the current target with this call's window list appended. */
-      const show = async (lead: string): Promise<Observed> =>
-        await observe(target, exec.signal, lead, key, siblingNote)
-
-      // A point belongs to the picture the model was last given. When that
-      // picture is gone or stale, the cheapest correction is to hand the model a
-      // fresh one in this same result, so the retry costs no extra turn.
-      const needsPicture = action === 'click' || action === 'scroll' || action === 'drag'
-        || (action === 'type' && parsed.point !== undefined)
-      const point = validPoint(parsed.point)
-      if (needsPicture) {
-        if (parsed.point !== undefined && point === undefined) {
-          return { text: 'INVALID_ARGS: point must be [x, y] with both on a 0–1000 grid.' }
-        }
-        if (parsed.point === undefined) {
-          return { text: 'INVALID_ARGS: this action needs point, [x, y] on the 0–1000 grid of the picture.' }
-        }
-        if (current === undefined) {
-          const fresh = await show('no picture yet — here is the window.')
-          return withPicture(
-            'NO_PICTURE: a point refers to the picture from the previous result, and this session has none. '
-            + 'Use the picture below and make the call again.',
-            fresh,
-          )
-        }
-        if (current.windowId !== target.windowId) {
-          const fresh = await show('that point belonged to another window; here is this one.')
-          return withPicture(
-            `WRONG_WINDOW: the last picture was ${current.appName} (${current.windowId}), not `
-            + `${target.appName} (${target.windowId}). Use the picture below and make the call again.`,
-            fresh,
-          )
-        }
-        const nowBounds = target.bounds
-        if (!frameStillValid(current, nowBounds)) {
-          const fresh = await show('the window moved or resized; here it is again.')
-          return withPicture(
-            'VIEWPORT_CHANGED: the window moved or resized after that picture, so its points no longer mean the '
-            + 'same controls. Use the picture below and make the call again.',
-            fresh,
-          )
-        }
-      }
-
-      if (action === 'see') {
-        return await show('here is the window.')
-      }
-
-      if (action === 'press' && parsed.keys === undefined) {
-        return { text: 'INVALID_ARGS: press needs keys, for example Return or cmd+c.' }
-      }
-      if (action === 'type' && (parsed.text === undefined || parsed.text === '')) {
-        return { text: 'INVALID_ARGS: type needs text.' }
-      }
-      if (action === 'type' && !canPasteAtFocus()) {
-        return {
-          text: 'PLATFORM_NOT_SUPPORTED: typing into a window by point needs a pasteboard round trip, '
-            + 'which this plugin only implements on macOS. Use desktop_inspect and desktop_act here.',
-        }
-      }
-
-      // The same click or the same key twice in a row is nearly always the model
-      // doubting the previous result. Name that instead of sending it again.
-      const repeatKey = action === 'click' || action === 'press'
-        ? [target.windowId, action, point?.join(','), parsed.keys ?? '', String(parsed.count ?? 1)].join('\u0000')
-        : undefined
-      if (repeatKey !== undefined) {
-        const when = landed.get(repeatKey)
-        if (when !== undefined && Date.now() - when < config.repeatWindowMs) {
-          const fresh = await show(`that ${action} already ran ${String(Math.round((Date.now() - when) / 1000))}s ago and may have landed.`)
-          return withPicture('IDENTICAL_ACTION: it was not sent again. Decide from the picture below.', fresh)
-        }
-      }
-
-      try {
-        if (action === 'type') {
-          // Text delivery pastes, so the window has to be in front for the keys
-          // to reach it; a click also puts the caret where the caller asked.
-          const blocked = await ensureFront(target, listed.data, exec.signal)
-          if (blocked !== undefined) {
-            const fresh = await show('nothing was sent.')
-            return withPicture(blocked, fresh)
-          }
-          target = { ...target, focused: true }
-          const at = point === undefined ? undefined : pointToScreen(current as Frame, point)
-          // One lock for the click and the keys: the foreground Computer Use
-          // session moves the same pointer and posts the same events.
-          const failure = await withScreenLock(exec.agent?.id, async (): Promise<string | undefined> => {
-            if (at !== undefined) {
-              const clicked = await runCli<unknown>([
-                'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
-                '--button', 'left', '--count', '1',
-              ], exec.signal)
-              if (!clicked.ok) return failureText(clicked)
-              // The field takes keyboard focus on its own run-loop turn.
-              await new Promise(resolve => setTimeout(resolve, FOCUS_SETTLE_MS))
-            }
-            await typeAtFocus(parsed.text as string, {
-              ...parsed.replace === true ? { replace: true } : {},
-              ...parsed.enter === true ? { enter: true } : {},
-            }, exec.signal)
-            return undefined
-          })
-          if (failure !== undefined) {
-            const fresh = await show('the focus click failed, so nothing was typed.')
-            return withPicture(failure, fresh)
-          }
-          const lead = `typed ${String((parsed.text as string).length)} character(s)`
-            + `${parsed.enter === true ? ' and pressed Return' : ''}`
-            + `${parsed.replace === true ? ' (replacing the field)' : ''}.`
-          return await show(lead)
-        }
-
-        const blocked = await ensureFront(target, listed.data, exec.signal)
-        if (blocked !== undefined) {
-          const fresh = await show('nothing was sent.')
-          return withPicture(blocked, fresh)
-        }
-        target = { ...target, focused: true }
-
-        if (action === 'click') {
-          const at = pointToScreen(current as Frame, point as readonly [number, number])
-          const clicked = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
-            'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
-            '--button', parsed.button ?? 'left',
-            '--count', String(parsed.count ?? 1),
-          ], exec.signal))
-          if (!clicked.ok) {
-            const fresh = await show('the click was not delivered.')
-            return withPicture(failureText(clicked), fresh)
-          }
-          if (repeatKey !== undefined) landed.set(repeatKey, Date.now())
-          return await show(`clicked ${fmtPoint(point as readonly [number, number])} — screen (${String(at.x)},${String(at.y)}).`)
-        }
-
-        if (action === 'scroll') {
-          const at = pointToScreen(current as Frame, point as readonly [number, number])
-          const direction = parsed.direction ?? 'down'
-          const magnitude = Math.min(10, Math.max(1, parsed.amount ?? 3))
-          const lines = magnitude * 3
-          const dy = direction === 'up' ? lines : direction === 'down' ? -lines : 0
-          const dx = direction === 'right' ? lines : direction === 'left' ? -lines : 0
-          const scrolled = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
-            'mouse-wheel', '--x', String(at.x), '--y', String(at.y),
-            ...dy !== 0 ? ['--dy', String(dy)] : [],
-            ...dx !== 0 ? ['--dx', String(dx)] : [],
-          ], exec.signal))
-          if (!scrolled.ok) {
-            const fresh = await show('the scroll was not delivered.')
-            return withPicture(failureText(scrolled), fresh)
-          }
-          return await show(`scrolled ${direction} at ${fmtPoint(point as readonly [number, number])}.`)
-        }
-
-        if (action === 'drag') {
-          const end = validPoint(parsed.to)
-          if (end === undefined) return { text: 'INVALID_ARGS: drag needs to, [x, y] on the 0–1000 grid.' }
-          const from = pointToScreen(current as Frame, point as readonly [number, number])
-          const to = pointToScreen(current as Frame, end)
-          const dragged = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
-            'drag', '--headed',
-            '--from-xy', `${String(from.x)},${String(from.y)}`,
-            '--to-xy', `${String(to.x)},${String(to.y)}`,
-          ], exec.signal))
-          if (!dragged.ok) {
-            const fresh = await show('the drag was not delivered.')
-            return withPicture(failureText(dragged), fresh)
-          }
-          return await show(`dragged ${fmtPoint(point as readonly [number, number])} → ${fmtPoint(end)}.`)
-        }
-
-        if (action === 'press') {
-          const combo = cliCombo(parsed.keys as string)
-          const sent = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>(
-            ['press', '--window-id', target.windowId, combo],
-            exec.signal,
-          ))
-          if (!sent.ok) {
-            const fresh = await show('the key was not delivered.')
-            return withPicture(failureText(sent), fresh)
-          }
-          if (repeatKey !== undefined) landed.set(repeatKey, Date.now())
-          return await show(`pressed ${combo}.`)
-        }
-
-        return { text: `INVALID_ARGS: unknown action ${action}.` }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        const busy = message.includes('operating the screen')
-        return {
-          text: busy
-            ? 'SCREEN_BUSY: another session is using the screen, so nothing was sent. Report the conflict; do not retry.'
-            : `desktop failed before sending\n${message}${siblingNote}`,
-        }
-      }
+      const prefix = hidden === 0
+        ? `${name} is up.`
+        : `${name} is up. ${String(hidden)} other window(s) of it are not on screen; they cannot be clicked, `
+          + 'so do not go looking for them.'
+      return await observe({
+        windowId: found.id,
+        appName: found.appName,
+        title: found.title,
+        bounds: found.bounds as Rect,
+        focused: found.focused,
+        accessible: found.accessible === true,
+        visible: found.visible !== false,
+      }, exec.signal, prefix, key)
     },
   }))
 }
@@ -932,4 +1168,17 @@ export function registerGuiTools(
  */
 function fmtPoint(point: readonly [number, number]): string {
   return `(${point[0].toFixed(0)},${point[1].toFixed(0)})`
+}
+
+/** Copy the named string fields out of a tool's args. */
+function pick(args: Record<string, unknown>, names: readonly string[]): { window?: string, app?: string } {
+  const out: { window?: string, app?: string } = {}
+  for (const name of names) {
+    const value = args[name]
+    if (typeof value === 'string' && value !== '') {
+      if (name === 'window') out.window = value
+      if (name === 'app') out.app = value
+    }
+  }
+  return out
 }

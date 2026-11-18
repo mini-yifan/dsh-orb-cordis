@@ -94,8 +94,8 @@ interface TreeRead {
 function withThinHint(text: string, refs: readonly string[]): string {
   if (refs.length >= MIN_USEFUL_REFS) return text
   return `${text}\n\ntree_thin: this window produced ${String(refs.length)} addressable element(s). `
-    + 'The accessibility tree is not usable here. Stop snapshotting: use desktop with '
-    + 'action=see, then point at what you see.'
+    + 'The accessibility tree is not usable here. Stop snapshotting: take desktop_see and point at '
+    + 'what you see with desktop_click.'
 }
 
 /**
@@ -377,7 +377,7 @@ export function registerDesktopTools(
             const parts = [`${error?.code ?? 'FAILED'}: ${error?.message ?? 'snapshot failed'}`]
             if (error?.suggestion !== undefined) parts.push(error.suggestion)
             if (error?.code === 'ACTION_NOT_SUPPORTED') {
-              parts.push('This window exposes no accessibility tree at all. Use desktop with action=see instead.')
+              parts.push('This window exposes no accessibility tree at all. Use desktop_see instead.')
             }
             return { text: `desktop_inspect failed\n${parts.join('\n')}` }
           }
@@ -414,7 +414,8 @@ export function registerDesktopTools(
       + 'action: read the new refs from this result and act again. '
       + 'The same action on the same control is refused for about 12 seconds after it may have landed, so never repeat '
       + 'a click or Enter to "make sure": a submit result already tells you to confirm from the tree it returns. '
-      + 'If this fails because the control exposes no semantic action, do not force it: use desktop with a point. '
+      + 'If this fails because the control exposes no semantic action, do not force it: use desktop_see and '
+      + 'desktop_click on the point. '
       + 'Key names are case-insensitive; Return is accepted for enter.',
     parameters: {
       ref: { type: 'string', required: true, description: 'A fully qualified ref from the latest desktop_inspect.' },
@@ -531,7 +532,7 @@ export function registerDesktopTools(
         if (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED') {
           return {
             text: `${failureText(hostError)}\n`
-              + 'This control has no semantic path. Do not retry it here: use desktop with action=see and click the '
+              + 'This control has no semantic path. Do not retry it here: use desktop_see and desktop_click on the '
               + 'point instead.',
           }
         }

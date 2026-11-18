@@ -116,7 +116,7 @@ test('a thin tree sends the model to the picture instead of another read', async
   assert.ok(tool)
   const result = await tool.execute({ app: 'Notes' }, exec)
   assert.match(result.text, /tree_thin/)
-  assert.match(result.text, /use desktop with action=see/)
+  assert.match(result.text, /take desktop_see and point at what you see with desktop_click/)
   assert.doesNotMatch(result.text, /snapshot again/i)
 })
 
@@ -205,7 +205,7 @@ test('a control with no semantic path is not forced, and the picture route is na
   await inspect.execute({ app: 'Notes' }, exec)
   const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
   assert.match(result.text, /POLICY_DENIED/)
-  assert.match(result.text, /use desktop with action=see/)
+  assert.match(result.text, /desktop_see and desktop_click/)
   // No physical escalation: one attempt, headless only.
   assert.deepEqual(calls.filter(call => call.op === 'act').map(call => call.policy), [0])
 })

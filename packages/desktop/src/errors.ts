@@ -30,26 +30,26 @@ const GUIDANCE: Record<string, Guidance> = {
       + ' or work on a different part of the window.',
   },
   WINDOW_NOT_FOUND: {
-    next: 'The app is running but shows no window you can read. Use desktop with action=launch to bring it up,'
+    next: 'The app is running but shows no window you can read. Use desktop_open_app to bring it up,'
       + ' or report back.',
   },
   APP_NOT_FOUND: {
-    next: 'No such app. Use desktop with action=launch and the name the user gave you.',
+    next: 'No such app. Use desktop_open_app with the name the user gave you.',
   },
   APP_UNRESPONSIVE: {
     next: 'The app is not answering. Wait briefly once, then stop and report that it is unresponsive.',
   },
   ACTION_NOT_SUPPORTED: {
     next: 'This control exposes no semantic action, so the accessibility route cannot reach it.'
-      + ' Do not keep trying it: use desktop with action=see and click the point instead.',
+      + ' Do not keep trying it: take desktop_see and use desktop_click on the point instead.',
   },
   ACTION_FAILED: {
     next: 'The action may have been delivered but could not be confirmed. Read the state again'
-      + ' (a fresh desktop_inspect, or desktop action=see) before deciding anything — never repeat it blindly.',
+      + ' (a fresh desktop_inspect, or desktop_see) before deciding anything — never repeat it blindly.',
   },
   POLICY_DENIED: {
     next: 'This control exposes no semantic action and refusing to force it is deliberate.'
-      + ' Use desktop with action=see and click the point instead of repeating this call.',
+      + ' Use desktop_see and desktop_click on the point instead of repeating this call.',
   },
   PERM_DENIED: {
     next: 'The system denies desktop access. Stop and tell the foreground agent the user must enable'
