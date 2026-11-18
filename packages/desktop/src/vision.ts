@@ -30,6 +30,7 @@ import type { ResolvedConfig } from './config.ts'
 import { cliName, nativeKey, packagedCliDir } from './native-paths.ts'
 import type { WindowInfo } from './protocol.ts'
 import { requireImageRoute } from './route.ts'
+import { sessionState } from './session-state.ts'
 import { chooseWindow } from './frame.ts'
 
 /** Coordinates are pixels of the screenshot the model was shown. */
@@ -449,10 +450,25 @@ export function registerVisionTools(ctx: Context, config: ResolvedConfig): void 
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       await requireImageRoute(ctx, exec)
+      const screen = await sessionState()
+      if (screen.locked) {
+        return {
+          text: 'SCREEN_LOCKED: this Mac is locked, so no picture can be taken and no click can land. '
+            + 'Unlocking needs the password and is not something this worker can do. Stop trying desktop tools: '
+            + 'finish what you can without the screen, then report what is blocked and what the user must do.',
+        }
+      }
       const signal = exec.signal
       const windows = await listWindows(signal)
       if (!windows.ok || windows.data === undefined) {
-        return { text: `desktop_see failed\n${failureText(windows)}` }
+        // A locked screen and a hung app both land here. Name the likely cause so
+        // the model stops instead of burning turns on retries that cannot work.
+        const code = windows.error?.code ?? 'UNKNOWN'
+        const hint = code === 'TIMEOUT'
+          ? '\nThe screen may be locked, or an app is not answering; window inventory cannot complete. '
+            + 'No picture can be taken in that state. Do not retry: report what is blocked.'
+          : ''
+        return { text: `desktop_see failed\n${failureText(windows)}${hint}` }
       }
       const wanted = args.window_id
       const target = wanted !== undefined && wanted !== ''

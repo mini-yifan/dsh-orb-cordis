@@ -33,6 +33,7 @@ import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData, Windo
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
 import { activateApp } from './activate.ts'
 import { listWindows } from './vision.ts'
+import { sessionState } from './session-state.ts'
 
 const TEXT_SCHEMA = {
   type: 'object',
@@ -311,6 +312,10 @@ export function registerDesktopTools(
         const state = await osState(call.client)
         const raised = raisedApp()
         const held = raised !== undefined && raised.owner === call.sessionId
+        // A locked screen defeats every window query, so say it before the model
+        // starts probing. In the first real measurement run it spent six shell
+        // commands rediscovering this.
+        const session = await sessionState()
         const lines = [
           `platform: ${status.platform ?? process.platform}`,
           `accessibility: ${status.permissions?.accessibility?.state ?? 'unknown'}`,
@@ -318,13 +323,35 @@ export function registerDesktopTools(
           `frontmost: ${state.app ?? 'none'}`,
           `user idle: ${state.idleMs === null ? 'unknown' : `${Math.round(state.idleMs / 1000)} s`}`,
           `borrowed window: ${held ? (raised?.app ?? 'none') : 'none'}`,
+          `screen locked: ${session.locked ? 'yes' : session.unknown ? 'unknown' : 'no'}`,
         ]
+        if (session.locked) {
+          lines.push(
+            '',
+            'The screen is locked. Window inventory, screenshots and every ref or coordinate action will fail '
+            + 'until someone unlocks this Mac — that needs the password and is not something this worker can do. '
+            + 'Stop now: do not retry desktop tools and do not try to work around the lock. '
+            + 'Finish what you can without the screen (that includes web lookups and writing drafts to files), '
+            + 'then hand back what you did, what is blocked, and what the user must do.',
+          )
+        }
         const app = args.app !== undefined && args.app !== '' ? args.app : state.app ?? undefined
         if (app !== undefined) {
           // Ask the CLI, not the FFI: the FFI window record has no accessibility
           // bit, and its app filter matches the OS display name, which differs
           // from the name a model is likely to use ("Calculator" vs "计算器").
           const listed = await listWindows(exec.signal)
+          if (!listed.ok) {
+            // Silence here used to leave the model with no window section and no
+            // reason why. A locked screen and a hung app both land in this branch,
+            // and both deserve to be named: neither is fixed by retrying blindly.
+            const code = listed.error?.code ?? 'UNKNOWN'
+            lines.push(
+              `window list unavailable: ${code}`
+              + (code === 'TIMEOUT' ? ' — the screen may be locked, or an app is not answering.' : ''),
+            )
+            lines.push('Do not retry this call. Report what is blocked, or take a level-1 route (files, shell).')
+          }
           if (listed.ok && listed.data !== undefined) {
             const wanted = app.toLowerCase()
             const sameApp = listed.data.filter(window =>
