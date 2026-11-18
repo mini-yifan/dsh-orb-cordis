@@ -49,7 +49,7 @@ const richSnapshot = {
   },
 }
 
-function harness(options: { snapshot?: object, denyHeadless?: boolean } = {}) {
+function harness(options: { snapshot?: object, denyHeadless?: boolean, accessible?: boolean } = {}) {
   const tools = new Map<string, ToolLike>()
   const calls: { op: string, policy?: number }[] = []
   const refs = new RefBook()
@@ -77,6 +77,17 @@ function harness(options: { snapshot?: object, denyHeadless?: boolean } = {}) {
       return { client, refs, lastUsed: Date.now() }
     },
   }
+  // One window, on screen, with a tree: the shape the tree-first path expects.
+  const windows = [{
+    id: 'w-1',
+    title: 'Untitled',
+    appName: 'Notes',
+    pid: 12,
+    focused: true,
+    accessible: options.accessible !== false,
+    visible: true,
+    bounds: { x: 0, y: 0, width: 900, height: 700 },
+  }]
   const disposers: (() => void)[] = []
   const ctx = {
     tools: { register: (definition: ToolLike) => { tools.set(definition.name, definition) } },
@@ -89,7 +100,10 @@ function harness(options: { snapshot?: object, denyHeadless?: boolean } = {}) {
   }
   guardState().leases.clear()
   guardState().raised = undefined
-  registerDesktopTools(ctx as never, sessions as never, resolveConfig())
+  registerDesktopTools(ctx as never, sessions as never, resolveConfig(), {
+    listWindows: async () => ({ ok: true, data: windows }),
+    snapshot: async () => ({ ok: true, data: options.snapshot ?? snapshotData }),
+  })
   const exec = { agent: { id: 'session-1' } }
   return { tools, calls, exec }
 }
@@ -118,6 +132,33 @@ test('a thin tree sends the model to the picture instead of another read', async
   assert.match(result.text, /tree_thin/)
   assert.match(result.text, /take desktop_see and point at what you see with desktop_click/)
   assert.doesNotMatch(result.text, /snapshot again/i)
+})
+
+test('inspect names the window and whether it has a tree', async () => {
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const tool = tools.get('desktop_inspect')
+  assert.ok(tool)
+  const result = await tool.execute({ app: 'Notes' }, exec)
+  assert.match(result.text, /^window Notes w-1 900x700 front=yes tree=yes/)
+})
+
+test('a window with no tree is named as such before any read is attempted', async () => {
+  const { tools, exec } = harness({ accessible: false })
+  const tool = tools.get('desktop_inspect')
+  assert.ok(tool)
+  const result = await tool.execute({ app: 'Notes' }, exec)
+  assert.match(result.text, /tree=no/)
+  assert.match(result.text, /use desktop_see with this window id/)
+  assert.doesNotMatch(result.text, /button "Save"/, 'nothing should be read from a window with no tree')
+})
+
+test('inspect resolves the window when only an app name is given', async () => {
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const tool = tools.get('desktop_inspect')
+  assert.ok(tool)
+  const result = await tool.execute({ app: 'Notes' }, exec)
+  assert.match(result.text, /w-1/)
+  assert.match(result.text, /button "Save"/)
 })
 
 test('act refuses a ref that was never shown', async () => {

@@ -64,13 +64,14 @@ function cliPath(): string | undefined {
 export async function runCli<T>(
   args: readonly string[],
   signal: AbortSignal,
+  stdin?: string,
 ): Promise<Envelope<T>> {
   const binary = cliPath()
   if (binary === undefined) {
     return { ok: false, error: { code: 'CLI_MISSING', message: 'agent-desktop is not available for this platform' } }
   }
   return await new Promise<Envelope<T>>((resolve) => {
-    execFile(
+    const child = execFile(
       binary,
       [...args],
       { timeout: CLI_TIMEOUT_MS, maxBuffer: MAX_PNG_BYTES, signal },
@@ -92,6 +93,9 @@ export async function runCli<T>(
         }
       },
     )
+    // `--stdin` commands read the payload from the pipe, which keeps long or
+    // quoted text out of argv.
+    if (stdin !== undefined && child.stdin !== null) child.stdin.end(stdin)
   })
 }
 

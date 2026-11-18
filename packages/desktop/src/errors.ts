@@ -26,8 +26,12 @@ const GUIDANCE: Record<string, Guidance> = {
       + 'are acting on and use a ref from that result.',
   },
   AMBIGUOUS_TARGET: {
+    // On Windows every repeated control in a window has no ref path at all: a ref
+    // only resolves when it was the only element with that role and name, so the
+    // point-based tools are the only way to pick one of several identical rows.
     next: 'More than one element matches and the library will not guess. Address a control that is unique,'
-      + ' or work on a different part of the window.',
+      + ' work on a different part of the window, or — when the control repeats (identical rows or buttons, '
+      + 'common on Windows) — use desktop_see and click the point instead.',
   },
   WINDOW_NOT_FOUND: {
     next: 'The app is running but shows no window you can read. Use desktop_open_app to bring it up,'

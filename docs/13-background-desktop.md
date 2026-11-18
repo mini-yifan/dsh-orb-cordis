@@ -647,3 +647,78 @@ preset 里按 CU 设成 600）。点击会立刻返回，app 还没画完；立�
 
 测试新增 4 条：隐藏窗口不被自动选中、隐藏窗口不列出、上次的窗口一旦离屏就放弃、
 显式点名的隐藏窗口仍然返回（这样 `see` 能解释空图）。
+
+## 18. 官方 Computer Use 是怎么做的，以及我们抄了什么（2026-11-18 晚）
+
+### 18.1 那个 session 不是我们的工具
+
+`session-ccfdb3d5` 里 **52 次调用全是 `run_code`，上下文中一张截图都没有**。它跑的是 DSH
+自带的 `@deepseek-ai/dsh-cua`，接在 `ptc` preset 上：
+
+```js
+var cu  = connectCua(() => tools.cua)
+var app = await cu.getApp("27997")
+var win = await app.getWindow(35573)
+var tree = await win.getAccessibilityTree({ maxElements: 3000, maxDepth: 40 })
+await app.setValue("685", "现在是 2026年11月18日 15:03:14")
+await app.pressKey("Return")
+```
+
+三个机制让它看起来快：
+
+1. **观测是文本**。AX 树当字符串返回，模型自己在里面 grep、切片、按 `[133]` 取上下文，
+   全部在一个单元格内完成。
+2. **一个 `run_code` 里串很多动作**。读树 → 点 → 重读 → 写值 → Return → 再读 → 截图核对。
+3. **树写到文件再查**。它执行过 `tools.write("/tmp/qq_tree.txt", qtree2)`，之后反复 grep
+   那个文件，而不是每轮把三万字重新塞进上下文。
+
+### 18.2 按任务量出来的真实差距
+
+同一条 session 有三个 turn：
+
+| turn | 任务 | 墙钟 | 步数 | 每步 |
+|---|---|---|---|---|
+| 1 | 默认浏览器改成 Safari（系统设置） | 81.8s | 22 | 3.7s |
+| 2 | QQ 发当前时间 | 59.2s | 15 | 3.9s |
+| 3 | QQ 发青岛天气 | 162.2s | 18 | 9.0s |
+
+我们：发当前时间 103.3s / 25 步（其中 78 秒是 §17.8 那个窗口可见性 bug，修完那 5 步 25 秒）；
+发天气 173.9s / 55 步。
+
+**结论要诚实：发天气那条它并不比我们快（162 vs 174）。它快在步数少三倍——每步干得多。**
+我们每步 2.2–3.2 秒，它每步 3.7–9 秒。总时长被网络和 app 状态主导，步数差异才是体感来源。
+
+### 18.3 决定：不挂 PTC，改树优先，两个平台都要能用
+
+PTC（`run_code`）是它步数少的主因，但用户明确不要把它挂到后台桌面 preset 上。于是剩下两个
+能做、也确实该做的：
+
+**1. 树优先。** 官方是 AX 优先、坐标兜底；我们是反过来的。改回来之后：
+- `desktop_inspect` 成为**入口**：自己解析窗口（点名的 → app 的 → 前台的），第一行给出
+  `window QQ w-35573 1470x846 front=yes tree=yes`，然后才是树。
+- `tree=no` 时**不做读**，直接说"这个窗口没有可寻址的元素，用 desktop_see + 坐标工具"，
+  不再付一次 `ACTION_NOT_SUPPORTED`。
+- `desktop_act` 一个动作带回新树，所以树路径上**一个动作是一轮**。
+- 写字段优先 `set_value`：不碰剪贴板、不抢焦点、一次调用。
+
+顺带解决了一个老问题：以前要拿到 window id 必须先 `desktop_see`（就是要付一张图）。
+现在 `desktop_inspect` 自己就有 window id。
+
+**2. 两个平台。** 之前按点打字是 macOS 专属（JXA 粘贴）。现在 `desktop_input_text`：
+
+| 平台 | 顺序 |
+|---|---|
+| 任意 | ① 用 CLI `find` 找聚焦/第一个文本控件 → `type @ref --stdin`（语义插入，不碰剪贴板） |
+| macOS 兜底 | ② 没有可寻址输入框 → JXA 粘贴，**并把剪贴板每种类型还原** |
+| Windows 兜底 | ② 没有可寻址输入框 → 明说做不到，指向 `desktop_inspect` + `desktop_act` |
+
+Windows 上刻意**没有**做剪贴板粘贴兜底：DSH 的 Windows 剪贴板快照是 koffi + Win32 原生代码
+（`packages/computer-use/src/windows-native.ts`，约一千行），照抄进 desktop 包不划算，而
+"清空剪贴板"是不可接受的副作用。
+
+其他平台审计：`session-state`（非 darwin 直接返回未锁定）、`activate`（有 PowerShell 分支）、
+全部 GUI 手势（都是 CLI 子命令）、`native-paths`（`win32-x64` / `win32-arm64` 都在打包内）。
+
+**Windows 唯一的功能缺口**写在 `desktop_act` 的描述里：Windows 上"重复出现的控件"（相同的
+行、相同的按钮）**没有 ref 路径**——CLI 只在"窗口里该角色+名字唯一"时才解析 ref。那种行
+只能靠 `desktop_see` + 坐标点。

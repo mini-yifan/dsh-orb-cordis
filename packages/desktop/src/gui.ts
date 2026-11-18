@@ -33,8 +33,9 @@ import type { ResolvedConfig } from './config.ts'
 import type { WindowInfo } from './protocol.ts'
 import { failureText, storePicture, typeImageValue, type ImageValue } from './vision.ts'
 import { activateApp } from './activate.ts'
-import { canPasteAtFocus, typeAtFocus } from './hid.ts'
+import { typeAtFocus, typeByRef } from './hid.ts'
 import { withScreenLock } from './gui-lock.ts'
+import { agentSessionId } from './sessions.ts'
 import { requireImageRoute } from './route.ts'
 import { sessionState } from './session-state.ts'
 import { captureWindow, listWindows, picturePadding, runCli } from './vision.ts'
@@ -57,7 +58,7 @@ interface Rect {
 }
 
 /** The window a call resolved to, with everything the text line reports. */
-interface Target {
+export interface Target {
   readonly windowId: string
   readonly appName: string
   readonly title: string
@@ -335,8 +336,8 @@ export function cliCombo(combo: string | readonly string[]): string {
     .join('+')
 }
 
-/** Build the one line that names the window a picture shows. */
-function windowLine(target: Target): string {
+/** Build the one line that names a window, in the format every tool uses. */
+export function windowLine(target: Target): string {
   const size = `${String(target.bounds.width)}x${String(target.bounds.height)}`
   // The title is what tells a chat panel from that app's built-in browser: QQ
   // opens its document viewer as a window called "QQ(窗口)", and an earlier run
@@ -804,9 +805,11 @@ export function registerGuiTools(
     name: 'desktop_input_text',
     description:
       'Type text into a window, then return the new picture. With point, click there first so the field takes focus; '
-      + 'without it, type into whatever already has keyboard focus. replace selects the field\'s content first; '
-      + 'submit presses Return afterwards. The text is delivered by pasting, and the clipboard is put back exactly '
-      + 'as it was — this works in windows that expose no accessibility tree.',
+      + 'without it, type into whatever already has keyboard focus. '
+      + 'The text goes in through the accessibility tree when the window has one, so it never touches the clipboard '
+      + 'and cannot land in the wrong field; when the window has no tree, macOS falls back to pasting and puts the '
+      + 'clipboard back as it was. replace selects the field\'s content first; submit presses Return afterwards. '
+      + 'On a window with a usable tree, desktop_act set_value is the same thing in one call.',
     parameters: {
       text: { type: 'string', required: true, description: 'Characters to type.' },
       point: {
@@ -825,12 +828,6 @@ export function registerGuiTools(
       if (blocked !== undefined) return blocked
       const text = typeof args.text === 'string' ? args.text : ''
       if (text === '') return { text: 'INVALID_ARGS: text is required.' }
-      if (!canPasteAtFocus()) {
-        return {
-          text: 'PLATFORM_NOT_SUPPORTED: typing needs a pasteboard round trip, which this plugin only implements '
-            + 'on macOS. Use desktop_inspect and desktop_act here.',
-        }
-      }
       const point = args.point === undefined ? undefined : validPoint(args.point as readonly number[])
       if (args.point !== undefined && point === undefined) {
         return { text: 'INVALID_ARGS: point must be [x, y] with both on a 0–1000 grid.' }
@@ -850,25 +847,47 @@ export function registerGuiTools(
         return withPicture(blockedFront, fresh)
       }
       const at = point === undefined ? undefined : pointToScreen(aimed.frame as Frame, point)
-      const failure = await withScreenLock(exec.agent?.id, async (): Promise<string | undefined> => {
+      const session = agentSessionId(exec.agent?.id ?? '')
+      const outcome = await withScreenLock(exec.agent?.id, async (): Promise<{ how: string } | { failure: string }> => {
         if (at !== undefined) {
           const clicked = await runCli<unknown>([
             'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
             '--button', 'left', '--count', '1',
           ], exec.signal)
-          if (!clicked.ok) return failureText(clicked)
+          if (!clicked.ok) return { failure: failureText(clicked) }
           // The field takes keyboard focus on its own run-loop turn.
           await new Promise(resolve => setTimeout(resolve, FOCUS_SETTLE_MS))
         }
-        await typeAtFocus(text, {
-          ...gesture.replace === true ? { replace: true } : {},
-          ...gesture.submit === true ? { enter: true } : {},
-        }, exec.signal)
-        return undefined
+        // The tree first: inserting into one element cannot land in the wrong
+        // field and cannot touch the user's clipboard. This is the only path
+        // Windows has, and it is the cheapest one everywhere.
+        try {
+          const ref = await typeByRef(text, {
+            windowId: aimed.target.windowId,
+            session,
+            ...gesture.replace === true ? { replace: true } : {},
+            ...gesture.submit === true ? { enter: true } : {},
+          }, exec.signal)
+          return { how: `inserted through the accessibility tree (${ref}).` }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (process.platform !== 'darwin') {
+            return {
+              failure: `${message}\nThis window exposes no addressable text field, and typing by pointing is `
+                + 'implemented on macOS only. Use desktop_inspect and desktop_act on a ref if the window has a tree.',
+            }
+          }
+          // macOS can still deliver it: paste, then put every clipboard type back.
+          await typeAtFocus(text, {
+            ...gesture.replace === true ? { replace: true } : {},
+            ...gesture.submit === true ? { enter: true } : {},
+          }, exec.signal)
+          return { how: 'delivered by pasting, with the clipboard put back as it was.' }
+        }
       })
-      if (failure !== undefined) {
-        const fresh = await observe(aimed.target, exec.signal, 'the focus click failed, so nothing was typed.', key, aimed.note)
-        return withPicture(failure, fresh)
+      if ('failure' in outcome) {
+        const fresh = await observe(aimed.target, exec.signal, 'nothing was typed.', key, aimed.note)
+        return withPicture(outcome.failure, fresh)
       }
       await settle()
       return await observe(
@@ -876,7 +895,8 @@ export function registerGuiTools(
         exec.signal,
         `typed ${String(text.length)} character(s)`
         + `${gesture.submit === true ? ' and pressed Return' : ''}`
-        + `${gesture.replace === true ? ' (replacing the field)' : ''}.`,
+        + `${gesture.replace === true ? ' (replacing the field)' : ''}`
+        + ` — ${outcome.how}`,
         key,
         aimed.note,
       )

@@ -33,12 +33,13 @@ import {
   screenLockOwner,
 } from './guard.ts'
 import { chooseWindow } from './frame.ts'
+import { chooseTarget, windowLine } from './gui.ts'
 import { agentSessionId } from './sessions.ts'
 import { POLICY } from './ffi.ts'
 import { renderSnapshot } from './render.ts'
-import type { ActionKind, ActionRequest, SnapshotData, HostError } from './protocol.ts'
+import type { ActionKind, ActionRequest, SnapshotData, HostError, WindowInfo } from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
-import { snapshotWindow } from './vision.ts'
+import { listWindows, snapshotWindow, type Envelope } from './vision.ts'
 
 const TEXT_SCHEMA = {
   type: 'object',
@@ -149,9 +150,10 @@ async function readTreeFor(
   call: Call,
   known: { readonly app: string, readonly windowId?: string },
   config: ResolvedConfig,
+  readWindow: typeof snapshotWindow = snapshotWindow,
 ): Promise<TreeRead> {
   if (known.windowId !== undefined && known.windowId !== '') {
-    const read = await snapshotWindow(
+    const read = await readWindow(
       known.windowId,
       { session: agentSessionId(call.sessionId) },
       AbortSignal.timeout(30_000),
@@ -278,11 +280,29 @@ function actionOf(input: {
  * @param sessions - child-process owner.
  * @param config - resolved tunables.
  */
+/**
+ * Side effects that can be replaced, so a test never spawns the CLI or reads a
+ * real window. Production passes nothing and gets the real implementations.
+ */
+export interface DesktopDependencies {
+  /** Window inventory. */
+  readonly listWindows?: (signal: AbortSignal) => Promise<Envelope<readonly WindowInfo[]>>
+  /** Accessibility read for one window. */
+  readonly snapshot?: (
+    windowId: string,
+    options: { depth?: number, session?: string },
+    signal: AbortSignal,
+  ) => Promise<Envelope<SnapshotData>>
+}
+
 export function registerDesktopTools(
   ctx: Context,
   sessions: DesktopSessions,
   config: ResolvedConfig,
+  dependencies: DesktopDependencies = {},
 ): void {
+  const inventory = dependencies.listWindows ?? listWindows
+  const readWindow = dependencies.snapshot ?? snapshotWindow
   let holdTimer: NodeJS.Timeout | undefined
   const effects = new Map<string, EffectRecord>()
 
@@ -327,21 +347,21 @@ export function registerDesktopTools(
   ctx.tools.register(defineTool({
     name: 'desktop_inspect',
     description:
-      'Read one window\'s accessibility tree as text: role, name, and a ref like {@s1z2:e4} for every actionable '
-      + 'element. This is the exact-identity route — use it when a picture is not enough (dense lists, controls that '
-      + 'look alike) or when you must set a field atomically. '
-      + 'It is slower than desktop and it fails on Electron or canvas windows that expose no tree; when it comes back '
-      + 'with a tree_thin note, stop reading and use desktop instead. '
-      + 'Refs die as soon as the interface changes, so inspect again after an action that changes the screen. '
-      + 'Pass window from the last desktop result: an app name alone is ambiguous when the app owns several windows.',
+      'Read one window\'s interface as a text tree: role, name, and a ref like {@s1z2:e4} for every actionable '
+      + 'element. This is the first call for a desktop task. It resolves the window itself (the one you name, else the '
+      + 'app\'s, else the one in front) and its first line says whether that window has a usable tree: '
+      + '`tree=yes` means act on refs with desktop_act, and one action plus its new tree come back in a single call, '
+      + 'so a tree step is one turn. '
+      + '`tree=no`, or a result ending in tree_thin, means this window exposes nothing to address: stop reading and '
+      + 'use desktop_see with the point-based tools instead. Electron and canvas apps are usually tree=no.',
     parameters: {
-      window_id: {
+      window: {
         type: 'string',
-        description: 'Window id from a desktop result, for example w-35248. Preferred when you have one.',
+        description: 'Window id from a previous result, for example w-35248. Preferred when you have one.',
       },
       app: {
         type: 'string',
-        description: 'Application name. Omit with window_id to read the window in front.',
+        description: 'Application name. Omit with window to read the window in front.',
       },
       depth: {
         type: 'integer',
@@ -350,7 +370,7 @@ export function registerDesktopTools(
       },
       max_nodes: {
         type: 'integer',
-        description: 'Most nodes to render. Default: 140.',
+        description: 'Most nodes to render. Default: 140. Raises the character budget with it.',
       },
     },
     output: {
@@ -359,46 +379,80 @@ export function registerDesktopTools(
     },
     async execute(args, exec) {
       const call = await callOf(exec, sessions)
-      try {
-        // A window id goes through the CLI, because the FFI snapshot call takes
-        // only an app name and refuses an app with several windows.
-        const windowId = args.window_id
-        if (windowId !== undefined && windowId !== '') {
-          const read = await snapshotWindow(
-            windowId,
-            {
-              session: agentSessionId(call.sessionId),
-              ...args.depth === undefined ? {} : { depth: args.depth },
-            },
-            exec.signal,
-          )
-          if (!read.ok || read.data === undefined) {
-            const error = read.error
-            const parts = [`${error?.code ?? 'FAILED'}: ${error?.message ?? 'snapshot failed'}`]
-            if (error?.suggestion !== undefined) parts.push(error.suggestion)
-            if (error?.code === 'ACTION_NOT_SUPPORTED') {
-              parts.push('This window exposes no accessibility tree at all. Use desktop_see instead.')
-            }
-            return { text: `desktop_inspect failed\n${parts.join('\n')}` }
-          }
-          const rendered = renderSnapshot(read.data, {
-            maxNodes: args.max_nodes ?? config.maxNodes,
-            // Asking for more nodes means the model needs more of the tree; a
-            // fixed character budget would cut it at the same place every time.
-            maxChars: args.max_nodes === undefined
-              ? config.maxChars
-              : Math.max(config.maxChars, args.max_nodes * 120),
-          })
-          call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
-          return { text: withThinHint(rendered.text, rendered.refs) }
+      // Resolve the window from the OS, not from an app name: the CLI reads by
+      // window id, which is the only form that works when the app owns several
+      // windows, and it is also the only source of the `tree=yes|no` answer that
+      // decides whether the rest of the task goes through the tree at all.
+      const listed = await inventory(exec.signal)
+      if (!listed.ok || listed.data === undefined) {
+        const code = listed.error?.code ?? 'UNKNOWN'
+        const parts = [`${code}: ${listed.error?.message ?? 'window inventory failed'}`]
+        if (listed.error?.suggestion !== undefined) parts.push(listed.error.suggestion)
+        return {
+          text: `desktop_inspect failed\n${parts.join('\n')}\n`
+            + (code === 'TIMEOUT'
+              ? 'The screen may be locked, or an app is not answering. No window can be read in that state. '
+                + 'Do not retry: report what is blocked.'
+              : 'No window inventory, so no tree can be read.'),
         }
-        const tree = await readTree(call, args.app, config, {
-          ...args.depth !== undefined ? { depth: args.depth } : {},
-          ...args.max_nodes !== undefined ? { maxNodes: args.max_nodes } : {},
+      }
+      const chosen = chooseTarget(listed.data, {
+        ...typeof args.window === 'string' && args.window !== '' ? { window: args.window } : {},
+        ...typeof args.app === 'string' && args.app !== '' ? { app: args.app } : {},
+      }, undefined)
+      if (chosen.target === undefined) {
+        return { text: `desktop_inspect failed\nWINDOW_NOT_FOUND: ${chosen.why}` }
+      }
+      const target = chosen.target
+      const heading = windowLine(target)
+      const others = chosen.siblings.length === 0
+        ? ''
+        : `\nother ${target.appName} windows: ${chosen.siblings
+          .slice(0, 6)
+          .map(window => `${window.windowId} ${String(window.bounds.width)}x${String(window.bounds.height)}`)
+          .join(' | ')}`
+
+      // The window itself said there is nothing to address. Say so before paying
+      // for a read that can only fail with ACTION_NOT_SUPPORTED.
+      if (!target.accessible) {
+        return {
+          text: `${heading}${others}\n\ntree=no: this window exposes no accessibility tree, so there are no refs to act `
+            + 'on. Stop reading and use desktop_see with this window id, then the point-based tools '
+            + '(desktop_click, desktop_input_text, desktop_hotkey, desktop_scroll).',
+        }
+      }
+
+      try {
+        const read = await readWindow(
+          target.windowId,
+          {
+            session: agentSessionId(call.sessionId),
+            ...args.depth === undefined ? {} : { depth: args.depth },
+          },
+          exec.signal,
+        )
+        if (!read.ok || read.data === undefined) {
+          const error = read.error
+          const parts = [`${error?.code ?? 'FAILED'}: ${error?.message ?? 'snapshot failed'}`]
+          if (error?.suggestion !== undefined) parts.push(error.suggestion)
+          if (error?.code === 'ACTION_NOT_SUPPORTED' || error?.code === 'WINDOW_NOT_FOUND') {
+            parts.push('This window cannot be read through accessibility. Use desktop_see with this window id '
+              + 'and the point-based tools instead.')
+          }
+          return { text: `desktop_inspect failed\n${heading}${others}\n${parts.join('\n')}` }
+        }
+        const rendered = renderSnapshot(read.data, {
+          maxNodes: args.max_nodes ?? config.maxNodes,
+          // Asking for more nodes means the model needs more of the tree; a
+          // fixed character budget would cut it at the same place every time.
+          maxChars: args.max_nodes === undefined
+            ? config.maxChars
+            : Math.max(config.maxChars, args.max_nodes * 120),
         })
-        return { text: tree.text }
+        call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
+        return { text: `${heading}${others}\n${withThinHint(rendered.text, rendered.refs)}` }
       } catch (error) {
-        return { text: `desktop_inspect failed\n${failureText(asHostError(error))}` }
+        return { text: `desktop_inspect failed\n${heading}${others}\n${failureText(asHostError(error))}` }
       }
     },
   }))
@@ -415,7 +469,8 @@ export function registerDesktopTools(
       + 'The same action on the same control is refused for about 12 seconds after it may have landed, so never repeat '
       + 'a click or Enter to "make sure": a submit result already tells you to confirm from the tree it returns. '
       + 'If this fails because the control exposes no semantic action, do not force it: use desktop_see and '
-      + 'desktop_click on the point. '
+      + 'desktop_click on the point. On Windows an element that repeats in its window (identical rows or buttons) '
+      + 'has no ref path either: those have to be clicked by point. '
       + 'Key names are case-insensitive; Return is accepted for enter.',
     parameters: {
       ref: { type: 'string', required: true, description: 'A fully qualified ref from the latest desktop_inspect.' },
@@ -481,7 +536,7 @@ export function registerDesktopTools(
         // so hand it the current tree instead of only a "do not repeat".
         let observation = ''
         try {
-          const tree = await readTreeFor(call, known, config)
+          const tree = await readTreeFor(call, known, config, readWindow)
           observation = `\n\n--- ${known.app} now ---\n${tree.text}`
         } catch {
           observation = '\n\nCall desktop_inspect to see the current state.'
@@ -510,7 +565,7 @@ export function registerDesktopTools(
         // not a failed action — the action already landed, so only the reading is
         // reported as missing.
         try {
-          const tree = await readTreeFor(call, known, config)
+          const tree = await readTreeFor(call, known, config, readWindow)
           if (isSubmitAction(action)) {
             lines.push('note: a submit was sent. Read the tree below before doing anything else;'
               + ' never press it again to "make sure".')

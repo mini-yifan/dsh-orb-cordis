@@ -19,6 +19,7 @@
  */
 
 import { execFile } from 'node:child_process'
+import { runCli } from './vision.ts'
 
 /** Where the platform's scripting host lives. */
 const OSASCRIPT = '/usr/bin/osascript'
@@ -149,10 +150,10 @@ export function pasteScript(
 
 /**
  * Whether this platform can deliver text without an accessibility ref.
- * @returns true on macOS, where JXA can post key events and restore the clipboard.
+ * @returns true on macOS (JXA key events) and Windows (cut through the focused control).
  */
 export function canPasteAtFocus(): boolean {
-  return process.platform === 'darwin'
+  return process.platform === 'darwin' || process.platform === 'win32'
 }
 
 /**
@@ -173,6 +174,9 @@ export async function typeAtFocus(
   if (!canPasteAtFocus()) {
     throw new Error('typing into a window without an accessibility tree is not supported on this platform')
   }
+  if (process.platform === 'win32') {
+    throw new Error('windows typing goes through the accessibility tree; call typeTextByRef instead')
+  }
   await new Promise<void>((resolve, reject) => {
     execFile(
       OSASCRIPT,
@@ -192,4 +196,83 @@ export async function typeAtFocus(
       },
     )
   })
+}
+
+/** Roles that accept typed text, most specific first. */
+const TEXT_ROLES = ['textfield', 'textarea', 'text area', 'combobox', 'searchfield']
+
+/** One element the CLI found, as `find` prints it. */
+interface FoundElement {
+  readonly match?: {
+    readonly ref_id?: string
+    readonly role?: string
+    readonly states?: readonly string[]
+  }
+  readonly snapshot_id?: string
+}
+
+/**
+ * Type through the accessibility tree, with no clipboard and no pointer.
+ *
+ * This is the Windows path, and the preferred path on any platform where the
+ * target exposes a tree: `type` inserts into one element, so it cannot land in
+ * the wrong field and it cannot destroy what the user had copied. The focused
+ * element is tried first, then the first text field in the window — a click that
+ * focused a container still lets the field be found.
+ * @param text - characters to deliver.
+ * @param options - window to type into, select-all first, submit afterwards.
+ * @param signal - cooperative cancellation.
+ * @returns the ref that received the text.
+ * @throws when the window exposes no addressable text field.
+ */
+export async function typeByRef(
+  text: string,
+  options: { windowId: string, session?: string, replace?: boolean, enter?: boolean },
+  signal: AbortSignal,
+): Promise<string> {
+  const scope = options.session === undefined || options.session === '' ? [] : ['--session', options.session]
+  const window = ['--window-id', options.windowId]
+  const focused = await runCli<FoundElement>(
+    ['find', ...window, ...scope, '--state', 'focused=true', '--first'],
+    signal,
+  )
+  let ref = focused.ok === true ? focused.data?.match?.ref_id : undefined
+  let role = focused.ok === true ? focused.data?.match?.role : undefined
+  if (ref === undefined || !TEXT_ROLES.includes((role ?? '').toLowerCase())) {
+    ref = undefined
+    for (const candidate of TEXT_ROLES) {
+      const found = await runCli<{ matches?: readonly { ref_id?: string }[] }>(
+        ['find', ...window, ...scope, '--role', candidate, '--first'],
+        signal,
+      )
+      if (found.ok !== true) continue
+      const first = found.data?.matches?.[0]?.ref_id
+      if (first !== undefined) {
+        ref = first
+        role = candidate
+        break
+      }
+    }
+  }
+  if (ref === undefined) {
+    throw new Error(
+      `no text field could be found in ${options.windowId}: the window exposes no addressable input, `
+      + 'so this text cannot be inserted through the accessibility tree',
+    )
+  }
+  if (options.replace === true) {
+    await runCli<unknown>(['clear', ref, ...scope], signal)
+  }
+  const typed = await runCli<unknown>(['type', ref, ...scope, '--stdin'], signal, text)
+  if (!typed.ok) {
+    const detail = typed.error?.message ?? 'type failed'
+    throw new Error(`typing into ${ref} (${role ?? 'element'}) failed: ${detail}`)
+  }
+  if (options.enter === true) {
+    const submitted = await runCli<unknown>(['press', ...window, ...scope, 'return'], signal)
+    if (!submitted.ok) {
+      throw new Error(`the text was inserted but Return failed: ${submitted.error?.message ?? 'press failed'}`)
+    }
+  }
+  return ref
 }

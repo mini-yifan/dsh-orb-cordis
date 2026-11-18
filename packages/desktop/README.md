@@ -5,18 +5,21 @@ Desktop control for the orb's **background** agent.
 The background agent gets two routes to the same machine, and one of them is the
 default:
 
-- **The GUI tools** — `desktop_open_app`, `desktop_see`, `desktop_click`,
-  `desktop_input_text`, `desktop_hotkey`, `desktop_scroll`, `desktop_drag`,
-  `desktop_wait`. This is the Computer Use gesture set, retargeted at a named
-  window, and it is the default because it is what a measured task came out
-  fastest on: 8 turns instead of 55, 23 s instead of 174 s. Each call does one
-  thing and returns the window as it now looks. It moves the real pointer and
-  raises the window it acts on, so it disturbs whoever is at the machine,
-  exactly like the foreground Computer Use mode.
-- **`desktop_inspect` / `desktop_act`** — read the accessibility tree, act on a
-  ref. Headless: no pointer movement, no focus stealing. This is the fallback for
-  the cases a picture cannot settle, and the route to take when the user is
-  actively working on the same screen.
+- **`desktop_inspect` / `desktop_act`** — the default. `desktop_inspect` resolves
+  a window, says `tree=yes` or `tree=no` on its first line, and returns the
+  accessibility tree with a ref per actionable element. `desktop_act` acts on a
+  ref and hands back the new tree in the same call, so one action is one turn. It
+  runs headless: no pointer movement, no focus stealing, no clipboard.
+- **The picture tools** — `desktop_see`, `desktop_click`, `desktop_input_text`,
+  `desktop_hotkey`, `desktop_scroll`, `desktop_drag`, `desktop_wait`,
+  `desktop_open_app`. The Computer Use gesture set, retargeted at a named window.
+  Use it when `desktop_inspect` answers `tree=no` (Electron and canvas windows
+  usually do) or when a tree read comes back `tree_thin`. Each call does one
+  thing and returns the window as it now looks; it moves the real pointer and
+  raises its window, so whoever is at the machine sees it.
+
+Both run on macOS and Windows. The picture path is why an app whose tree is
+empty still works.
 
 The foreground Computer Use mode is unchanged and independent of both.
 
