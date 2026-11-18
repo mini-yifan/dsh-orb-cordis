@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveConfig } from '../src/config.ts'
 import { guardState } from '../src/guard.ts'
-import { isSubmitAction, normalizeKey, registerDesktopTools } from '../src/tools.ts'
+import { isSubmitAction, normalizeKey, normalizeRef, registerDesktopTools } from '../src/tools.ts'
 import { RefBook } from '../src/sessions.ts'
 
 /**
@@ -159,6 +159,37 @@ test('inspect resolves the window when only an app name is given', async () => {
   const result = await tool.execute({ app: 'Notes' }, exec)
   assert.match(result.text, /w-1/)
   assert.match(result.text, /button "Save"/)
+})
+
+test('a ref copied with the tree braces still works', () => {
+  // The renderer prints refs as {@s1:e4}; a model that copies one verbatim used
+  // to be told it belonged to no snapshot and then abandoned the tree entirely.
+  assert.equal(normalizeRef('{@s1:e4}'), '@s1:e4')
+  assert.equal(normalizeRef('  @s1:e4  '), '@s1:e4')
+  assert.equal(normalizeRef('"@s1:e4"'), '@s1:e4')
+  assert.equal(normalizeRef('w-35573:e4'), 'w-35573:e4')
+})
+
+test('a braced ref the model was shown can be acted on', async () => {
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
+  const act = tools.get('desktop_act')
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
+  const result = await act.execute({ ref: '{@s1:e2}', action: 'click' }, exec)
+  assert.match(result.text, /^ok/)
+})
+
+test('a malformed ref is told the prefix it should have used', async () => {
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
+  const act = tools.get('desktop_act')
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
+  const result = await act.execute({ ref: 'w-1:e22', action: 'click' }, exec)
+  assert.match(result.text, /UNKNOWN_REF/)
+  assert.match(result.text, /snapshot s1/)
+  assert.match(result.text, /@s1:e22/)
 })
 
 test('act refuses a ref that was never shown', async () => {

@@ -64,6 +64,24 @@ export class RefBook {
   }
 
   /**
+   * The newest snapshot this session remembered.
+   *
+   * A model that wrote a malformed ref cannot be helped by "call inspect again";
+   * what it needs is the exact prefix it should have used.
+   * @returns the snapshot id and app, or undefined when nothing was remembered.
+   */
+  latest(): { snapshotId: string, app: string } | undefined {
+    let found: { snapshotId: string, app: string } | undefined
+    let newest = -1
+    for (const [snapshotId, entry] of this.bySnapshot) {
+      if (entry.at < newest) continue
+      newest = entry.at
+      found = { snapshotId, app: entry.app }
+    }
+    return found
+  }
+
+  /**
    * Resolve one ref to its app.
    * @param ref - qualified ref.
    * @returns the app and whether the model was shown this exact ref.

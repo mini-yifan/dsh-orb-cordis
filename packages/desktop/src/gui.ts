@@ -445,9 +445,21 @@ export function registerGuiTools(
     return typeof id === 'string' && id !== '' ? id : 'anonymous'
   }
 
+  /**
+   * Windows where the CLI's element search refused at least once.
+   *
+   * `find` answers ACTION_NOT_SUPPORTED for a window whose accessibility element
+   * the CLI cannot reach, even when `snapshot` reads that same window fine — QQ's
+   * main window is exactly like that. The answer will not change during a
+   * session, and each miss costs a traversal, so remember it and paste straight
+   * away next time.
+   */
+  const noElementSearch = new Set<string>()
+
   ctx.effect(() => () => {
     frames.clear()
     landed.clear()
+    noElementSearch.clear()
   })
 
   /**
@@ -808,8 +820,8 @@ export function registerGuiTools(
   ctx.tools.register(defineTool({
     name: 'desktop_input_text',
     description:
-      'Type text into a window, then return the new picture. With point, click there first so the field takes focus; '
-      + 'without it, type into whatever already has keyboard focus. '
+      'Type text into a window, then return the new picture. Always point at the field: the click is what '
+      + 'guarantees the text lands there rather than wherever focus happened to be. '
       + 'The text goes in through the accessibility tree when the window has one, so it never touches the clipboard '
       + 'and cannot land in the wrong field; when the window has no tree, macOS falls back to pasting and puts the '
       + 'clipboard back as it was. replace selects the field\'s content first; submit presses Return afterwards. '
@@ -818,8 +830,10 @@ export function registerGuiTools(
       text: { type: 'string', required: true, description: 'Characters to type.' },
       point: {
         type: 'array',
+        required: true,
         items: { type: 'number' },
-        description: '[x, y] as a 0–1000 fraction of the picture; the click focuses the field. Omit to use the focused field.',
+        description: '[x, y] as a 0–1000 fraction of the picture. The click focuses the field; '
+          + 'without it the text goes wherever focus happens to be, which is how a message lands in the wrong place.',
       },
       window: { type: 'string', description: 'Window id. Omit to use the window this session last saw.' },
       replace: { type: 'boolean', description: 'Select the field\'s existing content first. Default: false.' },
@@ -832,18 +846,19 @@ export function registerGuiTools(
       if (blocked !== undefined) return blocked
       const text = typeof args.text === 'string' ? args.text : ''
       if (text === '') return { text: 'INVALID_ARGS: text is required.' }
-      const point = args.point === undefined ? undefined : validPoint(args.point as readonly number[])
-      if (args.point !== undefined && point === undefined) {
-        return { text: 'INVALID_ARGS: point must be [x, y] with both on a 0–1000 grid.' }
+      const point = validPoint(args.point as readonly number[] | undefined)
+      if (point === undefined) {
+        return { text: 'INVALID_ARGS: point is required and must be [x, y] with both on a 0–1000 grid. '
+          + 'Click the field you mean; the click is what focuses it.' }
       }
       const key = sessionKey(exec)
       const gesture: Gesture = {
         ...pick(args, ['window']),
-        ...point === undefined ? {} : { point },
+        point,
         replace: args.replace === true,
         submit: args.submit === true,
       }
-      const aimed = await aim(gesture, exec, key, point !== undefined)
+      const aimed = await aim(gesture, exec, key, true)
       if ('response' in aimed) return aimed.response
       const blockedFront = await ensureFront(aimed.target, aimed.windows, exec.signal)
       if (blockedFront !== undefined) {
@@ -866,6 +881,7 @@ export function registerGuiTools(
         // field and cannot touch the user's clipboard. This is the only path
         // Windows has, and it is the cheapest one everywhere.
         try {
+          if (noElementSearch.has(aimed.target.windowId)) throw new Error('element search unavailable for this window')
           const ref = await typeByRef(text, {
             windowId: aimed.target.windowId,
             session,
@@ -875,6 +891,9 @@ export function registerGuiTools(
           return { how: `inserted through the accessibility tree (${ref}).` }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
+          if (message.includes('element search unavailable') === false) {
+            noElementSearch.add(aimed.target.windowId)
+          }
           if (process.platform !== 'darwin') {
             return {
               failure: `${message}\nThis window exposes no addressable text field, and typing by pointing is `

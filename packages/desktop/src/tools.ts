@@ -228,6 +228,23 @@ export function normalizeKey(key: string): string {
   return KEY_ALIASES[lower] ?? lower
 }
 
+/**
+ * Accept a ref the way the tree printed it.
+ *
+ * The renderer shows refs as `{@s1:e4}` so they stand out in the outline, and a
+ * model that copies one verbatim — braces included — used to be told it "belongs
+ * to no snapshot", which reads as "the tree path does not work here". Stripping
+ * the wrapper costs nothing and removes a whole class of dead end.
+ * @param raw - whatever the model passed as a ref.
+ * @returns the bare `@snapshot:id` form.
+ */
+export function normalizeRef(raw: string): string {
+  const trimmed = raw.trim()
+  const braced = /^\{(.*)\}$/.exec(trimmed)
+  const inner = (braced?.[1] ?? trimmed).trim()
+  return inner.replace(/^['"`]|['"`]$/g, '').trim()
+}
+
 /** Whether this action submits something whose result cannot be undone. */
 export function isSubmitAction(action: ActionRequest): boolean {
   return action.kind === 'press_key' && normalizeKey(action.key ?? '') === 'enter'
@@ -505,9 +522,18 @@ export function registerDesktopTools(
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       const call = await callOf(exec, sessions)
-      const known = call.entry.refs.lookup(args.ref)
+      const ref = normalizeRef(args.ref)
+      const known = call.entry.refs.lookup(ref)
       if (known === undefined) {
-        return { text: 'UNKNOWN_REF: that ref belongs to no snapshot this session took. Call desktop_inspect first.' }
+        const latest = call.entry.refs.latest()
+        return {
+          text: `UNKNOWN_REF: "${args.ref}" is not a ref this session was given. A ref is the token the tree `
+            + 'prints in braces, passed without the braces: @<snapshot>:e<number>. '
+            + (latest === undefined
+              ? 'Call desktop_inspect first: its result contains the refs.'
+              : `Your latest desktop_inspect of ${latest.app} is snapshot ${latest.snapshotId}, `
+                + `so its refs look like @${latest.snapshotId}:e22.`),
+        }
       }
       if (!known.known) {
         return {
@@ -555,7 +581,7 @@ export function registerDesktopTools(
           ...known.windowId !== undefined ? { windowId: known.windowId } : {},
           ...known.windowTitle !== undefined ? { windowTitle: known.windowTitle } : {},
         })
-        const data = await call.client.request({ op: 'act', ref: args.ref, action, policy: POLICY.headless })
+        const data = await call.client.request({ op: 'act', ref, action, policy: POLICY.headless })
         effects.set(effectKey, { at: Date.now(), landed: true })
         refreshLease(known.app, call.sessionId)
         const lines = [actionText(data)]
