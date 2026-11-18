@@ -32,7 +32,7 @@ import { renderSnapshot } from './render.ts'
 import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData, WindowInfo } from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
 import { activateApp } from './activate.ts'
-import { listWindows } from './vision.ts'
+import { listWindows, snapshotWindow } from './vision.ts'
 import { sessionState } from './session-state.ts'
 
 const TEXT_SCHEMA = {
@@ -115,6 +115,44 @@ async function readTree(
       + 'then desktop_click_xy.'
     : rendered.text
   return { text, refs: rendered.refs, thin }
+}
+
+/**
+ * Read the app a ref belongs to, preferring its exact window.
+ *
+ * `readTree` can only name an app, and an app with several windows refuses that
+ * with AMBIGUOUS_TARGET — QQ always has two. The ref already carries the window
+ * it came from, so use it when it is known and fall back to the app name only
+ * when it is not. This is what keeps the post-action observation working on
+ * multi-window apps instead of failing right after every action.
+ * @param call - calling session.
+ * @param known - what the ref book recorded for this ref.
+ * @param config - tunables.
+ * @returns the rendered tree and its thin-tree hint.
+ */
+async function readTreeFor(
+  call: Call,
+  known: { readonly app: string, readonly windowId?: string },
+  config: ResolvedConfig,
+): Promise<{ text: string, refs: readonly string[], thin: boolean }> {
+  if (known.windowId !== undefined && known.windowId !== '') {
+    const read = await snapshotWindow(known.windowId, {}, AbortSignal.timeout(30_000))
+    if (read.ok && read.data !== undefined) {
+      const rendered = renderSnapshot(read.data, { maxNodes: config.maxNodes, maxChars: config.maxChars })
+      call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
+      const thin = rendered.refs.length < MIN_USEFUL_REFS
+      return {
+        text: thin
+          ? `${rendered.text}\n\ntree_thin: this window produced ${String(rendered.refs.length)} addressable `
+            + 'element(s). Stop snapshotting: call desktop_see to look at the window, then desktop_click_xy.'
+          : rendered.text,
+        refs: rendered.refs,
+        thin,
+      }
+    }
+    // Fall through: the window may have closed while the app lives on.
+  }
+  return await readTree(call, known.app, config)
 }
 
 async function osState(client: DesktopClient): Promise<OsState> {
@@ -377,6 +415,14 @@ export function registerDesktopTools(
                   'Every window here reports no readable accessibility tree. Do not force snapshot+act: '
                   + 'use desktop_see with the window id above, then desktop_click_xy.',
                 )
+              } else if (shown.length > 1) {
+                // An app name alone is ambiguous here; snapshot would answer
+                // AMBIGUOUS_TARGET and the model would retry it. Say which knob
+                // to turn instead.
+                lines.push(
+                  `${String(shown.length)} windows: pass window_id to desktop_snapshot (and desktop_see). `
+                  + 'An app name alone is ambiguous and the read will be refused.',
+                )
               }
             }
           }
@@ -417,11 +463,17 @@ export function registerDesktopTools(
       'Read one application\'s interface as a text tree. Every actionable element shows its role, its name, and a ref '
       + 'like {@s1z2:e4}. Start with depth 2–3 for a map; deeper levels add detail and tokens. '
       + 'Refs die as soon as the interface changes, so snapshot again after any action that changes the screen. '
+      + 'When an app owns several windows (a chat client usually does), pass window_id from desktop_status: an app '
+      + 'name alone is ambiguous and the read is refused. '
       + 'Reading the app the user is working in is allowed, but never operate it.',
     parameters: {
       app: {
         type: 'string',
         description: 'Application name from desktop_apps. Omit to read the window that is in front.',
+      },
+      window_id: {
+        type: 'string',
+        description: 'Window id from desktop_status. Use it whenever the app has more than one window.',
       },
       depth: {
         type: 'integer',
@@ -440,6 +492,34 @@ export function registerDesktopTools(
     async execute(args, exec) {
       const call = await callOf(exec, sessions)
       try {
+        // A window id goes through the CLI, because the FFI snapshot call takes
+        // only an app name and refuses an app with several windows.
+        const windowId = args.window_id
+        if (windowId !== undefined && windowId !== '') {
+          const read = await snapshotWindow(
+            windowId,
+            args.depth === undefined ? {} : { depth: args.depth },
+            exec.signal,
+          )
+          if (!read.ok || read.data === undefined) {
+            const error = read.error
+            const parts = [`${error?.code ?? 'FAILED'}: ${error?.message ?? 'snapshot failed'}`]
+            if (error?.suggestion !== undefined) parts.push(error.suggestion)
+            return { text: `desktop_snapshot failed\n${parts.join('\n')}` }
+          }
+          const rendered = renderSnapshot(read.data, {
+            maxNodes: args.max_nodes ?? config.maxNodes,
+            maxChars: config.maxChars,
+          })
+          call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
+          const thin = rendered.refs.length < MIN_USEFUL_REFS
+          return {
+            text: thin
+              ? `${rendered.text}\n\ntree_thin: this window produced ${String(rendered.refs.length)} addressable `
+                + 'element(s). Stop snapshotting: call desktop_see to look at the window, then desktop_click_xy.'
+              : rendered.text,
+          }
+        }
         const tree = await readTree(call, args.app, config, {
           ...args.depth !== undefined ? { depth: args.depth } : {},
           ...args.max_nodes !== undefined ? { maxNodes: args.max_nodes } : {},
@@ -528,7 +608,7 @@ export function registerDesktopTools(
         // so hand it the current tree instead of only a "do not repeat".
         let observation = ''
         try {
-          const tree = await readTree(call, known.app, config)
+          const tree = await readTreeFor(call, known, config)
           observation = `\n\n--- ${known.app} now ---\n${tree.text}`
         } catch {
           observation = '\n\nCall desktop_snapshot to see the current state.'
@@ -585,7 +665,7 @@ export function registerDesktopTools(
         // not a failed action — the action already landed, so only the reading is
         // reported as missing.
         try {
-          const tree = await readTree(call, known.app, config)
+          const tree = await readTreeFor(call, known, config)
           if (isSubmitAction(action)) {
             lines.push('note: a submit was sent. Read the tree below before doing anything else;'
               + ' never press it again to "make sure".')

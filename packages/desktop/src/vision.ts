@@ -28,7 +28,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { ResolvedConfig } from './config.ts'
 import { cliName, nativeKey, packagedCliDir } from './native-paths.ts'
-import type { WindowInfo } from './protocol.ts'
+import type { DesktopNode, SnapshotData, WindowInfo } from './protocol.ts'
 import { requireImageRoute } from './route.ts'
 import { sessionState } from './session-state.ts'
 import { withScreenLock } from './gui-lock.ts'
@@ -674,4 +674,98 @@ export function registerVisionTools(ctx: Context, config: ResolvedConfig): void 
       }
     },
   }))
+}
+
+/** One raw snapshot tree node as the CLI prints it. */
+interface RawTreeNode {
+  readonly role?: string
+  readonly name?: string
+  readonly value?: string
+  readonly ref_id?: string
+  readonly available_actions?: readonly string[]
+  readonly states?: readonly string[]
+  readonly children?: readonly RawTreeNode[]
+  readonly children_count?: number
+  readonly subtree_truncated?: boolean
+}
+
+/** One `snapshot` result as the CLI prints it. */
+interface RawSnapshot {
+  readonly app?: string
+  readonly window?: { readonly id?: string, readonly title?: string }
+  readonly snapshot_id?: string
+  readonly ref_count?: number
+  readonly complete?: boolean
+  readonly nodes_observed?: number
+  readonly tree?: RawTreeNode
+}
+
+/**
+ * Convert one CLI tree node into the shape the renderer expects.
+ *
+ * Exported for tests: this is the mapping that decides whether a ref from a
+ * window-id read is addressable, and getting `ref_id` wrong silently produces a
+ * tree with no usable controls.
+ * @param node - a node from `snapshot --window-id`.
+ * @param depth - remaining levels to keep.
+ * @returns the protocol-shaped node.
+ */
+export function normalizeRawNode(node: RawTreeNode, depth: number): DesktopNode {
+  const children = depth > 0 && Array.isArray(node.children)
+    ? node.children.map(child => normalizeRawNode(child, depth - 1))
+    : undefined
+  return {
+    role: typeof node.role === 'string' && node.role !== '' ? node.role : 'element',
+    ...typeof node.name === 'string' && node.name !== '' ? { name: node.name } : {},
+    ...typeof node.value === 'string' && node.value !== '' ? { value: node.value } : {},
+    ...typeof node.ref_id === 'string' && node.ref_id !== '' ? { ref: node.ref_id } : {},
+    ...Array.isArray(node.available_actions) && node.available_actions.length > 0
+      ? { actions: node.available_actions }
+      : {},
+    ...Array.isArray(node.states) && node.states.length > 0 ? { states: node.states } : {},
+    ...children !== undefined && children.length > 0 ? { children } : {},
+    ...typeof node.children_count === 'number' ? { childrenCount: node.children_count } : {},
+    ...node.subtree_truncated === true ? { subtreeTruncated: true } : {},
+  }
+}
+
+/**
+ * Read one window's accessibility tree by window id.
+ *
+ * `snapshot --app <name>` refuses with AMBIGUOUS_TARGET when an app owns more
+ * than one window — QQ always does — and the FFI snapshot call takes only an app
+ * name, so a window id had no path at all. That refusal was the single biggest
+ * cost in the first unlocked measurement run: 41 snapshots and nine
+ * AMBIGUOUS_TARGET failures, 95 steps without finishing. The CLI accepts
+ * `--window-id`, so route the read through it when the model knows the window.
+ * @param windowId - window id from desktop_status.
+ * @param options - depth and interaction flags.
+ * @param signal - cooperative cancellation.
+ * @returns the normalized snapshot, or an error envelope.
+ */
+export async function snapshotWindow(
+  windowId: string,
+  options: { depth?: number, interactive?: boolean, compact?: boolean },
+  signal: AbortSignal,
+): Promise<Envelope<SnapshotData>> {
+  const args = ['snapshot', '--window-id', windowId, '--timeout-ms', '15000']
+  if (options.interactive !== false) args.push('-i')
+  if (options.compact !== false) args.push('--compact')
+  args.push('--max-depth', String(Math.min(8, Math.max(1, options.depth ?? 3))))
+  const raw = await runCli<RawSnapshot>(args, signal)
+  if (!raw.ok || raw.data === undefined) return raw as Envelope<SnapshotData>
+  const data = raw.data
+  return {
+    ok: true,
+    data: {
+      app: String(data.app ?? ''),
+      ...data.window?.id === undefined ? {} : { windowId: data.window.id },
+      ...data.window?.title === undefined ? {} : { windowTitle: data.window.title },
+      snapshotId: String(data.snapshot_id ?? ''),
+      refCount: Number(data.ref_count ?? 0),
+      complete: data.complete !== false,
+      ...typeof data.nodes_observed === 'number' ? { nodesObserved: data.nodes_observed } : {},
+      tree: normalizeRawNode(data.tree ?? { role: 'window' }, 64),
+    },
+  }
 }

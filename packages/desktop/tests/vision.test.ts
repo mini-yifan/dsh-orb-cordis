@@ -90,3 +90,41 @@ test('a moved, resized, closed, or bound-less window invalidates the picture', (
   assert.equal(pictureViewportMatches(held, { x: 0, y: 33, width: 1470, height: 800 }), false)
   assert.equal(pictureViewportMatches(held, undefined), false)
 })
+
+test('a CLI tree node becomes a protocol node, ref and actions intact', async () => {
+  const { normalizeRawNode } = await import('../src/vision.ts')
+  // The CLI prints snake_case and `ref_id`; the renderer and ref book expect
+  // `ref` and `actions`. Getting this wrong yields a tree with no usable refs.
+  const node = normalizeRawNode({
+    role: 'button',
+    name: '发送',
+    ref_id: '@s1:e7',
+    available_actions: ['Click'],
+    states: ['enabled'],
+    children_count: 2,
+  }, 4)
+  assert.equal(node.role, 'button')
+  assert.equal(node.name, '发送')
+  assert.equal(node.ref, '@s1:e7')
+  assert.deepEqual(node.actions, ['Click'])
+  assert.deepEqual(node.states, ['enabled'])
+  assert.equal(node.childrenCount, 2)
+})
+
+test('a window-id read keeps nesting and drops levels past the depth limit', async () => {
+  const { normalizeRawNode } = await import('../src/vision.ts')
+  const raw = {
+    role: 'window',
+    children: [{ role: 'group', children: [{ role: 'button', name: 'ok', ref_id: '@s2:e1' }] }],
+  }
+  const kept = normalizeRawNode(raw, 4)
+  assert.equal(kept.children?.[0]?.children?.[0]?.ref, '@s2:e1')
+  // Depth 1 keeps only the first level; deeper children are cut, not flattened.
+  const cut = normalizeRawNode(raw, 1)
+  assert.equal(cut.children?.[0]?.children, undefined)
+})
+
+test('an unknown node still gets a role so the tree never has holes', async () => {
+  const { normalizeRawNode } = await import('../src/vision.ts')
+  assert.equal(normalizeRawNode({}, 2).role, 'element')
+})
