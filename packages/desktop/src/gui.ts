@@ -72,6 +72,8 @@ interface Target {
   readonly bounds: Rect
   readonly focused: boolean
   readonly accessible: boolean
+  /** Whether the OS says the window is on screen. A hidden one cannot be focused. */
+  readonly visible: boolean
 }
 
 /**
@@ -176,16 +178,62 @@ function sameApp(left: string, right: string): boolean {
 }
 
 /**
+ * Below this a window is a helper surface, not something a person uses: a
+ * menu-bar strip, a 1x1 renderer, a tab bar fragment.
+ *
+ * QQ keeps thirteen windows and only one of them is ever on screen. Offering the
+ * other twelve as "other QQ windows" is worse than saying nothing: a run spent
+ * sixty seconds clicking 1920x30 and 1x1 windows because they were listed.
+ */
+const MIN_TARGET_WIDTH = 120
+const MIN_TARGET_HEIGHT = 80
+
+/** Whether a window is big enough to be a real target. */
+function isSubstantial(window: WindowInfo): boolean {
+  const bounds = window.bounds
+  if (bounds === undefined) return false
+  return bounds.width >= MIN_TARGET_WIDTH && bounds.height >= MIN_TARGET_HEIGHT
+}
+
+/**
+ * Pick one window out of a candidate pool.
+ *
+ * Order: focused, else the largest. `list-windows` is ordered by descending
+ * window id, which is creation order, not z-order, so position in the list says
+ * nothing about what is on top. Windows that are not on screen are only used
+ * when nothing else is available — a hidden window cannot be focused, so a point
+ * aimed at one can never land.
+ * @param pool - candidates from one app or from the whole desktop.
+ * @returns the best window, or undefined when the pool is empty.
+ */
+function preferredWindow(pool: readonly WindowInfo[]): WindowInfo | undefined {
+  const byArea = (list: readonly WindowInfo[]): WindowInfo | undefined =>
+    list.slice().sort((a, b) => area(b.bounds as Rect) - area(a.bounds as Rect))[0]
+  const onScreen = pool.filter(window => window.visible !== false)
+  for (const list of [
+    onScreen.filter(isSubstantial),
+    onScreen,
+    pool.filter(isSubstantial),
+    pool,
+  ]) {
+    if (list.length === 0) continue
+    return list.find(window => window.focused) ?? byArea(list)
+  }
+  return undefined
+}
+
+/**
  * Choose the window a call acts on.
  *
  * Deliberately lenient: an app with several windows used to make an app-name
  * read fail with AMBIGUOUS_TARGET, and each such failure cost a whole model
- * turn. Picking the focused (else the largest titled) window and printing its
- * siblings costs one line and lets the model correct on the next call.
+ * turn. Picking one and printing its siblings costs one line and lets the model
+ * correct on the next call — as long as the siblings it prints are real windows
+ * and not helper surfaces.
  * @param windows - every window the OS reports.
  * @param args - the call's `window` and `app`.
  * @param last - the window this session last saw.
- * @returns the chosen window and the app's other windows.
+ * @returns the chosen window and the app's other usable windows.
  */
 export function chooseTarget(
   windows: readonly WindowInfo[],
@@ -200,10 +248,15 @@ export function chooseTarget(
     bounds: window.bounds as Rect,
     focused: window.focused,
     accessible: window.accessible === true,
+    visible: window.visible !== false,
   })
   const siblingsOf = (target: Target): readonly Target[] =>
     usable
       .filter(window => window.id !== target.windowId && sameApp(window.appName, target.appName))
+      // Only windows a person could be looking at. QQ keeps twelve hidden helper
+      // surfaces for every one it shows; listing them is what made a run spend a
+      // minute clicking 1920x30 and 1x1 windows.
+      .filter(window => window.visible !== false && isSubstantial(window))
       .map(asTarget)
 
   const wanted = args.window
@@ -218,27 +271,27 @@ export function chooseTarget(
   const app = args.app
   if (app !== undefined && app !== '') {
     const matches = usable.filter(window => sameApp(window.appName, app))
-    if (matches.length === 0) {
+    const pick = preferredWindow(matches)
+    if (pick === undefined) {
       const names = [...new Set(usable.map(window => window.appName))].slice(0, 12)
       return { siblings: [], why: `no window belongs to "${app}". Open windows belong to: ${names.join(', ')}` }
     }
-    const visible = matches.filter(window => window.visible !== false)
-    const pool = visible.length > 0 ? visible : matches
-    const pick = pool.find(window => window.focused)
-      ?? pool.slice().sort((a, b) => area(b.bounds as Rect) - area(a.bounds as Rect))[0]
-    const target = asTarget(pick as WindowInfo)
+    const target = asTarget(pick)
     return { target, siblings: siblingsOf(target), why: '' }
   }
 
   if (last !== undefined) {
-    const known = usable.find(window => window.id === last)
+    // Only reuse the previous window while it is still on screen: a window that
+    // went hidden cannot be focused, so keeping it would make the next click fail
+    // for a reason the model cannot see.
+    const known = usable.find(window => window.id === last && window.visible !== false)
     if (known !== undefined) {
       const target = asTarget(known)
       return { target, siblings: siblingsOf(target), why: '' }
     }
   }
 
-  const front = usable.find(window => window.focused)
+  const front = usable.find(window => window.focused) ?? preferredWindow(usable)
   if (front !== undefined) {
     const target = asTarget(front)
     return { target, siblings: siblingsOf(target), why: '' }
@@ -291,8 +344,16 @@ export function cliCombo(combo: string): string {
 /** Build the one line that names the window a picture shows. */
 function windowLine(target: Target): string {
   const size = `${String(target.bounds.width)}x${String(target.bounds.height)}`
+  // The title is what tells a chat panel from that app's built-in browser: QQ
+  // opens its document viewer as a window called "QQ(窗口)", and an earlier run
+  // spent five turns working out that the picture it was given was not the app.
+  const title = target.title.replace(/[\r\n]+/g, ' ').trim().slice(0, 60)
   return `window ${target.appName} ${target.windowId} ${size} `
     + `front=${target.focused ? 'yes' : 'no'} tree=${target.accessible ? 'yes' : 'no'}`
+    // Only stated when it is the unusual case: an off-screen window cannot be
+    // focused, so its picture may be blank and no click in it can land.
+    + `${target.visible ? '' : ' on-screen=no'}`
+    + `${title === '' ? '' : ` title="${title}"`}`
 }
 
 /** A picture that could not be taken is text only. */
@@ -404,18 +465,42 @@ export function registerGuiTools(
   /**
    * Bring the target window in front, so a click at its screen coordinates
    * actually lands in it.
+   *
+   * The focus is attempted even for a window the OS calls off-screen: that flag
+   * is also false for a window on another Space, and focusing one of those does
+   * work. Only when the attempt fails is the off-screen state used as the
+   * explanation, because `focus-window` answers "focus did not settle" for a
+   * hidden helper window — which reads like a transport failure and sends the
+   * model looking for another window.
    * @param target - window to raise.
+   * @param windows - every window, to name what is on screen instead.
    * @param signal - cooperative cancellation.
    * @returns undefined on success, or the reason it did not come forward.
    */
-  const ensureFront = async (target: Target, signal: AbortSignal): Promise<string | undefined> => {
+  const ensureFront = async (
+    target: Target,
+    windows: readonly WindowInfo[],
+    signal: AbortSignal,
+  ): Promise<string | undefined> => {
     if (target.focused) return undefined
     const raised = await runCli<unknown>(['focus-window', '--window-id', target.windowId], signal)
-    if (!raised.ok) {
-      return `could not bring ${target.appName} (${target.windowId}) to the front, so a click would land in `
-        + `another app: ${failureText(raised)}`
+    if (raised.ok) return undefined
+    if (!target.visible) {
+      const alternatives = windows
+        .filter(window => window.id !== target.windowId && window.visible !== false && isSubstantial(window))
+        .slice(0, 4)
+        .map(window => `${window.id} ${String(window.bounds?.width)}x${String(window.bounds?.height)}`)
+      return `${target.appName} ${target.windowId} is not on screen. It may be minimized, behind a full-screen `
+        + 'window, on another Space, or one of the app\'s internal helper windows. A click cannot land in it.'
+        + (alternatives.length === 0
+          ? ` No window of ${target.appName} is on screen at all: bring it up from the Dock or its menu bar, `
+            + 'or relaunch it, then look again.'
+          : ` On screen right now: ${alternatives.join(' | ')}.`)
     }
-    return undefined
+    return `could not bring ${target.appName} (${target.windowId}) to the front, so a click would land in `
+      + `another app: ${failureText(raised)}\n`
+      + `${target.appName} would not take focus. It may be minimized or behind a full-screen app. `
+      + 'Try action=launch with its name, or pick another window.'
   }
 
   ctx.tools.register(defineTool({
@@ -556,26 +641,57 @@ export function registerGuiTools(
             text: `LAUNCH_FAILED: ${error instanceof Error ? error.message : String(error)}`,
           }
         }
+        // Only an on-screen window counts as "launched". QQ keeps thirteen
+        // windows and surfaces one; counting a hidden one would report success
+        // with a blank picture and send the model hunting.
+        //
+        // An app that owns windows but shows none is not still starting — it is
+        // closed to its menu bar. Give that state 1.5 s and then say so, instead
+        // of waiting the full deadline for a window that cannot appear.
         const deadline = Date.now() + LAUNCH_WAIT_MS
         let found: WindowInfo | undefined
+        let listed = await listWindows(exec.signal)
+        let onlyHiddenSince: number | undefined
         while (Date.now() < deadline) {
-          const listed = await listWindows(exec.signal)
-          if (listed.ok && listed.data !== undefined) {
-            found = listed.data
-              .filter(window => sameApp(window.appName, name) && window.bounds !== undefined)
-              .sort((a, b) => (b.bounds === undefined ? 0 : area(b.bounds)) - (a.bounds === undefined ? 0 : area(a.bounds)))[0]
-          }
+          const own = listed.ok && listed.data !== undefined
+            ? listed.data.filter(window => sameApp(window.appName, name))
+            : []
+          found = preferredWindow(own)
+          if (found?.visible === false) found = undefined
           if (found !== undefined) break
+          if (own.length > 0 && !own.some(window => window.visible !== false)) {
+            onlyHiddenSince ??= Date.now()
+            if (Date.now() - onlyHiddenSince > 1_500) break
+          } else {
+            onlyHiddenSince = undefined
+          }
           await new Promise(resolve => setTimeout(resolve, 250))
+          listed = await listWindows(exec.signal)
         }
+        const own = listed.ok && listed.data !== undefined
+          ? listed.data.filter(window => sameApp(window.appName, name))
+          : []
+        const hidden = own.filter(window => window.visible === false).length
         if (found === undefined) {
-          const listed = await listWindows(exec.signal)
           const names = listed.ok && listed.data !== undefined
             ? [...new Set(listed.data.map(window => window.appName))].slice(0, 12).join(', ')
             : 'unavailable'
-          return { text: `LAUNCH_FAILED: ${name} did not show a window within ${String(LAUNCH_WAIT_MS / 1000)}s. `
-            + `Open windows belong to: ${names}` }
+          if (own.length > 0) {
+            return {
+              text: `LAUNCH_FAILED: ${name} is running but has no window on screen: `
+                + `${String(own.length)} window(s) of it exist and none is visible. It is minimized, or closed to `
+                + 'its menu bar. Bring it up from the Dock or menu bar, or quit it and launch it again, then use '
+                + 'action=see. Do not click a window that is not on screen: it cannot be focused, so nothing in it '
+                + 'will work.',
+            }
+          }
+          return { text: `LAUNCH_FAILED: ${name} is not running after ${String(LAUNCH_WAIT_MS / 1000)}s `
+            + `and shows no window. Open windows belong to: ${names}` }
         }
+        const prefix = hidden === 0
+          ? `${name} is up.`
+          : `${name} is up. ${String(hidden)} other window(s) of it are not on screen; they cannot be clicked, `
+            + 'so do not go looking for them.'
         return await observe({
           windowId: found.id,
           appName: found.appName,
@@ -583,7 +699,8 @@ export function registerGuiTools(
           bounds: found.bounds as Rect,
           focused: found.focused,
           accessible: found.accessible === true,
-        }, exec.signal, `${name} is up.`, key)
+          visible: found.visible !== false,
+        }, exec.signal, prefix, key)
       }
 
       const listed = await listWindows(exec.signal)
@@ -687,7 +804,7 @@ export function registerGuiTools(
         if (action === 'type') {
           // Text delivery pastes, so the window has to be in front for the keys
           // to reach it; a click also puts the caret where the caller asked.
-          const blocked = await ensureFront(target, exec.signal)
+          const blocked = await ensureFront(target, listed.data, exec.signal)
           if (blocked !== undefined) {
             const fresh = await show('nothing was sent.')
             return withPicture(blocked, fresh)
@@ -722,7 +839,7 @@ export function registerGuiTools(
           return await show(lead)
         }
 
-        const blocked = await ensureFront(target, exec.signal)
+        const blocked = await ensureFront(target, listed.data, exec.signal)
         if (blocked !== undefined) {
           const fresh = await show('nothing was sent.')
           return withPicture(blocked, fresh)
@@ -811,8 +928,8 @@ export function registerGuiTools(
 /**
  * Format a point for the result text.
  * @param point - 0–1000 pair.
- * @returns a short human form.
+ * @returns the same two numbers the call used, so the next one can repeat them.
  */
 function fmtPoint(point: readonly [number, number]): string {
-  return `${point[0].toFixed(0)}%,${point[1].toFixed(0)}%`
+  return `(${point[0].toFixed(0)},${point[1].toFixed(0)})`
 }

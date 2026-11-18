@@ -147,6 +147,45 @@ test('a localized app name does not cross-match, but case does', () => {
   assert.equal(chooseTarget([win('w-1', 'QQ', 'QQ', 720, 640)], { app: 'qq' }, undefined).target?.windowId, 'w-1')
 })
 
+test('a hidden helper window is never picked and never listed', () => {
+  // Measured on this machine: QQ owns 13 windows and shows 1. The other 12 are
+  // menu-bar strips, 1x1 renderers and hidden 720x640 surfaces.
+  const windows = [
+    win('w-1', 'QQ', 'QQ', 1470, 846),
+    win('w-2', 'QQ', 'QQ', 720, 640, { visible: false }),
+    win('w-3', 'QQ', 'QQ', 1920, 30, { visible: false }),
+    win('w-4', 'QQ', 'QQ', 1, 1, { visible: false }),
+  ]
+  const chosen = chooseTarget(windows, { app: 'QQ' }, undefined)
+  assert.equal(chosen.target?.windowId, 'w-1')
+  assert.equal(chosen.target?.visible, true)
+  assert.deepEqual(chosen.siblings, [], 'hidden surfaces must not be offered as targets')
+})
+
+test('an app with no window on screen still resolves, so see can show how blank it is', () => {
+  const windows = [win('w-2', 'QQ', 'QQ', 720, 640, { visible: false })]
+  const chosen = chooseTarget(windows, { app: 'QQ' }, undefined)
+  assert.equal(chosen.target?.windowId, 'w-2')
+  assert.equal(chosen.target?.visible, false)
+})
+
+test('the last window is dropped once it leaves the screen', () => {
+  const windows = [
+    win('w-1', 'QQ', 'QQ', 1470, 846),
+    win('w-2', 'QQ', 'QQ', 720, 640, { visible: false }),
+  ]
+  // A hidden window cannot be focused, so keeping it would fail the next click
+  // for a reason the model cannot see.
+  assert.equal(chooseTarget(windows, {}, 'w-2').target?.windowId, 'w-1')
+})
+
+test('a window the model names explicitly is still returned, hidden or not', () => {
+  const windows = [win('w-9', 'QQ', 'QQ', 720, 640, { visible: false })]
+  const chosen = chooseTarget(windows, { window: 'w-9' }, undefined)
+  assert.equal(chosen.target?.windowId, 'w-9')
+  assert.equal(chosen.target?.visible, false)
+})
+
 test('a key combo is translated into the CLI vocabulary', () => {
   assert.equal(cliCombo('Return'), 'return')
   assert.equal(cliCombo('Enter'), 'return')
