@@ -1,10 +1,19 @@
 /**
- * Model-facing tools for silent desktop control.
+ * The accessibility half of the desktop agent's tools: read a window's tree, and
+ * act on one element by ref.
  *
- * Every tool follows the same shape: read the OS state once, ask the ownership
- * guard, then act. Nothing here moves the mouse or takes keyboard focus; the
- * only foreground change the agent can request is the explicit `desktop_raise`
- * borrow, and even that is refused while the user is active.
+ * This is the second path, not the first. The first is `desktop` in
+ * `gui.ts` — one call, one action, one new picture. The tree is worth reaching
+ * for when the picture cannot settle a question: the exact identity of a control
+ * in a dense list, a field that must be set atomically, an element that is
+ * invisible behind a scroll. On an Electron or canvas window the tree is often
+ * absent or nearly empty, and both tools say so instead of letting the model
+ * drill.
+ *
+ * Two tools only: `desktop_inspect` reads, `desktop_act` acts on a ref. Every
+ * other status query the background preset used to have is gone, because the
+ * picture that `desktop` returns already answers "what is in front", "which
+ * windows does this app have", and "did it work".
  * @module @dsh-orb/desktop/src/tools
  */
 
@@ -18,10 +27,7 @@ import { actionText, denialText, failureText } from './errors.ts'
 import {
   acquireLease,
   decideMutation,
-  decideRaise,
   leaseOwner,
-  markRaised,
-  raisedApp,
   refreshLease,
   releaseLease,
   screenLockOwner,
@@ -30,11 +36,9 @@ import { chooseWindow } from './frame.ts'
 import { agentSessionId } from './sessions.ts'
 import { POLICY } from './ffi.ts'
 import { renderSnapshot } from './render.ts'
-import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData, WindowInfo } from './protocol.ts'
+import type { ActionKind, ActionRequest, SnapshotData, HostError } from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
-import { activateApp } from './activate.ts'
-import { listWindows, snapshotWindow } from './vision.ts'
-import { sessionState } from './session-state.ts'
+import { snapshotWindow } from './vision.ts'
 
 const TEXT_SCHEMA = {
   type: 'object',
@@ -57,11 +61,6 @@ interface Call {
   readonly client: DesktopClient
 }
 
-interface OsState {
-  readonly idleMs: number | null
-  readonly app: string | null
-}
-
 function agentId(exec: { agent?: { id?: string } }): string {
   const id = exec.agent?.id
   if (typeof id !== 'string' || id === '') {
@@ -76,24 +75,47 @@ async function callOf(exec: { agent?: { id?: string } }, sessions: DesktopSessio
   return { sessionId, entry, client: entry.client }
 }
 
+/** What a tree read produced, plus whether the model should stop reading. */
+interface TreeRead {
+  readonly text: string
+  readonly refs: readonly string[]
+  readonly thin: boolean
+}
+
+/**
+ * Say what to do instead, in the result the model is already reading.
+ *
+ * A thin tree is the desktop counterpart of the phone's poor tree: the next step
+ * is pixels, not another snapshot at a different depth.
+ * @param text - rendered tree.
+ * @param refs - how many addressable elements it yielded.
+ * @returns the text with a switch-route hint when the tree is unusable.
+ */
+function withThinHint(text: string, refs: readonly string[]): string {
+  if (refs.length >= MIN_USEFUL_REFS) return text
+  return `${text}\n\ntree_thin: this window produced ${String(refs.length)} addressable element(s). `
+    + 'The accessibility tree is not usable here. Stop snapshotting: use desktop with '
+    + 'action=see, then point at what you see.'
+}
+
 /**
  * Read one app's tree, render it, and remember the refs it exposed.
  *
- * Used by both the explicit snapshot tool and the post-action observation, so
- * the two can never drift: whatever refs one of them hands the model is exactly
- * what the ref book will accept next.
+ * Used by both the inspect tool and the post-action observation, so the two can
+ * never drift: whatever refs one of them hands the model is exactly what the ref
+ * book will accept next.
  * @param call - calling session.
  * @param app - application name, or undefined for the front window.
  * @param config - tunables.
  * @param options - depth and node-budget overrides.
- * @returns the rendered tree and its thin-tree hint.
+ * @returns the rendered tree and its thin-tree verdict.
  */
 async function readTree(
   call: Call,
   app: string | undefined,
   config: ResolvedConfig,
   options: { depth?: number, maxNodes?: number } = {},
-): Promise<{ text: string, refs: readonly string[], thin: boolean }> {
+): Promise<TreeRead> {
   const depth = Math.min(8, Math.max(1, options.depth ?? 3))
   const snapshot = await call.client.request<SnapshotData>({
     op: 'snapshot',
@@ -107,19 +129,11 @@ async function readTree(
     maxChars: config.maxChars,
   })
   call.entry.refs.remember(snapshot, rendered.refs, rendered.elements)
-  // A tree that yields almost no addressable elements is the desktop counterpart
-  // of the phone's poor tree: stop drilling, look at pixels instead of guessing.
-  const thin = rendered.refs.length < MIN_USEFUL_REFS
-  const text = thin
-    ? `${rendered.text}\n\ntree_thin: this window produced ${String(rendered.refs.length)} addressable element(s). `
-      + 'The accessibility tree is not usable here. Stop snapshotting: call desktop_see to look at the window, '
-      + 'then desktop_click_xy.'
-    : rendered.text
-  return { text, refs: rendered.refs, thin }
+  return { text: withThinHint(rendered.text, rendered.refs), refs: rendered.refs, thin: rendered.refs.length < MIN_USEFUL_REFS }
 }
 
 /**
- * Read the app a ref belongs to, preferring its exact window.
+ * Read the window a ref belongs to, preferring the exact window.
  *
  * `readTree` can only name an app, and an app with several windows refuses that
  * with AMBIGUOUS_TARGET — QQ always has two. The ref already carries the window
@@ -129,13 +143,13 @@ async function readTree(
  * @param call - calling session.
  * @param known - what the ref book recorded for this ref.
  * @param config - tunables.
- * @returns the rendered tree and its thin-tree hint.
+ * @returns the rendered tree and its thin-tree verdict.
  */
 async function readTreeFor(
   call: Call,
   known: { readonly app: string, readonly windowId?: string },
   config: ResolvedConfig,
-): Promise<{ text: string, refs: readonly string[], thin: boolean }> {
+): Promise<TreeRead> {
   if (known.windowId !== undefined && known.windowId !== '') {
     const read = await snapshotWindow(
       known.windowId,
@@ -145,24 +159,15 @@ async function readTreeFor(
     if (read.ok && read.data !== undefined) {
       const rendered = renderSnapshot(read.data, { maxNodes: config.maxNodes, maxChars: config.maxChars })
       call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
-      const thin = rendered.refs.length < MIN_USEFUL_REFS
       return {
-        text: thin
-          ? `${rendered.text}\n\ntree_thin: this window produced ${String(rendered.refs.length)} addressable `
-            + 'element(s). Stop snapshotting: call desktop_see to look at the window, then desktop_click_xy.'
-          : rendered.text,
+        text: withThinHint(rendered.text, rendered.refs),
         refs: rendered.refs,
-        thin,
+        thin: rendered.refs.length < MIN_USEFUL_REFS,
       }
     }
     // Fall through: the window may have closed while the app lives on.
   }
   return await readTree(call, known.app, config)
-}
-
-async function osState(client: DesktopClient): Promise<OsState> {
-  const value = await client.request<{ idleMs?: number | null; app?: string | null }>({ op: 'state' })
-  return { idleMs: value.idleMs ?? null, app: value.app ?? null }
 }
 
 function asHostError(error: unknown): HostError {
@@ -268,23 +273,16 @@ function actionOf(input: {
 }
 
 /**
- * Register the background desktop tools on the calling preset.
+ * Register the accessibility tools on the calling preset.
  * @param ctx - plugin context carrying the tool registry.
  * @param sessions - child-process owner.
  * @param config - resolved tunables.
  */
-export interface ToolDependencies {
-  /** Bring one app to the front. Injected so tests never touch the real desktop. */
-  readonly activate?: (app: string) => Promise<void>
-}
-
 export function registerDesktopTools(
   ctx: Context,
   sessions: DesktopSessions,
   config: ResolvedConfig,
-  dependencies: ToolDependencies = {},
 ): void {
-  const activate = dependencies.activate ?? activateApp
   let holdTimer: NodeJS.Timeout | undefined
   const effects = new Map<string, EffectRecord>()
 
@@ -325,160 +323,25 @@ export function registerDesktopTools(
     const frame = ctx.get('backgroundFrame') as { hide(): Promise<void> } | undefined
     void frame?.hide()
   })
-  ctx.tools.register(defineTool({
-    name: 'desktop_status',
-    description:
-      'Report whether silent desktop control is usable on this machine: accessibility permission, the app in front, '
-      + 'how long the user has been idle, whether this session currently holds a window, and this app\'s windows with '
-      + 'their ids and whether their accessibility tree can be read. '
-      + 'Call this first when a desktop step fails for an unexplained reason, and before desktop_see when you need a '
-      + 'window id. A window marked tree=no has no usable accessibility tree: operate it with desktop_see and '
-      + 'desktop_click_xy instead of snapshot and act.',
-    parameters: {
-      app: {
-        type: 'string',
-        description: 'Application name from desktop_apps. Omit to inspect the app in front.',
-      },
-    },
-    output: {
-      schema: TEXT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: value.text }],
-    },
-    async execute(args, exec) {
-      const call = await callOf(exec, sessions)
-      try {
-        const status = await call.client.request<{
-          permissions?: { accessibility?: { state?: string } }
-          platform?: string
-          version?: string
-        }>({ op: 'status' })
-        const state = await osState(call.client)
-        const raised = raisedApp()
-        const held = raised !== undefined && raised.owner === call.sessionId
-        // A locked screen defeats every window query, so say it before the model
-        // starts probing. In the first real measurement run it spent six shell
-        // commands rediscovering this.
-        const session = await sessionState()
-        const lines = [
-          `platform: ${status.platform ?? process.platform}`,
-          `accessibility: ${status.permissions?.accessibility?.state ?? 'unknown'}`,
-          `library: ${status.version ?? 'unknown'}`,
-          `frontmost: ${state.app ?? 'none'}`,
-          `user idle: ${state.idleMs === null ? 'unknown' : `${Math.round(state.idleMs / 1000)} s`}`,
-          `borrowed window: ${held ? (raised?.app ?? 'none') : 'none'}`,
-          `screen locked: ${session.locked ? 'yes' : session.unknown ? 'unknown' : 'no'}`,
-        ]
-        if (session.locked) {
-          lines.push(
-            '',
-            'The screen is locked. Window inventory, screenshots and every ref or coordinate action will fail '
-            + 'until someone unlocks this Mac — that needs the password and is not something this worker can do. '
-            + 'Stop now: do not retry desktop tools and do not try to work around the lock. '
-            + 'Finish what you can without the screen (that includes web lookups and writing drafts to files), '
-            + 'then hand back what you did, what is blocked, and what the user must do.',
-          )
-        }
-        const app = args.app !== undefined && args.app !== '' ? args.app : state.app ?? undefined
-        if (app !== undefined) {
-          // Ask the CLI, not the FFI: the FFI window record has no accessibility
-          // bit, and its app filter matches the OS display name, which differs
-          // from the name a model is likely to use ("Calculator" vs "计算器").
-          const listed = await listWindows(exec.signal)
-          if (!listed.ok) {
-            // Silence here used to leave the model with no window section and no
-            // reason why. A locked screen and a hung app both land in this branch,
-            // and both deserve to be named: neither is fixed by retrying blindly.
-            const code = listed.error?.code ?? 'UNKNOWN'
-            lines.push(
-              `window list unavailable: ${code}`
-              + (code === 'TIMEOUT' ? ' — the screen may be locked, or an app is not answering.' : ''),
-            )
-            lines.push('Do not retry this call. Report what is blocked, or take a level-1 route (files, shell).')
-          }
-          if (listed.ok && listed.data !== undefined) {
-            const wanted = app.toLowerCase()
-            const sameApp = listed.data.filter(window =>
-              window.appName.toLowerCase() === wanted
-              || window.appName.toLowerCase().includes(wanted)
-              || wanted.includes(window.appName.toLowerCase()))
-            const shown = (sameApp.length > 0 ? sameApp : listed.data.filter(window => window.focused))
-              .filter(window => window.bounds !== undefined)
-            if (shown.length > 0) {
-              lines.push(`windows of ${sameApp.length > 0 ? app : (shown[0]?.appName ?? app)}:`)
-              for (const window of shown) {
-                const bounds = window.bounds
-                if (bounds === undefined) continue
-                const size = `${String(bounds.width)}x${String(bounds.height)} at ${String(bounds.x)},${String(bounds.y)}`
-                lines.push(
-                  `  ${window.id} · tree=${window.accessible === true ? 'yes' : 'no'}`
-                  + `${window.visible === false ? ' · offscreen' : ''}`
-                  + `${window.focused ? ' · front' : ''} · ${size} · ${window.title.replace(/[\r\n]+/g, ' ').slice(0, 60)}`,
-                )
-              }
-              if (shown.every(window => window.accessible !== true)) {
-                lines.push(
-                  'Every window here reports no readable accessibility tree. Do not force snapshot+act: '
-                  + 'use desktop_see with the window id above, then desktop_click_xy.',
-                )
-              } else if (shown.length > 1) {
-                // An app name alone is ambiguous here; snapshot would answer
-                // AMBIGUOUS_TARGET and the model would retry it. Say which knob
-                // to turn instead.
-                lines.push(
-                  `${String(shown.length)} windows: pass window_id to desktop_snapshot (and desktop_see). `
-                  + 'An app name alone is ambiguous and the read will be refused.',
-                )
-              }
-            }
-          }
-        }
-        return { text: lines.join('\n') }
-      } catch (error) {
-        return { text: `desktop_status failed\n${failureText(asHostError(error))}` }
-      }
-    },
-  }))
 
   ctx.tools.register(defineTool({
-    name: 'desktop_apps',
+    name: 'desktop_inspect',
     description:
-      'List the applications currently running on this machine. Use the exact name it returns with desktop_snapshot, '
-      + 'desktop_raise, and desktop_act.',
-    parameters: {},
-    output: {
-      schema: TEXT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: value.text }],
-    },
-    async execute(_args, exec) {
-      const call = await callOf(exec, sessions)
-      try {
-        const apps = await call.client.request<readonly AppInfo[]>({ op: 'apps' })
-        if (apps.length === 0) return { text: 'no applications reported' }
-        const lines = apps.map(app => `${app.name} (pid ${app.pid})${app.bundleId === undefined ? '' : ` · ${app.bundleId}`}`)
-        return { text: lines.join('\n') }
-      } catch (error) {
-        return { text: `desktop_apps failed\n${failureText(asHostError(error))}` }
-      }
-    },
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'desktop_snapshot',
-    description:
-      'Read one application\'s interface as a text tree. Every actionable element shows its role, its name, and a ref '
-      + 'like {@s1z2:e4}. Start with depth 2–3 for a map; deeper levels add detail and tokens. '
-      + 'Refs die as soon as the interface changes, so snapshot again after any action that changes the screen. '
-      + 'When an app owns several windows (a chat client usually does), pass window_id from desktop_status: an app '
-      + 'name alone is ambiguous and the read is refused. '
-      + 'Reading the app the user is working in is allowed, but never operate it.',
+      'Read one window\'s accessibility tree as text: role, name, and a ref like {@s1z2:e4} for every actionable '
+      + 'element. This is the exact-identity route — use it when a picture is not enough (dense lists, controls that '
+      + 'look alike) or when you must set a field atomically. '
+      + 'It is slower than desktop and it fails on Electron or canvas windows that expose no tree; when it comes back '
+      + 'with a tree_thin note, stop reading and use desktop instead. '
+      + 'Refs die as soon as the interface changes, so inspect again after an action that changes the screen. '
+      + 'Pass window from the last desktop result: an app name alone is ambiguous when the app owns several windows.',
     parameters: {
-      app: {
-        type: 'string',
-        description: 'Application name from desktop_apps. Omit to read the window that is in front.',
-      },
       window_id: {
         type: 'string',
-        description: 'Window id from desktop_status. Use it whenever the app has more than one window.',
+        description: 'Window id from a desktop result, for example w-35248. Preferred when you have one.',
+      },
+      app: {
+        type: 'string',
+        description: 'Application name. Omit with window_id to read the window in front.',
       },
       depth: {
         type: 'integer',
@@ -513,7 +376,10 @@ export function registerDesktopTools(
             const error = read.error
             const parts = [`${error?.code ?? 'FAILED'}: ${error?.message ?? 'snapshot failed'}`]
             if (error?.suggestion !== undefined) parts.push(error.suggestion)
-            return { text: `desktop_snapshot failed\n${parts.join('\n')}` }
+            if (error?.code === 'ACTION_NOT_SUPPORTED') {
+              parts.push('This window exposes no accessibility tree at all. Use desktop with action=see instead.')
+            }
+            return { text: `desktop_inspect failed\n${parts.join('\n')}` }
           }
           const rendered = renderSnapshot(read.data, {
             maxNodes: args.max_nodes ?? config.maxNodes,
@@ -524,13 +390,7 @@ export function registerDesktopTools(
               : Math.max(config.maxChars, args.max_nodes * 120),
           })
           call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
-          const thin = rendered.refs.length < MIN_USEFUL_REFS
-          return {
-            text: thin
-              ? `${rendered.text}\n\ntree_thin: this window produced ${String(rendered.refs.length)} addressable `
-                + 'element(s). Stop snapshotting: call desktop_see to look at the window, then desktop_click_xy.'
-              : rendered.text,
-          }
+          return { text: withThinHint(rendered.text, rendered.refs) }
         }
         const tree = await readTree(call, args.app, config, {
           ...args.depth !== undefined ? { depth: args.depth } : {},
@@ -538,7 +398,7 @@ export function registerDesktopTools(
         })
         return { text: tree.text }
       } catch (error) {
-        return { text: `desktop_snapshot failed\n${failureText(asHostError(error))}` }
+        return { text: `desktop_inspect failed\n${failureText(asHostError(error))}` }
       }
     },
   }))
@@ -546,18 +406,18 @@ export function registerDesktopTools(
   ctx.tools.register(defineTool({
     name: 'desktop_act',
     description:
-      'Operate one element by the ref a snapshot showed you. Actions: click, double_click, right_click, set_value, '
-      + 'type_text, press_key, scroll, toggle, check, uncheck, expand, collapse, select, clear. '
+      'Operate one element by a ref that desktop_inspect showed you. Actions: click, double_click, right_click, '
+      + 'set_value, type_text, press_key, scroll, toggle, check, uncheck, expand, collapse, select, clear. '
       + 'Prefer set_value over type_text for fields that accept a value. Actions run headless first: no mouse movement, '
-      + 'no focus stealing. If a control exposes no semantic action and its window is in front, the call retries once '
-      + 'with physical input and says so in the result. '
-      + 'The result comes back with a fresh tree of the same app, so you do not need a separate desktop_snapshot after '
-      + 'an action: read the new refs from this result and act again. '
+      + 'no focus stealing, so this is the route that does not disturb the user. '
+      + 'The result comes back with a fresh tree of the same window, so you do not need a separate inspect after an '
+      + 'action: read the new refs from this result and act again. '
       + 'The same action on the same control is refused for about 12 seconds after it may have landed, so never repeat '
       + 'a click or Enter to "make sure": a submit result already tells you to confirm from the tree it returns. '
+      + 'If this fails because the control exposes no semantic action, do not force it: use desktop with a point. '
       + 'Key names are case-insensitive; Return is accepted for enter.',
     parameters: {
-      ref: { type: 'string', required: true, description: 'A fully qualified ref from the latest snapshot.' },
+      ref: { type: 'string', required: true, description: 'A fully qualified ref from the latest desktop_inspect.' },
       action: {
         type: 'string',
         required: true,
@@ -590,12 +450,12 @@ export function registerDesktopTools(
       const call = await callOf(exec, sessions)
       const known = call.entry.refs.lookup(args.ref)
       if (known === undefined) {
-        return { text: 'UNKNOWN_REF: that ref belongs to no snapshot this session took. Call desktop_snapshot first.' }
+        return { text: 'UNKNOWN_REF: that ref belongs to no snapshot this session took. Call desktop_inspect first.' }
       }
       if (!known.known) {
         return {
           text: 'REF_NOT_SHOWN: that ref was not in the snapshot text you received. '
-            + 'Use a ref that appears in the latest snapshot, or snapshot again.',
+            + 'Use a ref that appears in the latest desktop_inspect result, or inspect again.',
         }
       }
       const action = actionOf({
@@ -623,7 +483,7 @@ export function registerDesktopTools(
           const tree = await readTreeFor(call, known, config)
           observation = `\n\n--- ${known.app} now ---\n${tree.text}`
         } catch {
-          observation = '\n\nCall desktop_snapshot to see the current state.'
+          observation = '\n\nCall desktop_inspect to see the current state.'
         }
         return {
           text: 'IDENTICAL_ACTION: the same action on the same control already ran '
@@ -638,41 +498,13 @@ export function registerDesktopTools(
           ...known.windowId !== undefined ? { windowId: known.windowId } : {},
           ...known.windowTitle !== undefined ? { windowTitle: known.windowTitle } : {},
         })
-        let data: unknown
-        let escalated = false
-        try {
-          data = await call.client.request({ op: 'act', ref: args.ref, action, policy: POLICY.headless })
-        } catch (error) {
-          const hostError = asHostError(error)
-          // Only pointer and key delivery may escalate: a physical click makes no sense for
-          // a value write, and escalating one would turn a harmless refusal into a stray click.
-          const escalatable = action.kind === 'click' || action.kind === 'double_click'
-            || action.kind === 'right_click' || action.kind === 'press_key'
-          const retryable = escalatable
-            && (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED')
-          const state = retryable ? await osState(call.client) : undefined
-          const borrowed = raisedApp()?.owner === call.sessionId && raisedApp()?.app === known.app
-          const inFront = state?.app === known.app || borrowed
-          if (!retryable || !config.physicalFallback || !inFront) throw error
-          // The control has no semantic path, but the window is in front: deliver with
-          // real input, exactly like a person would. The ribbon already marks the window.
-          data = await call.client.request({
-            op: 'act',
-            ref: args.ref,
-            action,
-            policy: POLICY.headed,
-            // Do not sit in the library's 5 s preflight when the control never becomes usable.
-            timeout_ms: 2_000,
-          })
-          escalated = true
-        }
+        const data = await call.client.request({ op: 'act', ref: args.ref, action, policy: POLICY.headless })
         effects.set(effectKey, { at: Date.now(), landed: true })
         refreshLease(known.app, call.sessionId)
         const lines = [actionText(data)]
-        if (escalated) lines.push('note: semantic control was unavailable; this ran as physical input.')
 
-        // Observe the same app right away. This is the phone's after() applied to
-        // the desktop: one action plus its new tree in a single result, so the
+        // Observe the same window right away. This is the phone's after() applied
+        // to the desktop: one action plus its new tree in a single result, so the
         // model does not spend a whole turn asking what changed. A failed read is
         // not a failed action — the action already landed, so only the reading is
         // reported as missing.
@@ -686,7 +518,7 @@ export function registerDesktopTools(
         } catch (error) {
           const hostError = asHostError(error)
           lines.push('', `note: the action was sent, but the follow-up read failed (${hostError.code}: ${hostError.message}).`
-            + ' Call desktop_snapshot before acting again.')
+            + ' Call desktop_inspect before acting again.')
         }
         return { text: lines.join('\n') }
       } catch (error) {
@@ -696,156 +528,15 @@ export function registerDesktopTools(
           landed: hostError.delivery !== 'not_delivered' && hostError.code !== 'INVALID_ARGS',
         })
         releaseLease(known.app, call.sessionId)
+        if (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED') {
+          return {
+            text: `${failureText(hostError)}\n`
+              + 'This control has no semantic path. Do not retry it here: use desktop with action=see and click the '
+              + 'point instead.',
+          }
+        }
         return { text: `desktop_act failed\n${failureText(hostError)}` }
       }
-    },
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'desktop_wait',
-    description:
-      'Wait for the interface to change instead of sleeping: a pause, a window title, text on screen, or an element state. '
-      + 'Use it after an action that opens a dialog, a window, or a menu.',
-    parameters: {
-      kind: {
-        type: 'string',
-        required: true,
-        enum: ['pause', 'window', 'text', 'element'],
-        description: 'What to wait for.',
-      },
-      ms: { type: 'integer', description: 'Milliseconds for kind=pause.' },
-      title: { type: 'string', description: 'Window title fragment for kind=window.' },
-      text: { type: 'string', description: 'Visible text for kind=text.' },
-      ref: { type: 'string', description: 'Element ref for kind=element.' },
-      predicate: {
-        type: 'string',
-        enum: ['exists', 'enabled', 'visible', 'actionable', 'value'],
-        description: 'Element state to wait for. Default: exists.',
-      },
-      value: { type: 'string', description: 'Expected value for predicate=value.' },
-      app: { type: 'string', description: 'Application to scope the wait to.' },
-      timeout_ms: { type: 'integer', description: 'Give up after this long. Default: 30000.' },
-    },
-    output: {
-      schema: TEXT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: value.text }],
-    },
-    async execute(args, exec) {
-      const call = await callOf(exec, sessions)
-      const timeout = Math.min(120_000, Math.max(200, args.timeout_ms ?? 30_000))
-      const wait = args.kind === 'pause'
-        ? { kind: 'pause' as const, ms: Math.min(10_000, Math.max(0, args.ms ?? 500)) }
-        : args.kind === 'window'
-          ? {
-            kind: 'window' as const,
-            title: args.title ?? '',
-            ...args.app !== undefined ? { app: args.app } : {},
-            timeoutMs: timeout,
-          }
-          : args.kind === 'text'
-            ? {
-              kind: 'text' as const,
-              text: args.text ?? '',
-              ...args.app !== undefined ? { app: args.app } : {},
-              timeoutMs: timeout,
-            }
-            : {
-              kind: 'element' as const,
-              ref: args.ref ?? '',
-              ...args.predicate !== undefined ? { predicate: args.predicate } : {},
-              ...args.value !== undefined ? { value: args.value } : {},
-              timeoutMs: timeout,
-            }
-      try {
-        const data = await call.client.request({ op: 'wait', wait }, timeout + 5000)
-        const payload = (data ?? {}) as { found?: boolean; count?: number; elapsed_ms?: number }
-        const parts = [`wait ${args.kind} finished`]
-        if (payload.found !== undefined) parts.push(`found=${String(payload.found)}`)
-        if (payload.count !== undefined) parts.push(`count=${payload.count}`)
-        if (payload.elapsed_ms !== undefined) parts.push(`${payload.elapsed_ms} ms`)
-        return { text: parts.join(' · ') }
-      } catch (error) {
-        return { text: `desktop_wait failed\n${failureText(asHostError(error))}` }
-      }
-    },
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'desktop_raise',
-    description:
-      'Borrow the foreground for one app, for the cases where headless control cannot work (a control that needs its '
-      + 'window in front). Allowed only while the user is idle; the window is returned automatically after 90 seconds or '
-      + 'as soon as the user touches the keyboard or mouse. Never use it on an app the user is working in — that request '
-      + 'is refused. Mention it to the user when the task is long enough to notice the window move.',
-    parameters: {
-      app: { type: 'string', required: true, description: 'Application name from desktop_apps.' },
-    },
-    output: {
-      schema: TEXT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: value.text }],
-    },
-    isConcurrencySafe: () => false,
-    async execute(args, exec) {
-      const call = await callOf(exec, sessions)
-      const state = await osState(call.client)
-      const decision = decideRaise({
-        app: args.app,
-        owner: call.sessionId,
-        raised: raisedApp(),
-        screenLockOwner: screenLockOwner(),
-      })
-      if (!decision.allow) return { text: denialText(decision) }
-      if (state.app === args.app) {
-        return { text: `${args.app} is already in front; nothing was borrowed. Work on it directly.` }
-      }
-      try {
-        await activate(args.app)
-      } catch (error) {
-        return {
-          text: `RAISE_FAILED: the system refused to bring ${args.app} to the front. `
-            + `Do not use tricks to force it. Wait for the user to open it, or report back.\n`
-            + `${error instanceof Error ? error.message : String(error)}`,
-        }
-      }
-      // Activation is asynchronous: give the window manager a moment, but never
-      // force the issue when the system keeps saying no.
-      let after = await osState(call.client)
-      for (let attempt = 0; attempt < 3 && after.app !== args.app; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 300))
-        after = await osState(call.client)
-      }
-      if (after.app !== args.app) {
-        return {
-          text: `RAISE_FAILED: ${args.app} did not come to the front. It stays in the background. `
-            + 'Do not retry more than once; report back if you cannot continue headless.',
-        }
-      }
-      const raised = markRaised(args.app, call.sessionId, state.app ?? undefined, config)
-      return {
-        text: `${args.app} is now in front (borrowed). It returns automatically at `
-          + `${new Date(raised.deadline).toLocaleTimeString()} or when the user touches anything.`,
-      }
-    },
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'desktop_release',
-    description:
-      'Give back a window borrowed with desktop_raise, immediately. Call it as soon as the step that needed the '
-      + 'foreground is finished.',
-    parameters: {},
-    output: {
-      schema: TEXT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: value.text }],
-    },
-    async execute(_args, exec) {
-      const sessionId = agentId(exec)
-      const raised = raisedApp()
-      if (raised === undefined || raised.owner !== sessionId) {
-        return { text: 'nothing was borrowed, so there is nothing to return' }
-      }
-      await sessions.releaseForeground(sessionId)
-      return { text: `returned the foreground${raised.previous === undefined ? '' : ` to ${raised.previous}`}` }
     },
   }))
 }

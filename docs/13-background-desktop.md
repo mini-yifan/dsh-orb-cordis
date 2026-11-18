@@ -471,3 +471,116 @@ fail-fast，不发排队点击（排队会让点击在瞄准时刻之后才落�
 
 6 条新测试钉住互斥：他人持锁时拒绝且不投递、自持可重入、抛错也释放、成功后释放、
 匿名调用者同样不能插队。
+
+## 17. 现状（2026-11-18 深夜）：视觉优先，辅助功能退为备选
+
+§16 的所有改动都建立在同一个前提上：**辅助功能树是主路径，看图是兜底**。这个前提被一次
+真实运行证伪了。
+
+### 17.1 证伪它的那次运行
+
+同一条 QQ 任务（打开 QQ → 进"我的手机" → 发一条消息），`desktop` preset，解码
+`session-75b8dd0b`：
+
+| 指标 | 值 |
+|---|---|
+| 墙钟 | **173.9s** |
+| 步数 | **55** |
+| 工具调用 | 57（其中 48 次 `desktop_*`） |
+| 模型时间 | 121.1s（70%），即**每步 2.2s** |
+| 调用分布 | `desktop_snapshot`×17 `desktop_act`×14 `desktop_status`×9 `bash`×7 `desktop_see`×3 `desktop_raise`×2 `desktop_click_xy`×1 `desktop_wait`×1 `desktop_release`×1 |
+
+同一个模型、同一条任务，Computer Use 模式 **23s / 约 8 步**。每步的思考耗时几乎一样
+（CU 约 2.9s，后台 2.2s），所以差距 **100% 来自轮次**：55 vs 8。工具延迟不是瓶颈，实测
+`list-windows` 0.23s、`screenshot --window-id` 0.31s、`screencapture -o -l` 0.05s。
+
+55 步的去向：
+
+1. **步骤 1–6（22s）**：真正在干活，找到 QQ、读到树、定位到 `我的手机`。
+2. **步骤 7–32（78s，26 步）：在跟"点击"搏斗。** 步骤 24 调 `desktop_see`，模型**一眼**就把
+   窗口描述对了（"QQ NT 客户端，左侧图标：消息/联系人/空间/频道…"）。步骤 25 调
+   `desktop_click_xy` → `COORDINATE_INPUT_OFF`——因为 §16.10 在 preset 里写了
+   `coordinateClick: false`。模型据此判定"物理点击不可用"，用 22 秒重建了整条 a11y 路径。
+3. **11 步 / 约 35s：raise/lease 舞蹈。** `desktop_act` 的物理回退要求窗口在前台 →
+   "physical fallback denied because window isn't in front" → `desktop_status` →
+   `desktop_raise` → `desktop_status`；后来用户碰了机器（DSH 到前台），租约失效 →
+   `status` → `wait` → `status` → `raise` → `snapshot` → `act`。
+4. **约 5 步**：天气 API 考古（反复换源），与工具无关。
+
+**任务在 108s 时已经完成**（消息已发出），后 66s 是补一条更正 + 重新校验 + release。
+另外，`desktop_act` 每次回传的树都是"4 个 ref"的空壳，模型反复怀疑"是不是新窗口开了"，
+于是 `desktop_status`×9、`desktop_snapshot`×17——**一个不可信的观测比没有观测更贵**。
+
+结论：不是"视觉比辅助功能准"，而是**辅助功能路径把一次点击拆成了两个轮次，并且在坏天气里
+额外收了 3–5 个轮次**。QQ 这类 Electron 客户端的主窗口本身几乎没有可用的树。
+
+### 17.2 新工具面：9 个 → 3 个
+
+| 工具 | 作用 | 路径 |
+|---|---|---|
+| `desktop` | 看一眼 → 指一个点 → 拿回下一张图。动作：`see` `click` `type` `press` `scroll` `drag` `launch` | 视觉（默认） |
+| `desktop_inspect` | 读窗口的辅助功能树，给出 ref | 辅助功能 |
+| `desktop_act` | 按 ref 执行（14 种语义动作），headless，不动指针不抢焦点 | 辅助功能 |
+
+删掉：`desktop_status`、`desktop_apps`、`desktop_wait`、`desktop_raise`、`desktop_release`、
+`desktop_see`、`desktop_click_xy`。原来的 `desktop_snapshot` 改名为 `desktop_inspect`。
+
+"窗口在前台吗 / 这个 app 有哪些窗口 / 刚才成功了吗"这三个问题，现在都由
+`desktop` 返回的那行 `window QQ w-35248 720x640 front=yes tree=no` 和它附的图回答。
+
+### 17.3 四条让一轮变短的规则
+
+1. **一个动作 = 一次调用 = 一张新图。** 动作的返回值里就带着动作后的窗口，所以一次点击是
+   一个轮次，不是两个。这是手机的 `after()` 落到桌面上。
+2. **点是 0–1000 的比例，相对"你刚拿到的那张图"。** 不是像素，不是屏幕坐标。模型不做任何
+   换算，也就不需要知道 `scale_factor`、窗口矩形、阴影 padding。副作用：attachment store
+   把图缩小也不影响映射（比例天然缩放无关）。
+3. **指针动作先把窗口提到前台。** 原因：`mouse-click --xy` 是绝对屏幕坐标，窗口在后面
+   时点击会落在最上层的东西上。所以 `ensureFront` 在工具内部完成，模型不用管 raise/release。
+4. **失败时附带新图。** 点系在一张旧图上，而旧图过期/属于别的窗口/窗口移动过时，纠正所需
+   的一切都在同一个结果里返回，重试不额外花一个轮次。
+
+阴影 padding 仍然要算（macOS 在窗口矩形外画了投影），但只在 `frameOf()` 里算一次，
+模型永远看不到这些数字。
+
+### 17.4 坐标打字：粘贴，然后还原剪贴板
+
+`agent-desktop type` 必须给一个 ref，所以一个没有辅助功能树的窗口根本没法输入文字——这是
+纯视觉流程唯一补不上的洞。`hid.ts` 用 Computer Use 的老办法补：把文本放到剪贴板 → `Cmd-V`
+→ 把**每一种类型**的剪贴板内容原样写回（不只是字符串，图片和文件列表也是 NSData）。
+`type` 动作因此可以 `point` + `text` 一次调用完成，和 CU 的 `input_text` 一样。
+
+剪贴板还原是这段代码里唯一会破坏用户数据的地方，所以有一个直接验证：把剪贴板设为
+`ORIGINAL-CLIPBOARD-VALUE`，跑一遍带还原、不带按键的脚本，`pbpaste` 仍然返回原值。
+
+限制：只有 macOS 有这条实现。Windows 上 `type` 返回 `PLATFORM_NOT_SUPPORTED`，把模型指向
+`desktop_inspect` + `desktop_act`。
+
+### 17.5 persona 与 preset 的变化
+
+- `preset-desktop` 的描述改成"看图定位、点哪打哪，辅助功能树作为备选"；
+- persona 的三层优先级改成：(1) 不走界面 → (2) `desktop` → (3) `desktop_inspect` + `desktop_act`；
+- 明确写"点击会把窗口提到前台、会移动真实指针，这是预期行为，不要因此停下或道歉"；
+- 删掉"读 `agent-desktop skills` 指南"那一段——它是在鼓励模型用 bash 碰 GUI，和同一条
+  persona 里的禁令自相矛盾；
+- preset 里的 `coordinateClick: false` 删除，`config.coordinateClick` 和
+  `config.physicalFallback` 一起删除（后者的物理升级也删了：物理输入现在只有 `desktop` 一条路）。
+
+**悬浮球 agent 的提示词一个字没动。** 这样它把活交给本机后台 agent 时，仍然只是"干活"；
+只有别的设备把任务送进来时，落地的 `desktop` preset 才既有干活能力又有操作电脑的能力。
+
+### 17.6 代价，写在明处
+
+视觉 = 前台。点击落在最上层窗口、光标会动、用户同一时刻不能用这台机器。§16 里那套
+"不打扰用户"的机制（idle 判断、90s 归还、per-app 租约）在视觉优先下只剩成本：这次运行里
+它触发了两次，每次都多花 2 个轮次。所以它被拆掉了，只保留 `guard.ts` 里"同一个 app 同时
+只有一个会话在操作"这一条（a11y 路径用）。
+
+这是一次明确的取舍：**用户说可以打扰，不再为礼貌付轮次。**
+
+### 17.7 还没验证的
+
+- 新的 `desktop` 路径**没有跑过真实任务**。用户明确要求实跑由他来做，这里只交代码。
+- macOS 的 `Cmd-V` 粘贴链路（`chord` / `tapKey`）来自 Computer Use 的同一段 JXA，剪贴板
+  往返已验证，但"粘贴 + 回车"的端到端还没在真实窗口里跑过。
+- Windows 上没有按点打字，也没有按窗口截图的独立实现（仍是 CLI 的 `screenshot --window-id`）。

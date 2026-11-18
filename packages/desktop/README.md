@@ -1,12 +1,44 @@
 # @dsh-orb/desktop
 
-Silent desktop control for the orb's **background** agent.
+Desktop control for the orb's **background** agent.
 
-The foreground Computer Use mode is unchanged: it still drives the frontmost
-window with screenshots and HID input, and the user still has to watch it. This
-package gives the *background* agent a different pair of hands: it reads an
-application's accessibility tree and acts on elements by ref, without moving the
-pointer, stealing keyboard focus, or taking over the screen.
+The background agent gets two routes to the same machine, and one of them is the
+default:
+
+- **`desktop`** — look at one window, point at what you see, get the next
+  picture back. This is the default because it is what a measured task came out
+  fastest on: 8 turns instead of 55, 23 s instead of 174 s. It moves the real
+  pointer and raises the window it acts on, so it disturbs whoever is at the
+  machine, exactly like the foreground Computer Use mode.
+- **`desktop_inspect` / `desktop_act`** — read the accessibility tree, act on a
+  ref. Headless: no pointer movement, no focus stealing. This is the fallback for
+  the cases a picture cannot settle, and the route to take when the user is
+  actively working on the same screen.
+
+The foreground Computer Use mode is unchanged and independent of both.
+
+## Why the visual route is first
+
+One real task (open QQ, open the phone conversation, send a message) was measured
+twice through the same model. Through the accessibility tree it took 55 turns and
+174 s; in Computer Use, 8 turns and 23 s. Per-call latency was not the
+difference — `list-windows` costs 0.23 s and a window capture 0.31 s — the round
+trips were:
+
+- seeing and acting were two calls, so one click cost two turns;
+- an app with several windows refused an app-name read with `AMBIGUOUS_TARGET`,
+  and each refusal cost another;
+- a thin tree, a dead ref, or a lease that expired because the user touched the
+  keyboard each cost one or two more.
+
+So `desktop` does one thing per call and answers with the window as it now looks.
+Points are a fraction of that picture on a 0–1000 grid, which removes the pixel
+arithmetic (and the shadow padding, and the window rectangle) the model used to
+do before every click.
+
+QQ is an Electron client whose main window exposes almost no accessibility tree.
+That is the second reason: on those windows the visual route is not a fallback,
+it is the only route that works.
 
 ## Why a library and not a CLI
 
@@ -21,18 +53,25 @@ The library is **never loaded in the desktop app's process**. Each chat session
 gets a child process (`lib/host.js`) that owns the adapter; a wedged
 accessibility bridge costs one child, not the orb.
 
+The visual route does not use the library: it spawns the staged CLI for window
+inventory, capture, focus and pointer input, because the CLI is the same code
+path on macOS and Windows and the spawn cost is a fifth of a model turn.
+
 ## The rules it enforces
 
 | Rule | Where |
 |---|---|
-| Headless by default: semantic actions only, never physical input | `ffi.ts` passes `AD_POLICY_KIND_HEADLESS` on every call |
-| Any window is operable, including the one the user is working in | `guard.ts` only refuses our own agents' conflicts |
-| Every operated window is framed by a warm dashed ribbon that names the app | `showRibbon` in `tools.ts` → `backgroundFrame` → helper |
-| The ribbon never gates an action: no bounds, no helper, no ribbon | `showRibbon` swallows its own failures |
-| Borrowing the foreground returns after 90 s | `guard.ts`, `sessions.ts` |
-| Only one session may operate one app, and only one may hold the foreground | `guard.ts` leases |
+| One call is one action plus the next picture | `registerGuiTools` in `gui.ts` |
+| A point is a 0–1000 fraction of the picture, never a pixel | `pointToScreen` in `gui.ts` |
+| A pointer action raises its window first | `ensureFront` in `gui.ts` |
+| A text-only model is refused before anything is touched | `requireImageRoute` in `route.ts` |
+| Text reaches a window with no accessibility tree | `hid.ts` pastes, then restores every clipboard type |
+| A repeated click or key is refused instead of resent | `landed` map in `gui.ts`, `effects` in `tools.ts` |
+| Elements are acted on headless, with no physical fallback | `ffi.ts` passes `AD_POLICY_KIND_HEADLESS` |
+| Only one session may operate one app | `guard.ts` leases |
 | The foreground agent's screen lock blocks background input | `screenLockOwner()` reads the orb's process-global lock |
 | A ref the model was never shown is refused | `RefBook` in `sessions.ts` |
+| Every operated window is framed by a warm dashed ribbon | `showRibbon` in `tools.ts` → `backgroundFrame` → helper |
 | The background agent cannot ask the user anything | the `desktop` preset has no `ask_user_question` row |
 
 ## Libraries
@@ -54,7 +93,7 @@ cannot be replaced on Windows while pnpm swaps the package folder.
 
 ## The ribbon
 
-While a background action runs, the window it touches is ringed by a warm
+While an accessibility action runs, the window it touches is ringed by a warm
 amber→rose dashed band that drifts slowly and carries a small "后台操作中 ·
 <app>" chip. The foreground Computer Use frame is the opposite: a cool
 cyan→violet glow around the whole display, so the two never read alike. The
@@ -63,13 +102,17 @@ disappears about four seconds after the last action.
 
 ## Limits worth knowing
 
-- Operating the frontmost window is allowed; the ribbon is what tells the user
-  it is happening. There is no "ask first" step.
+- The visual route moves the pointer and brings the window forward. There is no
+  "ask first" step and no idle check: the decision was that disturbing the user
+  is cheaper than a queue of two-turn workarounds.
+- Typing by point needs the pasteboard, which this package only implements on
+  macOS. On Windows the `desktop` tool answers `PLATFORM_NOT_SUPPORTED` and the
+  accessibility pair is the route for text.
 - Some apps expose no semantic actions at all. Those steps fail with
-  `ACTION_NOT_SUPPORTED` and are handed back to the foreground agent; the
-  background agent never falls back to physical input.
+  `ACTION_NOT_SUPPORTED` and the result points at the visual route rather than
+  retrying them.
 - Windows refuses `SetForegroundWindow` from a background process often enough
-  that `desktop_raise` reports failure instead of forcing it.
+  that a focus change reports failure instead of forcing it.
 
 ## Raw comparison mode
 
@@ -86,5 +129,7 @@ whether upstream is good enough on its own.
 pnpm --filter @dsh-orb/desktop test
 ```
 
-The suite covers the renderer, the ownership rules, ref bookkeeping, and every
-tool's execute path with a stubbed child. It never touches the real desktop.
+The suite covers the renderer, the ownership rules, ref bookkeeping, the point
+geometry, window selection, the paste script's clipboard restore, and the
+accessibility pair's execute paths with a stubbed child. It never touches the
+real desktop.

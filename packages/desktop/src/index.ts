@@ -2,9 +2,15 @@
  * Background desktop control for the orb.
  *
  * This plugin is mounted only inside the `desktop` agent preset. It gives a
- * background chat the ability to read and operate desktop apps through the
- * accessibility tree, without moving the pointer or taking keyboard focus —
- * and without ever asking the user a question.
+ * background chat the ability to operate desktop apps: `desktop` looks at one
+ * window, acts once, and hands back the next picture; `desktop_inspect` and
+ * `desktop_act` are the accessibility route for the cases a picture cannot
+ * settle.
+ *
+ * The visual route is the default because it is what a real task measured
+ * faster. It moves the real pointer and raises the window it acts on, so this
+ * preset does disturb whoever is at the machine — the accessibility route does
+ * not, and is one call away when that matters.
  *
  * The native library never loads in this process: each session gets a child
  * (`host.ts`) that owns the adapter, so a wedged accessibility bridge costs one
@@ -15,8 +21,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveConfig, type Config, type ResolvedConfig } from './config.ts'
 import { DesktopSessions } from './sessions.ts'
+import { registerGuiTools } from './gui.ts'
 import { registerDesktopTools } from './tools.ts'
-import { registerVisionTools } from './vision.ts'
 
 export type { Config }
 
@@ -24,7 +30,7 @@ export type { Config }
 export const name = 'dsh-orb-desktop'
 
 /**
- * Services these tools need. `attachments` is required by the visual fallback,
+ * Services these tools need. `attachments` is required by the visual route,
  * which hands the model a picture instead of a file path. `llm` stays optional
  * and is read lazily so a preset without it still loads.
  */
@@ -43,6 +49,6 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => () => {
     void sessions.dispose()
   })
+  registerGuiTools(ctx, resolved)
   registerDesktopTools(ctx, sessions, resolved)
-  registerVisionTools(ctx, resolved)
 }

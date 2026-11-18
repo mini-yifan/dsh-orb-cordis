@@ -15,42 +15,41 @@ interface Guidance {
 
 const GUIDANCE: Record<string, Guidance> = {
   STALE_REF: {
-    next: 'The interface changed and that ref is dead. Take a new snapshot of the app and use a new ref.',
+    next: 'The interface changed and that ref is dead. Take a new desktop_inspect of the window and use a new ref.',
   },
   SNAPSHOT_NOT_FOUND: {
     // Not always age: a ref read through one storage namespace cannot be used by
     // another, and calling that "expired" sends the model into a retry loop that
     // looks like a race. Name both causes so the model stops guessing.
     next: 'That snapshot cannot be found from this session. Either it is old, or it was taken through a '
-      + 'different snapshot namespace than the one acting on it. Take a fresh snapshot of the app you are '
-      + 'acting on, with the same tool that will act, and use a ref from that result.',
+      + 'different snapshot namespace than the one acting on it. Take a fresh desktop_inspect of the window you '
+      + 'are acting on and use a ref from that result.',
   },
   AMBIGUOUS_TARGET: {
     next: 'More than one element matches and the library will not guess. Address a control that is unique,'
       + ' or work on a different part of the window.',
   },
   WINDOW_NOT_FOUND: {
-    next: 'The app is running but shows no window you can read. Wait for it to open one'
-      + ' (desktop_wait with a window title), or report back.',
+    next: 'The app is running but shows no window you can read. Use desktop with action=launch to bring it up,'
+      + ' or report back.',
   },
   APP_NOT_FOUND: {
-    next: 'No such app. Use desktop_apps to read the exact running name.',
+    next: 'No such app. Use desktop with action=launch and the name the user gave you.',
   },
   APP_UNRESPONSIVE: {
     next: 'The app is not answering. Wait briefly once, then stop and report that it is unresponsive.',
   },
   ACTION_NOT_SUPPORTED: {
-    next: 'This control exposes no semantic action, so headless control cannot reach it.'
-      + ' Do not use physical input. Try another route, or stop and report back to the foreground agent.',
+    next: 'This control exposes no semantic action, so the accessibility route cannot reach it.'
+      + ' Do not keep trying it: use desktop with action=see and click the point instead.',
   },
   ACTION_FAILED: {
     next: 'The action may have been delivered but could not be confirmed. Read the state again'
-      + ' (a fresh snapshot or desktop_wait) before deciding anything — never repeat it blindly.',
+      + ' (a fresh desktop_inspect, or desktop action=see) before deciding anything — never repeat it blindly.',
   },
   POLICY_DENIED: {
-    next: 'This control exposes no semantic action and physical delivery was refused.'
-      + ' When the window is in front the tool retries with physical input automatically; if it still fails,'
-      + ' the control is disabled or unreachable. Read the state again — do not repeat the same action.',
+    next: 'This control exposes no semantic action and refusing to force it is deliberate.'
+      + ' Use desktop with action=see and click the point instead of repeating this call.',
   },
   PERM_DENIED: {
     next: 'The system denies desktop access. Stop and tell the foreground agent the user must enable'

@@ -23,16 +23,6 @@ export interface Config {
   readonly frameHoldMs?: number
   /** Refuse an identical action repeated within this window. Default: 12000. */
   readonly repeatWindowMs?: number
-  /** Allow a denied semantic action to retry with physical input when the window is in front. Default: true. */
-  readonly physicalFallback?: boolean
-  /**
-   * Allow `desktop_click_xy` to send real pointer input. Default: true.
-   *
-   * Turn this off for an unattended worker: coordinate clicks move the user's
-   * pointer, and nobody may be watching the screen to notice. The accessibility
-   * path keeps working either way.
-   */
-  readonly coordinateClick?: boolean
   /** A borrowed foreground is returned after this long. Default: 90000. */
   readonly raiseMaxMs?: number
   /** App lease lifetime. Default: 120000. */
@@ -49,8 +39,6 @@ export interface ResolvedConfig extends GuardConfig {
   readonly idleCloseMs: number
   readonly frameHoldMs: number
   readonly repeatWindowMs: number
-  readonly physicalFallback: boolean
-  readonly coordinateClick: boolean
 }
 
 function positive(value: number | undefined, fallback: number, name: string): number {
@@ -72,8 +60,6 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     idleCloseMs: positive(config.idleCloseMs, 600_000, 'idleCloseMs'),
     frameHoldMs: positive(config.frameHoldMs, 4_000, 'frameHoldMs'),
     repeatWindowMs: positive(config.repeatWindowMs, 12_000, 'repeatWindowMs'),
-    physicalFallback: config.physicalFallback !== false,
-    coordinateClick: config.coordinateClick !== false,
     raiseMaxMs: positive(config.raiseMaxMs, DEFAULT_GUARD_CONFIG.raiseMaxMs, 'raiseMaxMs'),
     leaseMs: positive(config.leaseMs, DEFAULT_GUARD_CONFIG.leaseMs, 'leaseMs'),
   }

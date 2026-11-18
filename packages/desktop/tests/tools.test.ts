@@ -2,9 +2,18 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveConfig } from '../src/config.ts'
 import { guardState } from '../src/guard.ts'
-import { isSubmitAction, normalizeKey } from '../src/tools.ts'
+import { isSubmitAction, normalizeKey, registerDesktopTools } from '../src/tools.ts'
 import { RefBook } from '../src/sessions.ts'
-import { registerDesktopTools } from '../src/tools.ts'
+
+/**
+ * The accessibility pair, exercised through its real execute path with a fake
+ * context, so the refusals the model sees are the ones asserted here.
+ *
+ * Only the `app` path is tested: the `window_id` path spawns the real CLI, and a
+ * unit test must not depend on a desktop session. Everything below is the
+ * decision logic that decides whether a ref may be used and what the model is
+ * told when it may not.
+ */
 
 interface ToolLike {
   name: string
@@ -24,21 +33,32 @@ const snapshotData = {
   },
 }
 
-function harness(options: { frontmost?: string, denyHeadless?: boolean } = {}) {
+/** A tree with enough addressable elements that it is not called thin. */
+const richSnapshot = {
+  ...snapshotData,
+  refCount: 4,
+  tree: {
+    role: 'window',
+    name: 'Untitled',
+    children: [
+      { role: 'button', name: 'Save', ref: '@s1:e2', actions: ['Click'] },
+      { role: 'button', name: 'Close', ref: '@s1:e3', actions: ['Click'] },
+      { role: 'textfield', name: 'Title', ref: '@s1:e4', actions: ['SetValue'] },
+      { role: 'button', name: 'Share', ref: '@s1:e5', actions: ['Click'] },
+    ],
+  },
+}
+
+function harness(options: { snapshot?: object, denyHeadless?: boolean } = {}) {
   const tools = new Map<string, ToolLike>()
   const calls: { op: string, policy?: number }[] = []
-  const activated: string[] = []
   const refs = new RefBook()
   const client = {
     alive: true,
     async request(request: { op: string, policy?: number }) {
       calls.push(request)
       switch (request.op) {
-        case 'state': return { idleMs: 120_000, app: options.frontmost ?? 'Word', window: 'Doc' }
-        case 'status':
-          return { platform: 'macos', version: '1.2.0', permissions: { accessibility: { state: 'granted' } } }
-        case 'apps': return [{ name: 'Notes', pid: 12, bundleId: 'com.apple.Notes' }]
-        case 'snapshot': return snapshotData
+        case 'snapshot': return options.snapshot ?? snapshotData
         case 'act':
           if (options.denyHeadless === true && request.policy === 0) {
             throw Object.assign(new Error('Target is not actionable: supported_action'), {
@@ -47,7 +67,6 @@ function harness(options: { frontmost?: string, denyHeadless?: boolean } = {}) {
             })
           }
           return { action: 'click', ref_id: '@s1:e2', disposition: { delivery: 'delivered_verified' } }
-        case 'wait': return { found: true, elapsed_ms: 40 }
         default: return {}
       }
     },
@@ -57,7 +76,6 @@ function harness(options: { frontmost?: string, denyHeadless?: boolean } = {}) {
     async entry() {
       return { client, refs, lastUsed: Date.now() }
     },
-    async releaseForeground() {},
   }
   const disposers: (() => void)[] = []
   const ctx = {
@@ -71,39 +89,35 @@ function harness(options: { frontmost?: string, denyHeadless?: boolean } = {}) {
   }
   guardState().leases.clear()
   guardState().raised = undefined
-  registerDesktopTools(ctx as never, sessions as never, resolveConfig(), {
-    activate: async (app: string) => {
-      activated.push(app)
-    },
-  })
+  registerDesktopTools(ctx as never, sessions as never, resolveConfig())
   const exec = { agent: { id: 'session-1' } }
-  return { tools, calls, exec, activated }
+  return { tools, calls, exec }
 }
 
-test('registers the seven desktop tools', () => {
+test('registers the accessibility pair and nothing else', () => {
   const { tools } = harness()
-  assert.deepEqual([...tools.keys()].sort(), [
-    'desktop_act',
-    'desktop_apps',
-    'desktop_raise',
-    'desktop_release',
-    'desktop_snapshot',
-    'desktop_status',
-    'desktop_wait',
-  ])
+  assert.deepEqual([...tools.keys()].sort(), ['desktop_act', 'desktop_inspect'])
 })
 
-test('snapshot renders the tree and remembers its refs', async () => {
-  const { tools, exec } = harness()
-  const tool = tools.get('desktop_snapshot')
+test('inspect renders the tree and remembers its refs', async () => {
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const tool = tools.get('desktop_inspect')
   assert.ok(tool)
   const result = await tool.execute({ app: 'Notes', depth: 2 }, exec)
   assert.match(result.text, /app "Notes"/)
   assert.match(result.text, /button "Save"/)
-  const book = tools.get('desktop_act')
-  assert.ok(book)
-  const action = await tool.execute({ app: 'Notes', depth: 2 }, exec)
-  assert.match(action.text, /snapshot s1/)
+  const again = await tool.execute({ app: 'Notes', depth: 2 }, exec)
+  assert.match(again.text, /snapshot s1/)
+})
+
+test('a thin tree sends the model to the picture instead of another read', async () => {
+  const { tools, exec } = harness()
+  const tool = tools.get('desktop_inspect')
+  assert.ok(tool)
+  const result = await tool.execute({ app: 'Notes' }, exec)
+  assert.match(result.text, /tree_thin/)
+  assert.match(result.text, /use desktop with action=see/)
+  assert.doesNotMatch(result.text, /snapshot again/i)
 })
 
 test('act refuses a ref that was never shown', async () => {
@@ -115,41 +129,41 @@ test('act refuses a ref that was never shown', async () => {
 })
 
 test('act refuses a snapshot ref the model never saw', async () => {
-  const { tools, exec } = harness()
-  const snapshot = tools.get('desktop_snapshot')
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
   const result = await act.execute({ ref: '@s1:e99', action: 'click' }, exec)
   assert.match(result.text, /REF_NOT_SHOWN/)
 })
 
 test('act runs a known ref and reports the disposition', async () => {
-  const { tools, exec, calls } = harness()
-  const snapshot = tools.get('desktop_snapshot')
+  const { tools, exec, calls } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
   const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
   assert.match(result.text, /ok · click · @s1:e2 · delivery=delivered_verified/)
   assert.ok(calls.some(call => call.op === 'act'))
 })
 
 test('act needs text for a typed action', async () => {
-  const { tools, exec } = harness()
-  const snapshot = tools.get('desktop_snapshot')
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
   await assert.rejects(() => act.execute({ ref: '@s1:e2', action: 'type_text' }, exec), /needs text/)
 })
 
-test('act returns the new tree so the next step needs no separate snapshot', async () => {
-  const { tools, exec, calls } = harness()
-  const snapshot = tools.get('desktop_snapshot')
+test('act returns the new tree so the next step needs no separate read', async () => {
+  const { tools, exec, calls } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
   const before = calls.filter(call => call.op === 'snapshot').length
   const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
   // One action, one observation: exactly one read, inside the same call.
@@ -160,120 +174,52 @@ test('act returns the new tree so the next step needs no separate snapshot', asy
 })
 
 test('the follow-up read re-arms the ref book', async () => {
-  const { tools, exec } = harness()
-  const snapshot = tools.get('desktop_snapshot')
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
   await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
   // The refs from the follow-up read must be usable on the next call.
-  const again = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  const again = await act.execute({ ref: '@s1:e4', action: 'set_value', text: 'x' }, exec)
   assert.doesNotMatch(again.text, /UNKNOWN_REF|REF_NOT_SHOWN/)
 })
 
-test('a refused repeat still shows what the app looks like now', async () => {
-  const { tools, exec } = harness()
-  const snapshot = tools.get('desktop_snapshot')
+test('a refused repeat still shows what the window looks like now', async () => {
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
   await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
   const repeat = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
   assert.match(repeat.text, /IDENTICAL_ACTION/)
-  assert.match(repeat.text, /--- Notes now ---/, 'the refusal should say what the screen looks like')
+  assert.match(repeat.text, /--- Notes now ---/, 'the refusal should say what the window looks like')
 })
 
-test('status reports permission, front app and idle time', async () => {
-  const { tools, exec } = harness()
-  const status = tools.get('desktop_status')
-  assert.ok(status)
-  const result = await status.execute({}, exec)
-  assert.match(result.text, /accessibility: granted/)
-  assert.match(result.text, /frontmost: Word/)
-  assert.match(result.text, /user idle: 120 s/)
-})
-
-test('apps lists running applications', async () => {
-  const { tools, exec } = harness()
-  const apps = tools.get('desktop_apps')
-  assert.ok(apps)
-  const result = await apps.execute({}, exec)
-  assert.match(result.text, /Notes \(pid 12\)/)
-})
-
-test('wait reports what it matched', async () => {
-  const { tools, exec } = harness()
-  const wait = tools.get('desktop_wait')
-  assert.ok(wait)
-  const result = await wait.execute({ kind: 'window', title: 'Save', timeout_ms: 1000 }, exec)
-  assert.match(result.text, /wait window finished · found=true/)
-})
-
-test('raise borrows the foreground when the user is away, without touching the real desktop', async () => {
-  const { tools, exec, activated } = harness()
-  const raise = tools.get('desktop_raise')
-  assert.ok(raise)
-  const result = await raise.execute({ app: 'Notes' }, exec)
-  // The stub keeps reporting Word in front, so verification fails after the call.
-  assert.match(result.text, /RAISE_FAILED: Notes did not come to the front/)
-  assert.deepEqual(activated, ['Notes'])
-})
-
-test('release says when nothing was borrowed', async () => {
-  const { tools, exec } = harness()
-  const release = tools.get('desktop_release')
-  assert.ok(release)
-  const result = await release.execute({}, exec)
-  assert.match(result.text, /nothing was borrowed/)
-})
-
-test('repeating the same action inside the guard window is refused', async () => {
-  const { tools, exec } = harness()
-  const snapshot = tools.get('desktop_snapshot')
+test('a control with no semantic path is not forced, and the picture route is named', async () => {
+  const { tools, exec, calls } = harness({ snapshot: richSnapshot, denyHeadless: true })
+  const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
-  const first = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
-  assert.match(first.text, /^ok/)
-  const second = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
-  assert.match(second.text, /IDENTICAL_ACTION/)
-})
-
-test('a denied semantic action retries as physical input when the window is in front', async () => {
-  const { tools, exec, calls } = harness({ frontmost: 'Notes', denyHeadless: true })
-  const snapshot = tools.get('desktop_snapshot')
-  const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
-  const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
-  assert.match(result.text, /^ok/)
-  assert.match(result.text, /physical input/)
-  const policies = calls.filter(call => call.op === 'act').map(call => call.policy)
-  assert.deepEqual(policies, [0, 2])
-})
-
-test('a denied semantic action stays denied when the window is not in front', async () => {
-  const { tools, exec, calls } = harness({ frontmost: 'Word', denyHeadless: true })
-  const snapshot = tools.get('desktop_snapshot')
-  const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
   const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
   assert.match(result.text, /POLICY_DENIED/)
-  assert.equal(calls.filter(call => call.op === 'act').length, 1)
+  assert.match(result.text, /use desktop with action=see/)
+  // No physical escalation: one attempt, headless only.
+  assert.deepEqual(calls.filter(call => call.op === 'act').map(call => call.policy), [0])
 })
 
 test('submitting warns against pressing again', async () => {
-  const { tools, exec } = harness()
-  const snapshot = tools.get('desktop_snapshot')
+  const { tools, exec } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
-  assert.ok(snapshot && act)
-  await snapshot.execute({ app: 'Notes' }, exec)
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
   const result = await act.execute({ ref: '@s1:e2', action: 'press_key', key: 'Return' }, exec)
   assert.match(result.text, /submit was sent/)
   assert.doesNotMatch(result.text, /INVALID_ARGS/)
 })
-
 
 test('key aliases and submit detection', () => {
   assert.equal(normalizeKey('Return'), 'enter')

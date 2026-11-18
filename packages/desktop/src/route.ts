@@ -46,14 +46,14 @@ export async function requireImageRoute(ctx: Context, exec: ToolExecution): Prom
   const llm = ctx.get('llm')
   if (route === undefined || llm === undefined) {
     throw new Error(
-      'desktop_see needs a model route that can read images, and the current route could not be resolved',
+      'the desktop tool needs a model route that can read images, and the current route could not be resolved',
     )
   }
   const active = await llm.resolveModelInfo(route.provider, route.model, exec.signal)
   if (active.inputModalities === undefined || !active.inputModalities.includes('image')) {
     throw new Error(
-      `desktop_see needs a model that declares image input; "${route.model}" does not. `
-      + 'Use desktop_snapshot instead, or switch to an image-capable model.',
+      `the desktop tool needs a model that declares image input; "${route.model}" does not. `
+      + 'Use desktop_inspect and desktop_act instead, or switch to an image-capable model.',
     )
   }
 }
