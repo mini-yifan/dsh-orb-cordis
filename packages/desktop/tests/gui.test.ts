@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveConfig } from '../src/config.ts'
 import { chooseTarget, cliCombo, frameOf, frameStillValid, pointToScreen, registerGuiTools } from '../src/gui.ts'
-import { pasteScript } from '../src/hid.ts'
+import { pasteScript, refOf } from '../src/hid.ts'
 import type { WindowInfo } from '../src/protocol.ts'
 
 /**
@@ -256,6 +256,17 @@ const exec = {
   },
   signal: AbortSignal.timeout(5_000),
 }
+
+test('a find answer is read whichever shape it came back in', () => {
+  // `find --first` answers { match }; without --first it answers { matches }.
+  // Reading only one of them made every text lookup a miss, which fell through
+  // five sequential probes and then pasted — 10 s across two calls in a real run.
+  assert.equal(refOf({ match: { ref_id: '@s1:e1', role: 'textfield' } }), '@s1:e1')
+  assert.equal(refOf({ matches: [{ ref_id: '@s2:e4', role: 'textarea' }] }), '@s2:e4')
+  assert.equal(refOf({ matches: [] }), undefined)
+  assert.equal(refOf({}), undefined)
+  assert.equal(refOf(undefined), undefined)
+})
 
 test('registers one tool per gesture, the Computer Use set', () => {
   const { tools } = harness({ images: true })

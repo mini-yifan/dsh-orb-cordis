@@ -135,7 +135,11 @@ export function frameOf(
   bounds: Rect,
   shot: { readonly width: number, readonly height: number, readonly scale: number },
 ): Pick<Frame, 'left' | 'top' | 'spanX' | 'spanY'> {
-  const scale = shot.scale > 0 ? shot.scale : 1
+  // A capture that reports no scale (the OS tool) is exactly the window, so the
+  // raster's own width is the scale. The CLI reports it directly and may include
+  // the drop shadow, which `picturePadding` then measures.
+  const derived = bounds.width > 0 ? shot.width / bounds.width : 0
+  const scale = shot.scale > 0 ? shot.scale : (derived > 0 ? derived : 1)
   const padding = picturePadding(shot.width, shot.height, bounds, scale)
   const padX = padding.x / scale
   const padY = padding.y / scale

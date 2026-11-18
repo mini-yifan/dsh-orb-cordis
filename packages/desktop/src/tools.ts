@@ -365,8 +365,9 @@ export function registerDesktopTools(
       },
       depth: {
         type: 'integer',
-        default: 3,
-        description: 'How many levels to read, 1–8. Default: 3.',
+        default: 6,
+        description: 'How many levels to read, 1–8. Default: 6. A shallow read hides deep controls '
+          + '(a chat composer sits several groups down) and costs another round trip to re-read.',
       },
       max_nodes: {
         type: 'integer',

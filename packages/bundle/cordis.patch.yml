@@ -227,9 +227,10 @@
           - id: tool-desktop
             name: 'dsh-orb/desktop'
             config:
-              # The app has a moment to paint before the result is captured; 600 is
-              # what Computer Use uses. A slow machine can raise this.
-              postActionWaitMs: 600
+              # The app has a moment to paint before the result is captured. 300,
+              # not Computer Use's 600: our capture costs another 50–300 ms on
+              # top, and eight actions pay this wait every time.
+              postActionWaitMs: 300
           - id: tool-mesh-return-files
             name: 'dsh-orb/mesh/return-files'
 

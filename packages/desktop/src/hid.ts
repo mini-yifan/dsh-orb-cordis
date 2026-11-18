@@ -201,30 +201,21 @@ export async function typeAtFocus(
 /** Roles that accept typed text, most specific first. */
 const TEXT_ROLES = ['textfield', 'textarea', 'text area', 'combobox', 'searchfield']
 
-/** One element the CLI found, as `find` prints it. */
+/**
+ * One `find` result. The CLI answers `{ match }` when asked for `--first` and
+ * `{ matches }` when not; reading only one of the two silently turns every
+ * lookup into a miss, which then falls through five sequential probes.
+ */
 interface FoundElement {
-  readonly match?: {
-    readonly ref_id?: string
-    readonly role?: string
-    readonly states?: readonly string[]
-  }
-  readonly snapshot_id?: string
+  readonly match?: { readonly ref_id?: string, readonly role?: string }
+  readonly matches?: readonly { readonly ref_id?: string, readonly role?: string }[]
 }
 
-/**
- * Type through the accessibility tree, with no clipboard and no pointer.
- *
- * This is the Windows path, and the preferred path on any platform where the
- * target exposes a tree: `type` inserts into one element, so it cannot land in
- * the wrong field and it cannot destroy what the user had copied. The focused
- * element is tried first, then the first text field in the window — a click that
- * focused a container still lets the field be found.
- * @param text - characters to deliver.
- * @param options - window to type into, select-all first, submit afterwards.
- * @param signal - cooperative cancellation.
- * @returns the ref that received the text.
- * @throws when the window exposes no addressable text field.
- */
+/** The ref of whichever shape the CLI answered with. */
+export function refOf(found: FoundElement | undefined): string | undefined {
+  return found?.match?.ref_id ?? found?.matches?.[0]?.ref_id
+}
+
 export async function typeByRef(
   text: string,
   options: { windowId: string, session?: string, replace?: boolean, enter?: boolean },
@@ -232,26 +223,28 @@ export async function typeByRef(
 ): Promise<string> {
   const scope = options.session === undefined || options.session === '' ? [] : ['--session', options.session]
   const window = ['--window-id', options.windowId]
+  // One probe first: if the click already focused the field, this is the whole
+  // lookup. Each `find` traverses the window, so they run in parallel below
+  // rather than one after another.
   const focused = await runCli<FoundElement>(
     ['find', ...window, ...scope, '--state', 'focused=true', '--first'],
     signal,
   )
-  let ref = focused.ok === true ? focused.data?.match?.ref_id : undefined
+  let ref = refOf(focused.ok === true ? focused.data : undefined)
   let role = focused.ok === true ? focused.data?.match?.role : undefined
-  if (ref === undefined || !TEXT_ROLES.includes((role ?? '').toLowerCase())) {
-    ref = undefined
-    for (const candidate of TEXT_ROLES) {
-      const found = await runCli<{ matches?: readonly { ref_id?: string }[] }>(
+  if (ref !== undefined && !TEXT_ROLES.includes((role ?? '').toLowerCase())) ref = undefined
+  if (ref === undefined) {
+    const probes = await Promise.all(TEXT_ROLES.map(async candidate => {
+      const found = await runCli<FoundElement>(
         ['find', ...window, ...scope, '--role', candidate, '--first'],
         signal,
       )
-      if (found.ok !== true) continue
-      const first = found.data?.matches?.[0]?.ref_id
-      if (first !== undefined) {
-        ref = first
-        role = candidate
-        break
-      }
+      return { candidate, ref: found.ok === true ? refOf(found.data) : undefined }
+    }))
+    const hit = probes.find(probe => probe.ref !== undefined)
+    if (hit !== undefined) {
+      ref = hit.ref
+      role = hit.candidate
     }
   }
   if (ref === undefined) {
