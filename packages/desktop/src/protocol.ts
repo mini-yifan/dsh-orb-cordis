@@ -109,6 +109,13 @@ export interface WindowInfo {
   readonly pid: number
   readonly focused: boolean
   readonly bounds?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+  /**
+   * Whether the accessibility tree could read this window at all. A window with
+   * `false` has no ref path: pixels are the only way in.
+   */
+  readonly accessible?: boolean
+  /** Whether the window is currently on screen rather than minimized or hidden. */
+  readonly visible?: boolean
 }
 
 /** Everything the host can be asked to do. */

@@ -16,14 +16,19 @@ import type { Context } from '@deepseek-ai/cordis'
 import { resolveConfig, type Config, type ResolvedConfig } from './config.ts'
 import { DesktopSessions } from './sessions.ts'
 import { registerDesktopTools } from './tools.ts'
+import { registerVisionTools } from './vision.ts'
 
 export type { Config }
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'dsh-orb-desktop'
 
-/** The tool registry is the only service these tools need. */
-export const inject = ['tools']
+/**
+ * Services these tools need. `attachments` is required by the visual fallback,
+ * which hands the model a picture instead of a file path. `llm` stays optional
+ * and is read lazily so a preset without it still loads.
+ */
+export const inject = ['tools', 'attachments']
 
 /**
  * Mount the desktop tools.
@@ -39,4 +44,5 @@ export function apply(ctx: Context, config: Config = {}): void {
     void sessions.dispose()
   })
   registerDesktopTools(ctx, sessions, resolved)
+  registerVisionTools(ctx, resolved)
 }

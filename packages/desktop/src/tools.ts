@@ -29,7 +29,7 @@ import {
 import { chooseWindow } from './frame.ts'
 import { POLICY } from './ffi.ts'
 import { renderSnapshot } from './render.ts'
-import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData } from './protocol.ts'
+import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData, WindowInfo } from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
 import { activateApp } from './activate.ts'
 
@@ -40,6 +40,13 @@ const TEXT_SCHEMA = {
     text: { type: 'string', required: true },
   },
 } as const
+
+/**
+ * Fewer addressable elements than this means the tree cannot be worked with.
+ * A healthy native app exposes dozens; a cold Electron shell exposes none or a
+ * handful of junk. The number is a hint for the model, never a hard switch.
+ */
+const MIN_USEFUL_REFS = 3
 
 interface Call {
   readonly sessionId: string
@@ -235,14 +242,22 @@ export function registerDesktopTools(
     name: 'desktop_status',
     description:
       'Report whether silent desktop control is usable on this machine: accessibility permission, the app in front, '
-      + 'how long the user has been idle, and whether this session currently holds a window. '
-      + 'Call this first when a desktop step fails for an unexplained reason.',
-    parameters: {},
+      + 'how long the user has been idle, whether this session currently holds a window, and this app\'s windows with '
+      + 'their ids and whether their accessibility tree can be read. '
+      + 'Call this first when a desktop step fails for an unexplained reason, and before desktop_see when you need a '
+      + 'window id. A window marked tree=no has no usable accessibility tree: operate it with desktop_see and '
+      + 'desktop_click_xy instead of snapshot and act.',
+    parameters: {
+      app: {
+        type: 'string',
+        description: 'Application name from desktop_apps. Omit to inspect the app in front.',
+      },
+    },
     output: {
       schema: TEXT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
-    async execute(_args, exec) {
+    async execute(args, exec) {
       const call = await callOf(exec, sessions)
       try {
         const status = await call.client.request<{
@@ -261,6 +276,37 @@ export function registerDesktopTools(
           `user idle: ${state.idleMs === null ? 'unknown' : `${Math.round(state.idleMs / 1000)} s`}`,
           `borrowed window: ${held ? (raised?.app ?? 'none') : 'none'}`,
         ]
+        const app = args.app !== undefined && args.app !== '' ? args.app : state.app ?? undefined
+        if (app !== undefined) {
+          try {
+            const windows = await call.client.request<readonly (WindowInfo & {
+              readonly accessible?: boolean
+              readonly visible?: boolean
+            })[]>({ op: 'windows', app })
+            const shown = windows.filter(window => window.bounds !== undefined)
+            if (shown.length > 0) {
+              lines.push(`windows of ${app}:`)
+              for (const window of shown) {
+                const bounds = window.bounds
+                if (bounds === undefined) continue
+                const size = `${String(bounds.width)}x${String(bounds.height)} at ${String(bounds.x)},${String(bounds.y)}`
+                lines.push(
+                  `  ${window.id} · tree=${window.accessible === true ? 'yes' : 'no'}`
+                  + `${window.visible === false ? ' · offscreen' : ''}`
+                  + `${window.focused ? ' · front' : ''} · ${size} · ${window.title.replace(/[\r\n]+/g, ' ').slice(0, 60)}`,
+                )
+              }
+              if (shown.every(window => window.accessible !== true)) {
+                lines.push(
+                  'Every window of this app reports no readable accessibility tree. Do not force snapshot+act: '
+                  + 'use desktop_see and desktop_click_xy.',
+                )
+              }
+            }
+          } catch {
+            // The window list is a courtesy: a status call still answers without it.
+          }
+        }
         return { text: lines.join('\n') }
       } catch (error) {
         return { text: `desktop_status failed\n${failureText(asHostError(error))}` }
@@ -333,7 +379,15 @@ export function registerDesktopTools(
           maxChars: config.maxChars,
         })
         call.entry.refs.remember(snapshot, rendered.refs, rendered.elements)
-        return { text: rendered.text }
+        // A tree that yields almost no addressable elements is the desktop
+        // counterpart of the phone's poor tree: the model should stop drilling
+        // and look at pixels instead of guessing at refs.
+        const text = rendered.refs.length < MIN_USEFUL_REFS
+          ? `${rendered.text}\n\ntree_thin: this window produced ${String(rendered.refs.length)} addressable element(s). `
+            + 'The accessibility tree is not usable here. Stop snapshotting: call desktop_see to look at the window, '
+            + 'then desktop_click_xy.'
+          : rendered.text
+        return { text }
       } catch (error) {
         return { text: `desktop_snapshot failed\n${failureText(asHostError(error))}` }
       }
