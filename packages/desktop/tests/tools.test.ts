@@ -49,7 +49,7 @@ const richSnapshot = {
   },
 }
 
-function harness(options: { snapshot?: object, denyHeadless?: boolean, accessible?: boolean } = {}) {
+function harness(options: { snapshot?: object, denyHeadless?: boolean, accessible?: boolean, frontmost?: string } = {}) {
   const tools = new Map<string, ToolLike>()
   const calls: { op: string, policy?: number }[] = []
   const refs = new RefBook()
@@ -59,6 +59,7 @@ function harness(options: { snapshot?: object, denyHeadless?: boolean, accessibl
       calls.push(request)
       switch (request.op) {
         case 'snapshot': return options.snapshot ?? snapshotData
+        case 'state': return { idleMs: 120_000, app: options.frontmost ?? 'Word' }
         case 'act':
           if (options.denyHeadless === true && request.policy === 0) {
             throw Object.assign(new Error('Target is not actionable: supported_action'), {
@@ -269,16 +270,29 @@ test('a refused repeat still shows what the window looks like now', async () => 
   assert.match(repeat.text, /--- Notes now ---/, 'the refusal should say what the window looks like')
 })
 
-test('a control with no semantic path is not forced, and the picture route is named', async () => {
-  const { tools, exec, calls } = harness({ snapshot: richSnapshot, denyHeadless: true })
+test('a control with no semantic action is clicked by its own frame instead of a guessed point', async () => {
+  // Settings rows advertise no semantic action. The frame click is the precise
+  // physical route — the model never has to guess a coordinate.
+  const { tools, exec, calls } = harness({ snapshot: richSnapshot, denyHeadless: true, frontmost: 'Notes' })
+  const inspect = tools.get('desktop_inspect')
+  const act = tools.get('desktop_act')
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
+  const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.match(result.text, /^ok/)
+  assert.match(result.text, /clicked by its own frame/)
+  assert.deepEqual(calls.filter(call => call.op === 'act').map(call => call.policy), [0, 2])
+})
+
+test('a control with no semantic action stays refused when the window is not in front', async () => {
+  const { tools, exec, calls } = harness({ snapshot: richSnapshot, denyHeadless: true, frontmost: 'Word' })
   const inspect = tools.get('desktop_inspect')
   const act = tools.get('desktop_act')
   assert.ok(inspect && act)
   await inspect.execute({ app: 'Notes' }, exec)
   const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
   assert.match(result.text, /POLICY_DENIED/)
-  assert.match(result.text, /desktop_see and desktop_click/)
-  // No physical escalation: one attempt, headless only.
+  assert.match(result.text, /retry this same ref/)
   assert.deepEqual(calls.filter(call => call.op === 'act').map(call => call.policy), [0])
 })
 

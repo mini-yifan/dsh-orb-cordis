@@ -172,6 +172,16 @@ async function readTreeFor(
   return await readTree(call, known.app, config)
 }
 
+/**
+ * Ask the library which app owns the foreground and how idle the user is.
+ * @param client - session child.
+ * @returns the observed state.
+ */
+async function osState(client: DesktopClient): Promise<{ app: string | null }> {
+  const value = await client.request<{ app?: string | null }>({ op: 'state' })
+  return { app: value.app ?? null }
+}
+
 function asHostError(error: unknown): HostError {
   const value = error as { code?: string; message?: string }
   return { code: value.code ?? 'INTERNAL', message: value.message ?? String(error), resultCode: 0 }
@@ -581,10 +591,45 @@ export function registerDesktopTools(
           ...known.windowId !== undefined ? { windowId: known.windowId } : {},
           ...known.windowTitle !== undefined ? { windowTitle: known.windowTitle } : {},
         })
-        const data = await call.client.request({ op: 'act', ref, action, policy: POLICY.headless })
+        let data: unknown
+        let escalated = false
+        try {
+          data = await call.client.request({ op: 'act', ref, action, policy: POLICY.headless })
+        } catch (error) {
+          const hostError = asHostError(error)
+          // Some controls (a settings row, a custom popup) advertise no semantic
+          // action at all, and the headless call refuses. The library can still
+          // click the element's own frame with real input, which aims far better
+          // than a model guessing a point from a picture — so do that instead of
+          // sending the model off to click coordinates.
+          //
+          // Only actions that are pointer or key delivery may escalate: retrying a
+          // value write physically would turn a harmless refusal into a stray click.
+          const escalatable = action.kind === 'click' || action.kind === 'double_click'
+            || action.kind === 'right_click' || action.kind === 'press_key'
+          const retryable = escalatable
+            && (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED')
+          const state = retryable ? await osState(call.client) : undefined
+          const inFront = state?.app === known.app
+          if (!retryable || !config.physicalFallback || !inFront) throw error
+          data = await call.client.request({
+            op: 'act',
+            ref,
+            action,
+            policy: POLICY.headed,
+            // Do not sit in the library's 5 s preflight when the control never
+            // becomes actionable; the frame click itself needs no waiting.
+            timeout_ms: 2_000,
+          })
+          escalated = true
+        }
         effects.set(effectKey, { at: Date.now(), landed: true })
         refreshLease(known.app, call.sessionId)
         const lines = [actionText(data)]
+        if (escalated) {
+          lines.push('note: this control exposes no semantic action, so it was clicked by its own frame with real '
+            + 'input. That is still precise — it is the element\'s frame, not a guessed point.')
+        }
 
         // Observe the same window right away. This is the phone's after() applied
         // to the desktop: one action plus its new tree in a single result, so the
@@ -614,8 +659,9 @@ export function registerDesktopTools(
         if (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED') {
           return {
             text: `${failureText(hostError)}\n`
-              + 'This control has no semantic path. Do not retry it here: use desktop_see and desktop_click on the '
-              + 'point instead.',
+              + 'This control has no semantic action, and it could not be clicked either (the window is not in '
+              + 'front, or physical input is off). Bring the window forward with desktop_open_app, then retry this '
+              + 'same ref — the frame click is precise and needs no point.',
           }
         }
         return { text: `desktop_act failed\n${failureText(hostError)}` }

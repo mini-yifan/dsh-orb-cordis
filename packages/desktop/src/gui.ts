@@ -67,6 +67,8 @@ export interface Target {
   readonly accessible: boolean
   /** Whether the OS says the window is on screen. A hidden one cannot be focused. */
   readonly visible: boolean
+  /** Owning process, which is the stable identity when the title changes. */
+  readonly pid: number
 }
 
 /**
@@ -195,6 +197,21 @@ function area(rect: Rect): number {
 }
 
 /**
+ * Resolve an app name or bundle id to the pid that owns its windows.
+ *
+ * The CLI's matcher is the same one `focus-window` and `snapshot` use, so it
+ * accepts what the OS accepts: a display name in any language, or a bundle id.
+ * @param name - what the caller typed.
+ * @param signal - cooperative cancellation.
+ * @returns the pid, or undefined when no running app matches.
+ */
+async function resolveAppPid(name: string, signal: AbortSignal): Promise<number | undefined> {
+  const listed = await runCli<{ apps?: readonly { pid?: number }[] }>(['list-apps', '--app', name], signal)
+  if (!listed.ok) return undefined
+  return listed.data?.apps?.[0]?.pid
+}
+
+/**
  * Pick one window out of a candidate pool.
  *
  * Order: focused, else the largest. `list-windows` is ordered by descending
@@ -248,6 +265,7 @@ export function chooseTarget(
     focused: window.focused,
     accessible: window.accessible === true,
     visible: window.visible !== false,
+    pid: window.pid,
   })
   const siblingsOf = (target: Target): readonly Target[] =>
     usable
@@ -478,7 +496,28 @@ export function registerGuiTools(
     key: string,
     note = '',
   ): Promise<Observed> => {
-    const captured = await captureWindow(target.windowId, signal)
+    let captured = await captureWindow(target.windowId, signal)
+    if (!captured.ok && captured.error?.code === 'WINDOW_NOT_FOUND') {
+      // System Settings renames its window per pane ("系统设置" → "桌面与程序坞"),
+      // and the CLI treats a changed identity as a different window, so a capture
+      // by the old id fails even though the app never moved. Re-resolve by pid —
+      // the one identity that survives a title change — and try once more.
+      const listed = await listWindows(signal)
+      const again = listed.ok && listed.data !== undefined
+        ? preferredWindow(listed.data.filter(window => window.pid === target.pid && window.visible !== false))
+        : undefined
+      if (again !== undefined && again.id !== target.windowId) {
+        target = {
+          ...target,
+          windowId: again.id,
+          title: again.title,
+          bounds: again.bounds as Rect,
+          focused: again.focused,
+          visible: again.visible !== false,
+        }
+        captured = await captureWindow(target.windowId, signal)
+      }
+    }
     if (!captured.ok || captured.data === undefined) {
       return {
         text: `${lead}\nthis window could not be captured: ${failureText(captured)}\n`
@@ -975,7 +1014,7 @@ export function registerGuiTools(
       const dy = direction === 'up' ? lines : direction === 'down' ? -lines : 0
       const dx = direction === 'right' ? lines : direction === 'left' ? -lines : 0
       const scrolled = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
-        'mouse-wheel', '--x', String(at.x), '--y', String(at.y),
+        'mouse-wheel', '--headed', '--x', String(at.x), '--y', String(at.y),
         ...dy !== 0 ? ['--dy', String(dy)] : [],
         ...dx !== 0 ? ['--dx', String(dx)] : [],
       ], exec.signal))
@@ -1023,7 +1062,7 @@ export function registerGuiTools(
         return withPicture(blockedFront, fresh)
       }
       const sent = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>(
-        ['press', '--window-id', aimed.target.windowId, combo],
+        ['press', '--headed', '--window-id', aimed.target.windowId, combo],
         exec.signal,
       ))
       if (!sent.ok) {
@@ -1147,14 +1186,23 @@ export function registerGuiTools(
       // An app that owns windows but shows none is not still starting — it is
       // minimized or closed to its menu bar. Give that state 1.5 s and then say
       // so, instead of waiting the full deadline for a window that cannot appear.
+      // Match windows by owning process, not by the name the caller typed.
+      // macOS localizes app names: "System Settings" is 系统设置 here, and the
+      // name match failed for twelve seconds on a window that was already open.
+      // The CLI's own matcher accepts a display name, a localized name and a
+      // bundle id alike, so ask it once for the pid.
       const deadline = Date.now() + LAUNCH_WAIT_MS
+      let pid = await resolveAppPid(name, exec.signal)
       let found: WindowInfo | undefined
       let listed = await listWindows(exec.signal)
       let onlyHiddenSince: number | undefined
+      const ownedBy = (windows: readonly WindowInfo[]): readonly WindowInfo[] =>
+        pid === undefined
+          ? windows.filter(window => sameApp(window.appName, name))
+          : windows.filter(window => window.pid === pid)
       while (Date.now() < deadline) {
-        const own = listed.ok && listed.data !== undefined
-          ? listed.data.filter(window => sameApp(window.appName, name))
-          : []
+        if (pid === undefined) pid = await resolveAppPid(name, exec.signal)
+        const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data) : []
         found = preferredWindow(own)
         if (found?.visible === false) found = undefined
         if (found !== undefined) break
@@ -1167,9 +1215,7 @@ export function registerGuiTools(
         await new Promise(resolve => setTimeout(resolve, 250))
         listed = await listWindows(exec.signal)
       }
-      const own = listed.ok && listed.data !== undefined
-        ? listed.data.filter(window => sameApp(window.appName, name))
-        : []
+      const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data) : []
       const hidden = own.filter(window => window.visible === false).length
       if (found === undefined) {
         const names = listed.ok && listed.data !== undefined
@@ -1199,6 +1245,7 @@ export function registerGuiTools(
         focused: found.focused,
         accessible: found.accessible === true,
         visible: found.visible !== false,
+        pid: found.pid,
       }, exec.signal, prefix, key)
     },
   }))

@@ -24,6 +24,14 @@ export interface Config {
   /** Refuse an identical action repeated within this window. Default: 12000. */
   readonly repeatWindowMs?: number
   /**
+   * Let a denied semantic action retry as a real click on the element's frame.
+   * Default: true.
+   *
+   * Settings rows and custom popups advertise no semantic action, and the frame
+   * click is far more accurate than a model guessing a point from a picture.
+   */
+  readonly physicalFallback?: boolean
+  /**
    * How long to wait after an input before capturing the result. Default: 400.
    *
    * A click returns before the app has painted, so capturing immediately hands
@@ -48,6 +56,7 @@ export interface ResolvedConfig extends GuardConfig {
   readonly frameHoldMs: number
   readonly repeatWindowMs: number
   readonly postActionWaitMs: number
+  readonly physicalFallback: boolean
 }
 
 function positive(value: number | undefined, fallback: number, name: string): number {
@@ -70,6 +79,7 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     frameHoldMs: positive(config.frameHoldMs, 4_000, 'frameHoldMs'),
     repeatWindowMs: positive(config.repeatWindowMs, 12_000, 'repeatWindowMs'),
     postActionWaitMs: positive(config.postActionWaitMs, 400, 'postActionWaitMs'),
+    physicalFallback: config.physicalFallback !== false,
     raiseMaxMs: positive(config.raiseMaxMs, DEFAULT_GUARD_CONFIG.raiseMaxMs, 'raiseMaxMs'),
     leaseMs: positive(config.leaseMs, DEFAULT_GUARD_CONFIG.leaseMs, 'leaseMs'),
   }
