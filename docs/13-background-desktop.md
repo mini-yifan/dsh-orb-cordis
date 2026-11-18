@@ -401,3 +401,30 @@ active displays`——显示器已休眠，截图取不到。同样的命令在�
 - **Windows 缺 per-HWND 捕获**：macOS 可按窗口 ID 独立截图，Windows 目前只有屏幕矩形。
 - **视觉不等于更快**：QQ 实测里两次 12–20 秒的长推理都发生在看图之后。视觉解决的是
   "点得中"，提速靠的是 batch 与减少往返。
+
+### 16.8 复现这套测量
+
+`packages/desktop/scripts/measure-desktop-task.mjs` 是上表用的驱动脚本。它作为一个
+cordis 插件加载进任意 profile，等 `typertGateway` 与 `sessionController` 就绪后：建会话 →
+选 `desktop` preset → 设 `danger-full-access` → 发任务 → 轮询会话日志直到 `turn/end` →
+打印 `MEASURE {...}` 与步数/工具/墙钟。
+
+跑法：
+
+```bash
+# 1. 准备一个装了本 bundle 的 profile（会写入 ~/.dsh/profiles/<name>）
+dsh plugin --profile measure add <repo>/packages/bundle
+# 2. 在该 profile 的 cordis.patch.yml 里插入驱动插件
+#    - insert:
+#        - id: measure
+#          name: 'file://<repo>/packages/desktop/scripts/measure-desktop-task.mjs'
+# 3. 起 profile 并给出任务
+MEASURE_TASK="打开计算器，算 12 乘以 34" MEASURE_CWD=/tmp dsh --profile measure --no-open
+```
+
+前提：**显示器必须醒着**。睡眠时截图返回
+`APP_UNRESPONSIVE: CoreGraphics returned no active displays`，任何依赖视觉的任务都会失败；
+`agent-desktop list-displays` 会返回空数组，可用来先自检。
+
+要拿同任务的对等对比，把基线那条任务（打开 QQ → 找到"我的手机" → 发送天气）用同一脚本
+跑一遍，比较 `steps` / `toolCalls` / `wallMs`。
