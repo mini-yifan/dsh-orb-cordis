@@ -144,6 +144,45 @@ test('act needs text for a typed action', async () => {
   await assert.rejects(() => act.execute({ ref: '@s1:e2', action: 'type_text' }, exec), /needs text/)
 })
 
+test('act returns the new tree so the next step needs no separate snapshot', async () => {
+  const { tools, exec, calls } = harness()
+  const snapshot = tools.get('desktop_snapshot')
+  const act = tools.get('desktop_act')
+  assert.ok(snapshot && act)
+  await snapshot.execute({ app: 'Notes' }, exec)
+  const before = calls.filter(call => call.op === 'snapshot').length
+  const result = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  // One action, one observation: exactly one read, inside the same call.
+  const after = calls.filter(call => call.op === 'snapshot').length
+  assert.equal(after - before, 1, 'the act result should carry exactly one follow-up read')
+  assert.match(result.text, /--- Notes now ---/)
+  assert.match(result.text, /button "Save"/)
+})
+
+test('the follow-up read re-arms the ref book', async () => {
+  const { tools, exec } = harness()
+  const snapshot = tools.get('desktop_snapshot')
+  const act = tools.get('desktop_act')
+  assert.ok(snapshot && act)
+  await snapshot.execute({ app: 'Notes' }, exec)
+  await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  // The refs from the follow-up read must be usable on the next call.
+  const again = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.doesNotMatch(again.text, /UNKNOWN_REF|REF_NOT_SHOWN/)
+})
+
+test('a refused repeat still shows what the app looks like now', async () => {
+  const { tools, exec } = harness()
+  const snapshot = tools.get('desktop_snapshot')
+  const act = tools.get('desktop_act')
+  assert.ok(snapshot && act)
+  await snapshot.execute({ app: 'Notes' }, exec)
+  await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  const repeat = await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.match(repeat.text, /IDENTICAL_ACTION/)
+  assert.match(repeat.text, /--- Notes now ---/, 'the refusal should say what the screen looks like')
+})
+
 test('status reports permission, front app and idle time', async () => {
   const { tools, exec } = harness()
   const status = tools.get('desktop_status')

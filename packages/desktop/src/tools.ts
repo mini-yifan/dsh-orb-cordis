@@ -73,6 +73,48 @@ async function callOf(exec: { agent?: { id?: string } }, sessions: DesktopSessio
   return { sessionId, entry, client: entry.client }
 }
 
+/**
+ * Read one app's tree, render it, and remember the refs it exposed.
+ *
+ * Used by both the explicit snapshot tool and the post-action observation, so
+ * the two can never drift: whatever refs one of them hands the model is exactly
+ * what the ref book will accept next.
+ * @param call - calling session.
+ * @param app - application name, or undefined for the front window.
+ * @param config - tunables.
+ * @param options - depth and node-budget overrides.
+ * @returns the rendered tree and its thin-tree hint.
+ */
+async function readTree(
+  call: Call,
+  app: string | undefined,
+  config: ResolvedConfig,
+  options: { depth?: number, maxNodes?: number } = {},
+): Promise<{ text: string, refs: readonly string[], thin: boolean }> {
+  const depth = Math.min(8, Math.max(1, options.depth ?? 3))
+  const snapshot = await call.client.request<SnapshotData>({
+    op: 'snapshot',
+    ...app !== undefined && app !== '' ? { app } : {},
+    depth,
+    interactive: true,
+    compact: true,
+  })
+  const rendered = renderSnapshot(snapshot, {
+    maxNodes: options.maxNodes ?? config.maxNodes,
+    maxChars: config.maxChars,
+  })
+  call.entry.refs.remember(snapshot, rendered.refs, rendered.elements)
+  // A tree that yields almost no addressable elements is the desktop counterpart
+  // of the phone's poor tree: stop drilling, look at pixels instead of guessing.
+  const thin = rendered.refs.length < MIN_USEFUL_REFS
+  const text = thin
+    ? `${rendered.text}\n\ntree_thin: this window produced ${String(rendered.refs.length)} addressable element(s). `
+      + 'The accessibility tree is not usable here. Stop snapshotting: call desktop_see to look at the window, '
+      + 'then desktop_click_xy.'
+    : rendered.text
+  return { text, refs: rendered.refs, thin }
+}
+
 async function osState(client: DesktopClient): Promise<OsState> {
   const value = await client.request<{ idleMs?: number | null; app?: string | null }>({ op: 'state' })
   return { idleMs: value.idleMs ?? null, app: value.app ?? null }
@@ -366,28 +408,11 @@ export function registerDesktopTools(
     async execute(args, exec) {
       const call = await callOf(exec, sessions)
       try {
-        const depth = Math.min(8, Math.max(1, args.depth ?? 3))
-        const snapshot = await call.client.request<SnapshotData>({
-          op: 'snapshot',
-          ...args.app !== undefined && args.app !== '' ? { app: args.app } : {},
-          depth,
-          interactive: true,
-          compact: true,
+        const tree = await readTree(call, args.app, config, {
+          ...args.depth !== undefined ? { depth: args.depth } : {},
+          ...args.max_nodes !== undefined ? { maxNodes: args.max_nodes } : {},
         })
-        const rendered = renderSnapshot(snapshot, {
-          maxNodes: args.max_nodes ?? config.maxNodes,
-          maxChars: config.maxChars,
-        })
-        call.entry.refs.remember(snapshot, rendered.refs, rendered.elements)
-        // A tree that yields almost no addressable elements is the desktop
-        // counterpart of the phone's poor tree: the model should stop drilling
-        // and look at pixels instead of guessing at refs.
-        const text = rendered.refs.length < MIN_USEFUL_REFS
-          ? `${rendered.text}\n\ntree_thin: this window produced ${String(rendered.refs.length)} addressable element(s). `
-            + 'The accessibility tree is not usable here. Stop snapshotting: call desktop_see to look at the window, '
-            + 'then desktop_click_xy.'
-          : rendered.text
-        return { text }
+        return { text: tree.text }
       } catch (error) {
         return { text: `desktop_snapshot failed\n${failureText(asHostError(error))}` }
       }
@@ -402,9 +427,11 @@ export function registerDesktopTools(
       + 'Prefer set_value over type_text for fields that accept a value. Actions run headless first: no mouse movement, '
       + 'no focus stealing. If a control exposes no semantic action and its window is in front, the call retries once '
       + 'with physical input and says so in the result. '
+      + 'The result comes back with a fresh tree of the same app, so you do not need a separate desktop_snapshot after '
+      + 'an action: read the new refs from this result and act again. '
       + 'The same action on the same control is refused for about 12 seconds after it may have landed, so never repeat '
-      + 'a click or Enter to "make sure": a submit result already tells you to confirm with desktop_wait or a fresh '
-      + 'snapshot instead. Key names are case-insensitive; Return is accepted for enter.',
+      + 'a click or Enter to "make sure": a submit result already tells you to confirm from the tree it returns. '
+      + 'Key names are case-insensitive; Return is accepted for enter.',
     parameters: {
       ref: { type: 'string', required: true, description: 'A fully qualified ref from the latest snapshot.' },
       action: {
@@ -465,11 +492,20 @@ export function registerDesktopTools(
       ].join('\u0000')
       const previous = effects.get(effectKey)
       if (previous !== undefined && previous.landed && Date.now() - previous.at < config.repeatWindowMs) {
+        // The refusal is the moment the model most wants to know what happened,
+        // so hand it the current tree instead of only a "do not repeat".
+        let observation = ''
+        try {
+          const tree = await readTree(call, known.app, config)
+          observation = `\n\n--- ${known.app} now ---\n${tree.text}`
+        } catch {
+          observation = '\n\nCall desktop_snapshot to see the current state.'
+        }
         return {
           text: 'IDENTICAL_ACTION: the same action on the same control already ran '
             + `${Math.round((Date.now() - previous.at) / 1000)}s ago and may have landed. `
-            + 'Do not repeat it. Confirm the result with desktop_wait (kind=text) or a fresh desktop_snapshot; '
-            + 'if the result is visible, continue from there.',
+            + 'Do not repeat it; decide from the state below.'
+            + observation,
         }
       }
       try {
@@ -510,11 +546,23 @@ export function registerDesktopTools(
         refreshLease(known.app, call.sessionId)
         const lines = [actionText(data)]
         if (escalated) lines.push('note: semantic control was unavailable; this ran as physical input.')
-        if (isSubmitAction(action)) {
-          lines.push(
-            'note: a submit was sent. Give the app a moment, then confirm with desktop_wait (kind=text)'
-            + ' or a fresh snapshot. Never press it again to "make sure".',
-          )
+
+        // Observe the same app right away. This is the phone's after() applied to
+        // the desktop: one action plus its new tree in a single result, so the
+        // model does not spend a whole turn asking what changed. A failed read is
+        // not a failed action — the action already landed, so only the reading is
+        // reported as missing.
+        try {
+          const tree = await readTree(call, known.app, config)
+          if (isSubmitAction(action)) {
+            lines.push('note: a submit was sent. Read the tree below before doing anything else;'
+              + ' never press it again to "make sure".')
+          }
+          lines.push('', `--- ${known.app} now ---`, tree.text)
+        } catch (error) {
+          const hostError = asHostError(error)
+          lines.push('', `note: the action was sent, but the follow-up read failed (${hostError.code}: ${hostError.message}).`
+            + ' Call desktop_snapshot before acting again.')
         }
         return { text: lines.join('\n') }
       } catch (error) {
