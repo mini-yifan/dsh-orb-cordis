@@ -30,6 +30,12 @@ export interface SnapshotData {
   readonly refCount: number
   readonly complete: boolean
   readonly nodesObserved?: number
+  /**
+   * Overlay surfaces the app presents right now: a menu, sheet, popover or alert
+   * a click just opened. They are separate surfaces, not part of the window tree,
+   * so a task that ends in a dropdown has to read one of these next.
+   */
+  readonly surfaces?: readonly string[]
   readonly tree: DesktopNode
 }
 

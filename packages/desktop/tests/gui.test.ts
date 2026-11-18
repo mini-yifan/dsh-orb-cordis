@@ -268,6 +268,14 @@ test('a find answer is read whichever shape it came back in', () => {
   assert.equal(refOf(undefined), undefined)
 })
 
+test('an overlay list is read from either shape the CLI uses', async () => {
+  const { surfacesOf } = await import('../src/vision.ts')
+  assert.deepEqual(surfacesOf(['menu', 'sheet']), ['menu', 'sheet'])
+  assert.deepEqual(surfacesOf([{ kind: 'popover' }, { kind: '' }]), ['popover'])
+  assert.equal(surfacesOf([]), undefined)
+  assert.equal(surfacesOf(undefined), undefined)
+})
+
 test('registers one tool per gesture, the Computer Use set', () => {
   const { tools } = harness({ images: true })
   assert.deepEqual([...tools.keys()].sort(), [

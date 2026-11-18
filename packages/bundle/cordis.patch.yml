@@ -151,6 +151,14 @@
                 over the picture you were just given: (0,0) is its top-left, (1000,1000) its bottom-right. Read the
                 position off the picture; never compute pixels or screen coordinates. Electron and canvas apps
                 usually live here. Come back to (2) as soon as a window has a tree.
+                tree=yes means the refs are there. If an action on a ref fails, fix the action, never the route:
+                a control below the fold is scrolled to by its own ref first, a control with no semantic action is
+                clicked by its own frame, and both are exact. Do not reach for a picture because one ref failed —
+                a guessed point is how a task gets stuck on the same control for ten turns.
+                A menu, sheet, popover or alert is a separate surface. When a click opens one, the window tree does
+                not change and the picture does not show it: read it with desktop_inspect surface=<kind> (menu,
+                sheet, popover, alert) and act on the refs that come back. If a click appears to do nothing, look
+                for an overlay before doing anything else.
                 Never address the same control through both paths in one breath: a ref and a point for one control
                 is how double presses happen.
                 A level-3 action raises its window first and moves the real pointer, so whoever is at the machine

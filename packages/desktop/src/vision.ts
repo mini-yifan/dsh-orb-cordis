@@ -273,7 +273,23 @@ interface RawSnapshot {
   readonly ref_count?: number
   readonly complete?: boolean
   readonly nodes_observed?: number
+  readonly surfaces?: readonly (string | { readonly kind?: string })[]
   readonly tree?: RawTreeNode
+}
+
+/**
+ * Normalize the overlay list a snapshot or action reports.
+ * @param surfaces - raw field: strings, or objects carrying a `kind`.
+ * @returns the kinds, or undefined when the CLI reported none.
+ */
+export function surfacesOf(
+  surfaces: readonly (string | { readonly kind?: string })[] | undefined,
+): readonly string[] | undefined {
+  if (surfaces === undefined) return undefined
+  const kinds = surfaces
+    .map(entry => typeof entry === 'string' ? entry : entry.kind)
+    .filter((kind): kind is string => typeof kind === 'string' && kind !== '')
+  return kinds.length === 0 ? undefined : kinds
 }
 
 /**
@@ -326,6 +342,13 @@ export async function snapshotWindow(
     interactive?: boolean
     compact?: boolean
     /**
+     * Overlay kind to read instead of the window: `menu`, `sheet`, `popover` or
+     * `alert`. A popup a click opened lives here, not in the window tree.
+     */
+    surface?: string
+    /** Application that owns the overlay (`--app`), required for a surface read. */
+    app?: string
+    /**
      * Snapshot namespace. Must be the same `dsh_<session>` the resident child
      * uses, or the refs this read produces are invisible to desktop_act: each
      * session keeps its own ref store, and a ref from another store fails with
@@ -336,7 +359,13 @@ export async function snapshotWindow(
   },
   signal: AbortSignal,
 ): Promise<Envelope<SnapshotData>> {
-  const args = ['snapshot', '--window-id', windowId, '--timeout-ms', '15000']
+  const args = options.surface !== undefined && options.surface !== ''
+    ? ['snapshot', '--surface', options.surface]
+    : ['snapshot', '--window-id', windowId]
+  args.push('--timeout-ms', '15000')
+  if (options.surface !== undefined && options.surface !== '' && options.app !== undefined && options.app !== '') {
+    args.push('--app', options.app)
+  }
   if (options.session !== undefined && options.session !== '') {
     args.push('--session', options.session)
   }

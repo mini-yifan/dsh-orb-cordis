@@ -39,7 +39,7 @@ import { POLICY } from './ffi.ts'
 import { renderSnapshot } from './render.ts'
 import type { ActionKind, ActionRequest, SnapshotData, HostError, WindowInfo } from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
-import { listWindows, snapshotWindow, type Envelope } from './vision.ts'
+import { listWindows, runCli, snapshotWindow, surfacesOf, type Envelope } from './vision.ts'
 
 const TEXT_SCHEMA = {
   type: 'object',
@@ -170,6 +170,23 @@ async function readTreeFor(
     // Fall through: the window may have closed while the app lives on.
   }
   return await readTree(call, known.app, config)
+}
+
+/**
+ * Overlays an app presents right now.
+ *
+ * A menu, sheet, popover or alert is a separate surface: the window tree does not
+ * change when one opens, so without this a click that opened a dropdown looks
+ * exactly like a click that did nothing.
+ * @param app - application display name.
+ * @returns the surface kinds, empty when none is open.
+ */
+async function overlaysNow(app: string): Promise<readonly string[]> {
+  const listed = await runCli<{ surfaces?: readonly (string | { kind?: string })[] }>(
+    ['list-surfaces', '--app', app],
+    AbortSignal.timeout(10_000),
+  )
+  return listed.ok ? (surfacesOf(listed.data?.surfaces) ?? []) : []
 }
 
 /**
@@ -400,6 +417,12 @@ export function registerDesktopTools(
         type: 'integer',
         description: 'Most nodes to render. Default: 140. Raises the character budget with it.',
       },
+      surface: {
+        type: 'string',
+        enum: ['menu', 'sheet', 'popover', 'alert'],
+        description: 'Read an overlay instead of the window. A menu, sheet, popover or alert a click opened '
+          + 'is a separate surface: it never appears in the window tree, so this is the only way to see it.',
+      },
     },
     output: {
       schema: TEXT_SCHEMA,
@@ -450,12 +473,14 @@ export function registerDesktopTools(
         }
       }
 
+      const surface = typeof args.surface === 'string' ? args.surface : undefined
       try {
         const read = await readWindow(
           target.windowId,
           {
             session: agentSessionId(call.sessionId),
             ...args.depth === undefined ? {} : { depth: args.depth },
+            ...surface === undefined ? {} : { surface, app: target.appName },
           },
           exec.signal,
         )
@@ -478,7 +503,16 @@ export function registerDesktopTools(
             : Math.max(config.maxChars, args.max_nodes * 120),
         })
         call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
-        return { text: `${heading}${others}\n${withThinHint(rendered.text, rendered.refs)}` }
+        const overlay = surface !== undefined
+          ? `reading the ${surface} overlay`
+          : (read.data.surfaces ?? []).length === 0
+            ? ''
+            : `overlay(s) now open: ${(read.data.surfaces ?? []).join(', ')} — a menu or popup is NOT part of the `
+              + 'window tree. Read it with desktop_inspect surface=<kind>, then act on its refs.'
+        return {
+          text: `${heading}${others}${overlay === '' ? '' : `\n${overlay}`}\n`
+            + withThinHint(rendered.text, rendered.refs),
+        }
       } catch (error) {
         return { text: `desktop_inspect failed\n${heading}${others}\n${failureText(asHostError(error))}` }
       }
@@ -591,27 +625,51 @@ export function registerDesktopTools(
           ...known.windowId !== undefined ? { windowId: known.windowId } : {},
           ...known.windowTitle !== undefined ? { windowTitle: known.windowTitle } : {},
         })
+        // One action, three attempts, each more precise than the last:
+        //   1. semantic, headless — no pointer, no focus;
+        //   2. if it timed out, scroll the element into view by its own ref and
+        //      try again (a control below the fold never becomes actionable, and
+        //      System Settings keeps its most-wanted control there);
+        //   3. if it is still refused, click the element's own frame with real
+        //      input — precision of the frame, not of a guessed point.
+        //
+        // Only pointer and key delivery may reach step 3: retrying a value write
+        // physically would turn a harmless refusal into a stray click.
+        const escalatable = action.kind === 'click' || action.kind === 'double_click'
+          || action.kind === 'right_click' || action.kind === 'press_key'
+        const attempt = async (): Promise<unknown> =>
+          await call.client.request({ op: 'act', ref, action, policy: POLICY.headless })
         let data: unknown
         let escalated = false
+        let scrolled = false
+        let failure: unknown
         try {
-          data = await call.client.request({ op: 'act', ref, action, policy: POLICY.headless })
+          data = await attempt()
         } catch (error) {
-          const hostError = asHostError(error)
-          // Some controls (a settings row, a custom popup) advertise no semantic
-          // action at all, and the headless call refuses. The library can still
-          // click the element's own frame with real input, which aims far better
-          // than a model guessing a point from a picture — so do that instead of
-          // sending the model off to click coordinates.
-          //
-          // Only actions that are pointer or key delivery may escalate: retrying a
-          // value write physically would turn a harmless refusal into a stray click.
-          const escalatable = action.kind === 'click' || action.kind === 'double_click'
-            || action.kind === 'right_click' || action.kind === 'press_key'
+          failure = error
+          if (escalatable && asHostError(error).code === 'TIMEOUT') {
+            scrolled = true
+            // `scroll-to` takes the element's ref, so it aims exactly where the
+            // model pointed — no wheel, no coordinates.
+            await runCli<unknown>(
+              ['scroll-to', ref, '--session', agentSessionId(call.sessionId)],
+              AbortSignal.timeout(15_000),
+            )
+            try {
+              data = await attempt()
+              failure = undefined
+            } catch (again) {
+              failure = again
+            }
+          }
+        }
+        if (failure !== undefined) {
+          const hostError = asHostError(failure)
           const retryable = escalatable
-            && (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED')
+            && (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED'
+              || hostError.code === 'TIMEOUT')
           const state = retryable ? await osState(call.client) : undefined
-          const inFront = state?.app === known.app
-          if (!retryable || !config.physicalFallback || !inFront) throw error
+          if (!retryable || !config.physicalFallback || state?.app !== known.app) throw failure
           data = await call.client.request({
             op: 'act',
             ref,
@@ -626,6 +684,18 @@ export function registerDesktopTools(
         effects.set(effectKey, { at: Date.now(), landed: true })
         refreshLease(known.app, call.sessionId)
         const lines = [actionText(data)]
+        if (scrolled) {
+          lines.push('note: this control was below the fold, so it was scrolled into view by its own ref first.')
+        }
+        if (action.kind === 'click' || action.kind === 'double_click' || action.kind === 'press_key') {
+          // A popup or menu opens as its own surface; the window tree will look
+          // unchanged, which reads as "the click did nothing" unless we say so.
+          const overlays = await overlaysNow(known.app)
+          if (overlays.length > 0) {
+            lines.push(`overlay(s) now open: ${overlays.join(', ')} — they are not in the tree below. `
+              + 'Read one with desktop_inspect surface=<kind>, then act on its refs.')
+          }
+        }
         if (escalated) {
           lines.push('note: this control exposes no semantic action, so it was clicked by its own frame with real '
             + 'input. That is still precise — it is the element\'s frame, not a guessed point.')
