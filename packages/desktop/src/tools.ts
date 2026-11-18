@@ -32,6 +32,7 @@ import { renderSnapshot } from './render.ts'
 import type { ActionKind, ActionRequest, AppInfo, HostError, SnapshotData, WindowInfo } from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
 import { activateApp } from './activate.ts'
+import { listWindows } from './vision.ts'
 
 const TEXT_SCHEMA = {
   type: 'object',
@@ -320,14 +321,20 @@ export function registerDesktopTools(
         ]
         const app = args.app !== undefined && args.app !== '' ? args.app : state.app ?? undefined
         if (app !== undefined) {
-          try {
-            const windows = await call.client.request<readonly (WindowInfo & {
-              readonly accessible?: boolean
-              readonly visible?: boolean
-            })[]>({ op: 'windows', app })
-            const shown = windows.filter(window => window.bounds !== undefined)
+          // Ask the CLI, not the FFI: the FFI window record has no accessibility
+          // bit, and its app filter matches the OS display name, which differs
+          // from the name a model is likely to use ("Calculator" vs "计算器").
+          const listed = await listWindows(exec.signal)
+          if (listed.ok && listed.data !== undefined) {
+            const wanted = app.toLowerCase()
+            const sameApp = listed.data.filter(window =>
+              window.appName.toLowerCase() === wanted
+              || window.appName.toLowerCase().includes(wanted)
+              || wanted.includes(window.appName.toLowerCase()))
+            const shown = (sameApp.length > 0 ? sameApp : listed.data.filter(window => window.focused))
+              .filter(window => window.bounds !== undefined)
             if (shown.length > 0) {
-              lines.push(`windows of ${app}:`)
+              lines.push(`windows of ${sameApp.length > 0 ? app : (shown[0]?.appName ?? app)}:`)
               for (const window of shown) {
                 const bounds = window.bounds
                 if (bounds === undefined) continue
@@ -340,13 +347,11 @@ export function registerDesktopTools(
               }
               if (shown.every(window => window.accessible !== true)) {
                 lines.push(
-                  'Every window of this app reports no readable accessibility tree. Do not force snapshot+act: '
-                  + 'use desktop_see and desktop_click_xy.',
+                  'Every window here reports no readable accessibility tree. Do not force snapshot+act: '
+                  + 'use desktop_see with the window id above, then desktop_click_xy.',
                 )
               }
             }
-          } catch {
-            // The window list is a courtesy: a status call still answers without it.
           }
         }
         return { text: lines.join('\n') }

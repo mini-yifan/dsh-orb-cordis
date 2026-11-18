@@ -351,15 +351,46 @@ pad = max(0, (raster - bounds × scale_factor) / 2)
 - 三份引导（`status` + 两份 skill）只在首轮读一次，之后靠 persona 与 `--help`；
 - 普通动作可用 `--timeout-ms 0` 跳过库内 5 秒预检，等控件可用的场景除外。
 
-按 QQ 会话（42 步、153.5 s 实际墙钟、模型推理 109.4 s 占 71%、p50 步间隔 1.9 s）推算：
-那 42 步里有 37 步是"动作 + 单独验证"，新版本把这些验证读折进动作结果，按 p50
-每轮 1.1 s 估算约省 41 s（153.5 → ~113 s）。**这是估算，不是实测**：该会话跑在旧
-版本上；`dsh headless` 按设计拒绝带 agent preset 的会话，真正的 A/B 必须从主窗口或
-经 mesh 派发在本版本上发起。
+### 16.7 真实运行对比（2026-11-18）
 
-已实测并可作为依据的部分：单次快照 188–205 ms；6 步序列往返数 12 → 6（−50%）；
-`desktop_act` 的后续读失败不会把已落地的动作判成失败；结果里的 ref 下一次可直接用
-（这三个行为都有单测，并用真实注册的工具跑通了 5/5）。
+在隔离的 web profile（`bdtest2`，独立端口，不碰用户的桌面 app）里，通过
+`typertGateway` 的 `session/create → agentPresets/select(desktop) → commands/execute(/permission) →
+session/prompt` 驱动真实 `desktop` preset 会话，run 完再解码会话日志统计。
+
+| 版本 | 任务 | 步数 | 工具调用 | 墙钟 | 推理 |
+|---|---|---|---|---|---|
+| **基线**（旧版本，QQ 发天气） | 打开 QQ→找我的手机→发消息 | **42** | 43 | **153.5s** | 109.4s (71%) |
+| 新版本 · 旧 persona | 计算器 12×34 | 10 | 10 | 27.1s | — |
+| 新版本 · 加 batch 指导 | 计算器 12×34 | 15 | 14 | 34.4s | — |
+| 新版本 · persona 禁止 bash 操作界面 | 计算器 12×34 | **8** | 7 | **17.5s** | 15.1s (86%) |
+
+基线会话的构成：33 条单命令 bash、**0 次 batch**、6 次 `read_image`（先写 PNG 再读）。
+
+**三次运行各修掉一个真问题**：
+
+1. 第一次：模型在第 5 步正确判断 `tree=no` 并调了 `desktop_see`，但随后改用 `osascript`
+   发送按键绕过界面。→ persona 明确：界面只用 `desktop_*`，bash 不做 GUI。
+2. 第二次：模型从 CLI 的 skill 文档里学到 bash 那套，`desktop_*` 和 bash CLI 混用。
+   → persona 把"读指南"改成"仅在 level-2 无法解释地失败时才读"，并声明本 prompt 优先于指南。
+3. 第三次：工具序列干净（`desktop_apps → desktop_snapshot → desktop_status → desktop_see →
+   desktop_raise → desktop_see`），**只有 1 次 bash 且是查电源状态**。
+
+**「动作自带观察」在真实运行里确认生效**：`desktop_act` 的返回里有
+`--- 计算器 now ---` + 26 refs 的新树，模型下一条动作直接用新 ref，没有插入 `desktop_snapshot`。
+
+**这次运行没能完成点击**，原因是环境而非代码：`APP_UNRESPONSIVE: CoreGraphics returned no
+active displays`——显示器已休眠，截图取不到。同样的命令在终端里也如实返回这个错误，
+说明是 TCC/窗口服务器状态，不是工具缺陷。**因此 17.5s 是"能跑完的工具链耗时"，不是
+"完整 QQ 任务"的改后数字**；真正的同任务对比仍需要在一台醒着的机器上重跑基线那条 QQ 任务。
+
+同时修掉两个真实缺陷：
+
+- `listWindows` 直接读 CLI 原始 JSON（snake_case），导致 `<window>` 显示 `undefined`；
+  现在归一化 `app_name → appName`。
+- `desktop_status` 原来走 FFI 的 `op:'windows'`，而 FFI 窗口记录**没有** accessibilty 位、
+  且按 OS 显示名过滤（"Calculator" vs "计算器"匹配不上），于是窗口段常常是空的——
+  模型只能靠 `desktop_snapshot` 的报错猜。现在改走 CLI 并做宽松名字匹配，`tree=no`
+  提示能稳定出现。
 
 ### 16.6 仍未解决
 

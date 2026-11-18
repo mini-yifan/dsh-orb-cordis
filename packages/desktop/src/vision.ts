@@ -153,13 +153,48 @@ function failureText(envelope: Envelope<unknown>): string {
   return parts.join('\n')
 }
 
+/** One window exactly as the CLI prints it, before normalization. */
+interface RawWindow {
+  readonly id?: string
+  readonly title?: string
+  readonly app_name?: string
+  readonly pid?: number
+  readonly is_focused?: boolean
+  readonly visible?: boolean
+  readonly accessible?: boolean
+  readonly bounds?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+}
+
 /**
  * List windows with their logical rectangles and whether the tree could be read.
+ *
+ * The CLI speaks snake_case (`app_name`, `is_focused`); the rest of this plugin
+ * speaks the camelCase {@link WindowInfo}. Normalizing here is what keeps the
+ * app name from arriving as `undefined` in anything the model reads.
+ * Exposed because `desktop_status` needs the same rows: the FFI window record
+ * carries no accessibility bit, so the only way to tell the model "this app has
+ * no tree" is to ask the CLI.
  * @param signal - cooperative cancellation.
  * @returns every window the OS reports, or an error envelope.
  */
-async function listWindows(signal: AbortSignal): Promise<Envelope<readonly WindowInfo[]>> {
-  return await runCli<readonly WindowInfo[]>(['list-windows'], signal)
+export async function listWindows(signal: AbortSignal): Promise<Envelope<readonly WindowInfo[]>> {
+  const raw = await runCli<readonly RawWindow[]>(['list-windows'], signal)
+  if (!raw.ok || raw.data === undefined) return raw as Envelope<readonly WindowInfo[]>
+  const windows: WindowInfo[] = []
+  for (const window of raw.data) {
+    if (window.id === undefined) continue
+    windows.push({
+      id: window.id,
+      title: window.title ?? '',
+      appName: window.app_name ?? '',
+      pid: window.pid ?? 0,
+      focused: window.is_focused === true,
+      ...window.bounds === undefined ? {} : { bounds: window.bounds },
+      ...window.accessible === undefined ? {} : { accessible: window.accessible },
+      ...window.visible === undefined ? {} : { visible: window.visible },
+    })
+  }
+  return { ok: true, data: windows }
 }
 
 /**
