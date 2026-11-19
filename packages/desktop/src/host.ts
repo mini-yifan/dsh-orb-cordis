@@ -200,7 +200,6 @@ function main(): void {
         return
       case 'windows': {
         const app = typeof request.app === 'string' ? request.app : ''
-        if (app === '') return fail(id, { code: 'INVALID_ARGS', message: 'windows needs an app', resultCode: -10 })
         const result = native.windows(adapter, app)
         if (!result.ok) return fail(id, result.error)
         writeLine({ id, ok: true, data: result.windows })

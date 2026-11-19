@@ -21,6 +21,7 @@ import {
   setWindowsClipboardText,
   type WindowsClipboardSnapshot,
 } from './win-clipboard.ts'
+import { hasWinNative, winPressCombo } from './win-native.ts'
 
 /** Where the platform's scripting host lives. */
 const OSASCRIPT = '/usr/bin/osascript'
@@ -186,22 +187,27 @@ export async function pasteAtFocusWindows(
     ? ['--window-id', options.windowId]
     : []
 
+  const pressCombo = async (combo: string): Promise<void> => {
+    if (deps.runCli === undefined && hasWinNative()) {
+      if (await winPressCombo(combo)) return
+    }
+    const res = await cli<unknown>(['press', '--headed', ...target, combo], signal)
+    if (!res.ok) throw new Error(res.error?.message ?? `${combo} failed`)
+  }
+
   const previous = save()
   try {
     writeText(text)
     if (options.replace === true) {
-      const sel = await cli<unknown>(['press', '--headed', ...target, 'ctrl+a'], signal)
-      if (!sel.ok) throw new Error(sel.error?.message ?? 'ctrl+a failed')
+      await pressCombo('ctrl+a')
     }
-    const pasted = await cli<unknown>(['press', '--headed', ...target, 'ctrl+v'], signal)
-    if (!pasted.ok) throw new Error(pasted.error?.message ?? 'ctrl+v failed')
+    await pressCombo('ctrl+v')
     if (settleMs > 0) await new Promise(resolve => setTimeout(resolve, settleMs))
   } finally {
     restore(previous)
   }
   if (options.enter === true) {
-    const submitted = await cli<unknown>(['press', '--headed', ...target, 'return'], signal)
-    if (!submitted.ok) throw new Error(submitted.error?.message ?? 'return failed after paste')
+    await pressCombo('return')
   }
 }
 

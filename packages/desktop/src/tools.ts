@@ -27,7 +27,7 @@ import {
 } from './guard.ts'
 import { withScreenLock } from './gui-lock.ts'
 import { chooseWindow } from './frame.ts'
-import { chooseTarget, windowLine } from './gui.ts'
+import { chooseTarget, sameApp, windowLine } from './gui.ts'
 import { agentSessionId } from './sessions.ts'
 import { POLICY } from './ffi.ts'
 import { renderSnapshot } from './render.ts'
@@ -47,6 +47,7 @@ import {
   findElements,
   getElementBounds,
   listWindows,
+  listWindowsFast,
   runCli,
   snapshotWindow,
   surfacesOf,
@@ -54,6 +55,7 @@ import {
   type FindElementsOptions,
   type SnapshotWindowOptions,
 } from './vision.ts'
+import { hasWinNative, winFocusWindow, winMouseClick, winPressCombo } from './win-native.ts'
 
 const TEXT_SCHEMA = {
   type: 'object',
@@ -155,15 +157,26 @@ async function readTree(
 /**
  * Read the window a ref belongs to, preserving the depth and text mode it was
  * originally read with (at least 6, never collapsing back to depth 3).
+ *
+ * On Windows, tries the resident FFI snapshot first to avoid a ~1 s CLI cold
+ * start, falling back to `--window-id` when an app owns multiple windows.
  */
 async function readTreeFor(
   call: Call,
   known: { readonly app: string; readonly windowId?: string; readonly depth?: number; readonly interactive?: boolean },
   config: ResolvedConfig,
   readWindow: (windowId: string, options: SnapshotWindowOptions, signal: AbortSignal) => Promise<Envelope<SnapshotData>> = snapshotWindow,
+  preferFfiOnWin32 = false,
 ): Promise<TreeRead> {
   const depth = Math.min(MAX_SNAPSHOT_DEPTH, Math.max(6, known.depth ?? DEFAULT_SNAPSHOT_DEPTH))
   const interactive = known.interactive !== false
+  if (preferFfiOnWin32 && process.platform === 'win32') {
+    try {
+      return await readTree(call, known.app, config, { depth, interactive })
+    } catch {
+      // Multi-window app or FFI miss: fall back to explicit `--window-id` CLI read.
+    }
+  }
   if (known.windowId !== undefined && known.windowId !== '') {
     const read = await readWindow(
       known.windowId,
@@ -186,6 +199,18 @@ async function readTreeFor(
     // Fall through: the window may have closed while the app lives on.
   }
   return await readTree(call, known.app, config, { depth, interactive })
+}
+
+/**
+ * Whether a TIMEOUT came from strict live identity resolution (common on dense
+ * Windows UIA trees like WeChat 4.x), where scrolling and retrying the same ref
+ * only burns 10+ seconds without converging.
+ */
+export function isIdentityTimeout(error: HostError): boolean {
+  if (error.code !== 'TIMEOUT') return false
+  const details = error.details as { kind?: unknown } | undefined
+  if (details?.kind === 'resolution_identity_unknown') return true
+  return /strict resolution|candidate identity/i.test(error.message)
 }
 
 /**
@@ -383,12 +408,22 @@ export function registerDesktopTools(
   config: ResolvedConfig,
   dependencies: DesktopDependencies = {},
 ): void {
-  const inventory = dependencies.listWindows ?? listWindows
   const readWindow = dependencies.snapshot ?? snapshotWindow
   const find = dependencies.find ?? findElements
   const getBounds = dependencies.getBounds ?? getElementBounds
   const listSurfaces = dependencies.listSurfaces ?? defaultListSurfaces
   const cli = dependencies.runCli ?? runCli
+  const useWinNative = dependencies.runCli === undefined && process.platform === 'win32' && hasWinNative()
+  const preferFfiReadback = dependencies.snapshot === undefined
+  const inventory = (signal: AbortSignal, sessionId?: string): Promise<Envelope<readonly WindowInfo[]>> =>
+    dependencies.listWindows !== undefined
+      ? dependencies.listWindows(signal)
+      : listWindowsFast(sessions, sessionId, signal)
+  const focusByWindowId = async (windowId: string, signal: AbortSignal): Promise<boolean> => {
+    if (useWinNative && await winFocusWindow(windowId)) return true
+    const focused = await cli<unknown>(['focus-window', '--window-id', windowId], signal)
+    return focused.ok
+  }
   let holdTimer: NodeJS.Timeout | undefined
   const effects = new Map<string, EffectRecord>()
 
@@ -448,9 +483,9 @@ export function registerDesktopTools(
       return { ok: false, message: boundsRes.error?.message ?? 'element bounds unavailable' }
     }
     if (known.windowId !== undefined && known.windowId !== '') {
-      const focused = await cli<unknown>(['focus-window', '--window-id', known.windowId], signal)
-      if (!focused.ok) {
-        return { ok: false, message: focused.error?.message ?? `could not focus window ${known.windowId}` }
+      const focused = await focusByWindowId(known.windowId, signal)
+      if (!focused) {
+        return { ok: false, message: `could not focus window ${known.windowId}` }
       }
     }
     const box = boundsRes.data
@@ -458,10 +493,15 @@ export function registerDesktopTools(
     const cy = Math.round(box.y + box.height / 2)
     const button = options.button ?? 'left'
     const count = options.count ?? 1
-    const clicked = await withScreenLock(call.sessionId, async () => await cli<unknown>(
-      ['mouse-click', '--headed', '--xy', `${String(cx)},${String(cy)}`, '--button', button, '--count', String(count)],
-      signal,
-    ))
+    const clicked = await withScreenLock(call.sessionId, async (): Promise<Envelope<unknown>> => {
+      if (useWinNative && await winMouseClick(cx, cy, { button, count })) {
+        return { ok: true, data: {} }
+      }
+      return await cli<unknown>(
+        ['mouse-click', '--headed', '--xy', `${String(cx)},${String(cy)}`, '--button', button, '--count', String(count)],
+        signal,
+      )
+    })
     if (!clicked.ok) {
       return { ok: false, message: clicked.error?.message ?? 'bounds mouse-click failed' }
     }
@@ -581,7 +621,7 @@ export function registerDesktopTools(
         }
       }
 
-      const listed = await inventory(exec.signal)
+      const listed = await inventory(exec.signal, call.sessionId)
       if (!listed.ok || listed.data === undefined) {
         const code = listed.error?.code ?? 'UNKNOWN'
         const parts = [`${code}: ${listed.error?.message ?? 'window inventory failed'}`]
@@ -722,7 +762,7 @@ export function registerDesktopTools(
         }
         heading = `search under ${rootRef}`
       } else {
-        const listed = await inventory(exec.signal)
+        const listed = await inventory(exec.signal, call.sessionId)
         if (!listed.ok || listed.data === undefined) {
           const code = listed.error?.code ?? 'UNKNOWN'
           return {
@@ -913,7 +953,7 @@ export function registerDesktopTools(
       if (previous !== undefined && previous.landed && Date.now() - previous.at < config.repeatWindowMs) {
         let observation = ''
         try {
-          const tree = await readTreeFor(call, known, config, readWindow)
+          const tree = await readTreeFor(call, known, config, readWindow, preferFfiReadback)
           observation = `\n\n--- ${known.app} now ---\n${tree.text}`
         } catch {
           observation = '\n\nCall desktop_inspect to see the current state.'
@@ -977,7 +1017,17 @@ export function registerDesktopTools(
             data = await attempt()
           } catch (error) {
             failure = error
-            if (scrollRetryable && asHostError(error).code === 'TIMEOUT') {
+            const firstErr = asHostError(error)
+            // Strict live identity resolution timed out on a dense tree (e.g. WeChat 4.x):
+            // scrolling or retrying the same ref will just burn 10+ s repeating the same scan.
+            if (isIdentityTimeout(firstErr)) {
+              throw Object.assign(new Error(firstErr.message), {
+                ...firstErr,
+                suggestion: 'Live UIA identity resolution timed out on this dense window. Stop retrying this ref: '
+                  + 'call desktop_see and use desktop_click / desktop_input_text on the visible control instead.',
+              })
+            }
+            if (scrollRetryable && firstErr.code === 'TIMEOUT') {
               scrolled = true
               await cli<unknown>(
                 ['scroll-to', ref, '--session', agentSessionId(call.sessionId)],
@@ -994,20 +1044,40 @@ export function registerDesktopTools(
 
           if (failure !== undefined) {
             const hostError = asHostError(failure)
+            if (isIdentityTimeout(hostError)) throw failure
+            // On Windows, headless `type_text` returns POLICY_DENIED; try semantic `set_value`
+            // first (zero focus steal, zero clipboard) before escalating to headed input.
+            if (act.kind === 'type_text' && hostError.code === 'POLICY_DENIED' && act.text !== undefined) {
+              try {
+                data = await call.client.request({
+                  op: 'act',
+                  ref,
+                  action: { kind: 'set_value', text: act.text },
+                  policy: POLICY.headless,
+                  timeout_ms: HEADLESS_PREFLIGHT_MS,
+                })
+                failure = undefined
+              } catch {
+                // Fall through to headed escalation below.
+              }
+            }
+          }
+
+          if (failure !== undefined) {
+            const hostError = asHostError(failure)
             const retryable = physicalEscalatable
               && (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED'
                 || hostError.code === 'TIMEOUT')
             if (!retryable || !config.physicalFallback) throw failure
 
             const state = await osState(call.client)
-            let frontNow = state.app === known.app
+            let frontNow = state.app !== null && sameApp(state.app, known.app)
             if (
               !frontNow
               && (act.kind === 'type_text' || act.kind === 'press_key')
               && known.windowId !== undefined
             ) {
-              const focused = await cli<unknown>(['focus-window', '--window-id', known.windowId], exec.signal)
-              if (focused.ok) frontNow = true
+              if (await focusByWindowId(known.windowId, exec.signal)) frontNow = true
             }
             if (frontNow) {
               try {
@@ -1026,11 +1096,12 @@ export function registerDesktopTools(
             }
 
             // On Windows, `press_key` to a non-frontmost or UIA-restricted window
-            // can still succeed via CLI `press --headed --window-id` once focused.
+            // can still succeed via in-process SendInput or CLI `press --headed` once focused.
             if (failure !== undefined && act.kind === 'press_key' && known.windowId !== undefined && act.key !== undefined) {
               const combo = [...(act.modifiers ?? []), act.key].join('+')
-              const pressed = await withScreenLock(call.sessionId, async () => {
-                await cli<unknown>(['focus-window', '--window-id', known.windowId as string], exec.signal)
+              const pressed = await withScreenLock(call.sessionId, async (): Promise<Envelope<unknown>> => {
+                await focusByWindowId(known.windowId as string, exec.signal)
+                if (useWinNative && await winPressCombo(combo)) return { ok: true, data: {} }
                 return await cli<unknown>(
                   ['press', '--headed', '--window-id', known.windowId as string, combo],
                   exec.signal,
@@ -1083,8 +1154,9 @@ export function registerDesktopTools(
             submitted = true
           } catch {
             if (known.windowId !== undefined) {
-              const pressed = await withScreenLock(call.sessionId, async () => {
-                await cli<unknown>(['focus-window', '--window-id', known.windowId as string], exec.signal)
+              const pressed = await withScreenLock(call.sessionId, async (): Promise<Envelope<unknown>> => {
+                await focusByWindowId(known.windowId as string, exec.signal)
+                if (useWinNative && await winPressCombo('return')) return { ok: true, data: {} }
                 return await cli<unknown>(
                   ['press', '--headed', '--window-id', known.windowId as string, 'return'],
                   exec.signal,
@@ -1126,7 +1198,7 @@ export function registerDesktopTools(
         }
 
         try {
-          const tree = await readTreeFor(call, known, config, readWindow)
+          const tree = await readTreeFor(call, known, config, readWindow, preferFfiReadback)
           if (submitted) {
             lines.push('note: a submit was sent. Read the tree below before doing anything else;'
               + ' never press it again to "make sure".')
@@ -1151,6 +1223,13 @@ export function registerDesktopTools(
               + 'This control has no semantic action, and it could not be clicked either (the window is not in '
               + 'front, or physical input is off). Bring the window forward with desktop_open_app, then retry this '
               + 'same ref or use action="click_bounds" — the frame click is precise and needs no guessed point.',
+          }
+        }
+        if (isIdentityTimeout(hostError)) {
+          return {
+            text: `${failureText(hostError)}\n`
+              + 'Live UIA identity resolution timed out on this dense window. Do not retry this ref: '
+              + 'call desktop_see and use desktop_click or desktop_input_text on the visible control instead.',
           }
         }
         return { text: `desktop_act failed\n${failureText(hostError)}` }
@@ -1312,7 +1391,7 @@ export function registerDesktopTools(
                 || action.kind === 'right_click' || action.kind === 'double_click')
             if (!batchHeaded) throw firstErr
             if (known.windowId !== undefined) {
-              await cli<unknown>(['focus-window', '--window-id', known.windowId], exec.signal).catch(() => {})
+              await focusByWindowId(known.windowId, exec.signal).catch(() => {})
             }
             data = await withScreenLock(call.sessionId, async () => await call.client.request({
               op: 'act',
@@ -1350,7 +1429,7 @@ export function registerDesktopTools(
           }
         }
         try {
-          const tree = await readTreeFor(call, lastKnown, config, readWindow)
+          const tree = await readTreeFor(call, lastKnown, config, readWindow, preferFfiReadback)
           if (submittedInBatch) {
             lines.push('note: a submit was sent in this batch. Confirm from the tree below; never submit again.')
           }

@@ -26,7 +26,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { DesktopNode, ElementBounds, FindMatch, FindResult, SnapshotData, WindowInfo } from './protocol.ts'
+import type { DesktopSessions } from './sessions.ts'
 import { cliName, nativeKey, packagedCliDir } from './native-paths.ts'
+import { enrichWindowsOnWin32, winCaptureWindow, type WinRect } from './win-native.ts'
 
 /** The CLI caps one debug PNG at 64 MiB; a sane observation is far smaller. */
 const MAX_PNG_BYTES = 32 * 1024 * 1024
@@ -163,7 +165,32 @@ export async function listWindows(signal: AbortSignal): Promise<Envelope<readonl
       ...window.visible === undefined ? {} : { visible: window.visible },
     })
   }
-  return { ok: true, data: windows }
+  return { ok: true, data: enrichWindowsOnWin32(windows) }
+}
+
+/**
+ * Fast window inventory that uses the resident FFI host on Windows (~25 ms +
+ * <2 ms DWM bounds enrichment) instead of spawning a fresh ~900 ms
+ * `agent-desktop.exe list-windows` subprocess on every single tool call.
+ * Falls back cleanly to {@link listWindows} on macOS or when FFI is unavailable.
+ */
+export async function listWindowsFast(
+  sessions: DesktopSessions | undefined,
+  sessionId: string | undefined,
+  signal: AbortSignal,
+): Promise<Envelope<readonly WindowInfo[]>> {
+  if (process.platform === 'win32' && sessions !== undefined && sessionId !== undefined && sessionId !== '') {
+    try {
+      const entry = await sessions.entry(sessionId)
+      const raw = await entry.client.request<readonly WindowInfo[]>({ op: 'windows' })
+      if (Array.isArray(raw) && raw.length > 0) {
+        return { ok: true, data: enrichWindowsOnWin32(raw) }
+      }
+    } catch {
+      // Fall through to CLI list-windows.
+    }
+  }
+  return await listWindows(signal)
 }
 
 /**
@@ -260,13 +287,30 @@ async function captureWindowShadowless(
 export async function captureWindow(
   windowId: string,
   signal: AbortSignal,
-  bounds?: { readonly width: number; readonly height: number },
+  bounds?: WinRect | { readonly width: number; readonly height: number },
 ): Promise<Envelope<ScreenshotData>> {
   if (process.platform === 'darwin') {
     const id = numericWindowId(windowId)
     if (id !== undefined) {
       const shadowless = await captureWindowShadowless(id, bounds, signal)
       if (shadowless !== undefined) return shadowless
+    }
+  }
+  if (process.platform === 'win32') {
+    const fallback = bounds !== undefined && 'x' in bounds && 'y' in bounds ? bounds : undefined
+    const shot = winCaptureWindow(windowId, fallback)
+    if (shot !== undefined) {
+      return {
+        ok: true,
+        data: {
+          data: shot.png.toString('base64'),
+          format: 'png',
+          width: shot.width,
+          height: shot.height,
+          scale_factor: 1,
+          shadowless: true,
+        },
+      }
     }
   }
   return await runCli<ScreenshotData>(['screenshot', '--window-id', windowId], signal)

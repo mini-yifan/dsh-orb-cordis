@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveConfig } from '../src/config.ts'
-import { chooseTarget, cliCombo, frameOf, frameStillValid, isMinimizedWindow, pointToScreen, registerGuiTools } from '../src/gui.ts'
+import { chooseTarget, cliCombo, frameOf, frameStillValid, isMinimizedWindow, matchesApp, pointToScreen, registerGuiTools, sameApp } from '../src/gui.ts'
 import { pasteAtFocusWindows, pasteScript, refOf, typeByRef } from '../src/hid.ts'
 import { windowsActivateScript, windowsLaunchTarget } from '../src/activate.ts'
 import { probeWindowsSessionState } from '../src/session-state.ts'
+import { encodeBgraPng, parseComboKeys, windowsKeyIsExtended, windowsVirtualKey } from '../src/win-native.ts'
+import { pngDimensions } from '../src/vision.ts'
 import type { WindowInfo } from '../src/protocol.ts'
 
 /**
@@ -438,7 +440,8 @@ test('windowsLaunchTarget and windowsActivateScript support aliases, URIs, and G
 
   const script = windowsActivateScript('微信')
   assert.match(script, /WScript\.Shell/)
-  assert.match(script, /AppActivate\(\$name\)/)
+  assert.match(script, /AppActivate\(\$c\)/)
+  assert.match(script, /Weixin/)
   assert.match(script, /Get-StartApps/)
   assert.match(script, /shell:AppsFolder/)
   assert.match(script, /Start-Process -FilePath \$name/)
@@ -560,4 +563,85 @@ test('probeWindowsSessionState detects locked (null handle), unlocked, and unkno
   }), { locked: false, unknown: false })
   assert.equal(closed, true)
   assert.deepEqual(probeWindowsSessionState(null), { locked: false, unknown: true })
+})
+
+test('sameApp and matchesApp resolve Windows Weixin.exe from WeChat, Weixin, and 微信', () => {
+  const wechatWin = win('w-69448', 'Weixin.exe', '微信', 1808, 1492)
+  assert.equal(sameApp('Weixin.exe', 'Weixin'), true)
+  assert.equal(sameApp('Weixin.exe', 'WeChat'), true)
+  assert.equal(sameApp('Weixin.exe', '微信'), true)
+  assert.equal(matchesApp(wechatWin, '微信'), true)
+  assert.equal(matchesApp(wechatWin, 'WeChat'), true)
+  assert.equal(chooseTarget([wechatWin], { app: '微信' }, undefined).target?.windowId, 'w-69448')
+  assert.equal(chooseTarget([wechatWin], { app: 'WeChat' }, undefined).target?.windowId, 'w-69448')
+})
+
+test('desktop_input_text goes straight to lossless paste after clicking point without calling find', async () => {
+  const cliCalls: string[][] = []
+  const pasted: { text: string; options: Record<string, unknown> }[] = []
+  const tools = new Map<string, { name: string, execute: (args: Record<string, unknown>, exec: unknown) => Promise<{ text: string }> }>()
+  const ctx = {
+    tools: { register: (tool: { name: string }) => { tools.set(tool.name, tool as never) } },
+    effect: () => ({ dispose: () => {} }),
+    get(name: string) {
+      if (name !== 'llm') return undefined
+      return { async resolveModelInfo() { return { inputModalities: ['text', 'image'] } } }
+    },
+    attachments: { async saveImage() { return { attachmentId: 'sha256:p', mediaType: 'image/png', bytes: 10, width: 1000, height: 800 } } },
+  }
+  registerGuiTools(ctx as never, resolveConfig({ postActionWaitMs: 1 }), {
+    sessionState: async () => ({ locked: false }),
+    listWindows: async () => ({
+      ok: true,
+      data: [{
+        id: 'w-69448',
+        title: '微信',
+        appName: 'Weixin.exe',
+        pid: 1,
+        focused: true,
+        accessible: true,
+        visible: true,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+      }],
+    }),
+    capture: async () => ({
+      ok: true,
+      data: { data: Buffer.from('x').toString('base64'), format: 'png', width: 1000, height: 800, scale_factor: 1, shadowless: true },
+    }),
+    runCli: async (args) => {
+      cliCalls.push([...args])
+      return { ok: true, data: {} as never }
+    },
+    typeAtFocus: async (text, options) => {
+      pasted.push({ text, options: options as Record<string, unknown> })
+    },
+  })
+  await tools.get('desktop_see')!.execute({ app: '微信' }, exec)
+  const res = await tools.get('desktop_input_text')!.execute({
+    window: 'w-69448',
+    point: [181, 86],
+    text: '文件传输助手',
+    submit: true,
+  }, exec)
+  assert.match(res.text, /delivered by pasting/)
+  assert.equal(pasted.length, 1)
+  assert.equal(pasted[0]?.text, '文件传输助手')
+  assert.equal(pasted[0]?.options.enter, true)
+  assert.equal(cliCalls.some(args => args[0] === 'find'), false, 'must never spawn AX find after coordinate click')
+})
+
+test('win-native virtual key mapping and BGRA PNG encoder produce valid output', () => {
+  assert.equal(windowsVirtualKey('ctrl'), 0x11)
+  assert.equal(windowsVirtualKey('Return'), 0x0d)
+  assert.equal(windowsVirtualKey('v'), 0x56)
+  assert.equal(windowsVirtualKey('f12'), 0x7b)
+  assert.equal(windowsKeyIsExtended('left'), true)
+  assert.equal(windowsKeyIsExtended('v'), false)
+  assert.deepEqual(parseComboKeys('ctrl+v'), [
+    { vk: 0x11, extended: false },
+    { vk: 0x56, extended: false },
+  ])
+  const bgra = Buffer.alloc(4 * 3 * 4, 0xff)
+  const png = encodeBgraPng(4, 3, bgra, true)
+  assert.deepEqual(pngDimensions(png), { width: 4, height: 3 })
 })

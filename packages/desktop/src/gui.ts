@@ -36,6 +36,7 @@ import {
   captureWindow,
   failureText,
   listWindows,
+  listWindowsFast,
   picturePadding,
   runCli,
   snapshotWindow,
@@ -52,6 +53,15 @@ import { renderSnapshot } from './render.ts'
 import { agentSessionId, type DesktopSessions } from './sessions.ts'
 import { requireImageRoute } from './route.ts'
 import { sessionState } from './session-state.ts'
+import {
+  hasWinNative,
+  winDrag,
+  winFocusWindow,
+  winMouseClick,
+  winMouseWheel,
+  winPressCombo,
+  winRestoreWindow,
+} from './win-native.ts'
 
 /** A point is a fraction of the picture on a 0–1000 grid, on both axes. */
 export const POINT_SPAN = 1000
@@ -190,11 +200,55 @@ export function frameStillValid(frame: Pick<Frame, 'bounds'>, bounds: Rect | und
     && bounds.height === frame.bounds.height
 }
 
-/** Case-insensitive app match that also accepts a localized name either way. */
-function sameApp(left: string, right: string): boolean {
-  const a = left.toLowerCase()
-  const b = right.toLowerCase()
-  return a === b || a.includes(b) || b.includes(a)
+/** Alias groups where Windows exe names and localized titles differ (e.g. Weixin.exe vs "微信" vs "WeChat"). */
+const APP_ALIAS_GROUPS: readonly (readonly string[])[] = [
+  ['wechat', 'weixin', '微信'],
+  ['settings', 'system settings', 'systemsettings', '设置', '系统设置'],
+  ['calculator', 'calculatorapp', 'calc', '计算器'],
+  ['notepad', '记事本'],
+  ['explorer', 'file explorer', '资源管理器', '文件资源管理器'],
+  ['edge', 'msedge', 'microsoft edge'],
+  ['chrome', 'google chrome'],
+  ['wps', 'wps office'],
+]
+
+/** Normalize an app or process name: trim, lowercase, drop trailing `.exe`. */
+export function normalizeAppName(name: string): string {
+  return name.trim().toLowerCase().replace(/\.exe$/i, '')
+}
+
+/** Expand a normalized name to its alias group (or just itself). */
+function appAliases(name: string): readonly string[] {
+  const norm = normalizeAppName(name)
+  if (norm === '') return []
+  for (const group of APP_ALIAS_GROUPS) {
+    if (group.includes(norm)) return group
+  }
+  return [norm]
+}
+
+/** Case-insensitive app match ignoring `.exe` and honoring cross-language aliases. */
+export function sameApp(left: string, right: string): boolean {
+  const leftAliases = appAliases(left)
+  const rightAliases = appAliases(right)
+  if (leftAliases.length === 0 || rightAliases.length === 0) return false
+  for (const a of leftAliases) {
+    for (const b of rightAliases) {
+      if (a === b || a.includes(b) || b.includes(a)) return true
+    }
+  }
+  return false
+}
+
+/** Match a window against an app query: `appName` first (incl. aliases & `.exe`), then `title`. */
+export function matchesApp(window: Pick<WindowInfo, 'appName' | 'title'>, query: string): boolean {
+  if (sameApp(window.appName, query)) return true
+  const title = window.title.trim().toLowerCase()
+  if (title === '') return false
+  for (const alias of appAliases(query)) {
+    if (alias.length >= 2 && (title === alias || title.includes(alias))) return true
+  }
+  return false
 }
 
 /**
@@ -322,7 +376,8 @@ export function chooseTarget(
 
   const app = args.app
   if (app !== undefined && app !== '') {
-    const matches = usable.filter(window => sameApp(window.appName, app))
+    const byAppName = usable.filter(window => sameApp(window.appName, app))
+    const matches = byAppName.length > 0 ? byAppName : usable.filter(window => matchesApp(window, app))
     const pick = preferredWindow(matches)
     if (pick === undefined) {
       const names = [...new Set(usable.map(window => window.appName))].slice(0, 12)
@@ -500,6 +555,8 @@ export interface GuiDependencies {
   ) => Promise<Envelope<import('./vision.ts').ScreenshotData>>
   /** Raw CLI runner override for tests. */
   readonly runCli?: <T>(args: readonly string[], signal: AbortSignal, stdin?: string) => Promise<Envelope<T>>
+  /** Direct clipboard-paste typing override for tests. */
+  readonly typeAtFocus?: typeof typeAtFocus
   /** Screen-lock probe override for tests. */
   readonly sessionState?: () => Promise<{ readonly locked: boolean | 'unknown' }>
 }
@@ -511,12 +568,17 @@ export function registerGuiTools(
 ): void {
   const activate = dependencies.activate ?? activateApp
   const sessions = dependencies.sessions
-  const inventory = dependencies.listWindows ?? listWindows
   const resolvePid = dependencies.resolveAppPid ?? resolveAppPid
   const readWindow = dependencies.snapshot ?? snapshotWindow
   const capture = dependencies.capture ?? captureWindow
   const cli = dependencies.runCli ?? runCli
+  const pasteText = dependencies.typeAtFocus ?? typeAtFocus
+  const useWinNative = dependencies.runCli === undefined && process.platform === 'win32' && hasWinNative()
   const readLockState = dependencies.sessionState ?? sessionState
+  const inventory = (signal: AbortSignal, sessionId?: string): Promise<Envelope<readonly WindowInfo[]>> =>
+    dependencies.listWindows !== undefined
+      ? dependencies.listWindows(signal)
+      : listWindowsFast(sessions, sessionId, signal)
   /** The picture each session last received. */
   const frames = new Map<string, Frame>()
   /** When each (window, gesture) last landed, for the repeat guard. */
@@ -630,6 +692,9 @@ export function registerGuiTools(
     signal: AbortSignal,
   ): Promise<string | undefined> => {
     if (target.focused) return undefined
+    if (useWinNative) {
+      if (await winFocusWindow(target.windowId)) return undefined
+    }
     let raised = await cli<unknown>(['focus-window', '--window-id', target.windowId], signal)
     if (raised.ok) return undefined
     // On Windows, `focus-window` can occasionally fail with "Window focus did
@@ -638,6 +703,7 @@ export function registerGuiTools(
     if (target.visible) {
       try {
         await activate(target.appName)
+        if (useWinNative && await winFocusWindow(target.windowId)) return undefined
         raised = await cli<unknown>(['focus-window', '--window-id', target.windowId], signal)
         if (raised.ok) return undefined
       } catch {
@@ -683,7 +749,7 @@ export function registerGuiTools(
     windows: readonly WindowInfo[]
     refusal?: Observed
   }> => {
-    const listed = await inventory(exec.signal)
+    const listed = await inventory(exec.signal, exec.agent?.id)
     if (!listed.ok || listed.data === undefined) {
       const code = listed.error?.code ?? 'UNKNOWN'
       const hint = code === 'TIMEOUT'
@@ -917,16 +983,25 @@ export function registerGuiTools(
         return withPicture(blockedFront, fresh)
       }
       const at = pointToScreen(aimed.frame as Frame, point)
-      const clicked = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
-        'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
-        '--button', gesture.button ?? 'left',
-        '--count', String(gesture.count ?? 1),
-        ...Array.isArray(args.modifiers)
-          ? (args.modifiers as unknown[])
-            .map(name => CLI_KEYS[String(name).toLowerCase()] ?? String(name).toLowerCase())
-            .flatMap(name => ['--modifiers', name])
-          : [],
-      ], exec.signal))
+      const mods = Array.isArray(args.modifiers)
+        ? (args.modifiers as unknown[]).map(name => CLI_KEYS[String(name).toLowerCase()] ?? String(name).toLowerCase())
+        : []
+      const clicked = await withScreenLock(exec.agent?.id, async (): Promise<Envelope<unknown>> => {
+        if (useWinNative) {
+          const ok = await winMouseClick(at.x, at.y, {
+            button: gesture.button ?? 'left',
+            count: gesture.count ?? 1,
+            modifiers: mods,
+          })
+          if (ok) return { ok: true, data: {} }
+        }
+        return await cli<unknown>([
+          'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
+          '--button', gesture.button ?? 'left',
+          '--count', String(gesture.count ?? 1),
+          ...mods.flatMap(name => ['--modifiers', name]),
+        ], exec.signal)
+      })
       if (!clicked.ok) {
         const fresh = await observe(aimed.target, exec.signal, 'the click was not delivered.', key, aimed.note)
         return withPicture(failureText(clicked), fresh)
@@ -995,17 +1070,42 @@ export function registerGuiTools(
       const session = agentSessionId(exec.agent?.id ?? '')
       const outcome = await withScreenLock(exec.agent?.id, async (): Promise<{ how: string } | { failure: string }> => {
         if (at !== undefined) {
-          const clicked = await runCli<unknown>([
-            'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
-            '--button', 'left', '--count', '1',
-          ], exec.signal)
-          if (!clicked.ok) return { failure: failureText(clicked) }
+          let clickOk = false
+          let clickErr = ''
+          if (useWinNative) {
+            clickOk = await winMouseClick(at.x, at.y, { button: 'left', count: 1 })
+          }
+          if (!clickOk) {
+            const clicked = await cli<unknown>([
+              'mouse-click', '--headed', '--xy', `${String(at.x)},${String(at.y)}`,
+              '--button', 'left', '--count', '1',
+            ], exec.signal)
+            clickOk = clicked.ok
+            if (!clickOk) clickErr = failureText(clicked)
+          }
+          if (!clickOk) return { failure: clickErr || 'click before typing failed' }
           // The field takes keyboard focus on its own run-loop turn.
           await new Promise(resolve => setTimeout(resolve, FOCUS_SETTLE_MS))
         }
-        // The tree first: inserting into one element cannot land in the wrong
-        // field and cannot touch the user's clipboard. This is the only path
-        // Windows has, and it is the cheapest one everywhere.
+        // `desktop_input_text` already clicked the exact point the caller aimed
+        // at, so go straight to lossless clipboard paste on macOS & Windows.
+        // Searching the AX tree for `focused=true` after a coordinate click is
+        // both slow (up to 6 subprocesses on Windows) and hazardous when an app
+        // reports stale focus (e.g. WeChat 4.x keeps focus on the chat composer
+        // while the search box is clicked). Use `desktop_act set_value` for AX.
+        if (canPasteAtFocus()) {
+          try {
+            await pasteText(text, {
+              ...gesture.replace === true ? { replace: true } : {},
+              ...gesture.submit === true ? { enter: true } : {},
+              windowId: aimed.target.windowId,
+            }, exec.signal)
+            return { how: 'delivered by pasting, with the clipboard put back as it was.' }
+          } catch (error) {
+            return { failure: error instanceof Error ? error.message : String(error) }
+          }
+        }
+        // Fallback for platforms without clipboard paste (e.g. Linux): insert by ref.
         try {
           if (noElementSearch.has(aimed.target.windowId)) throw new Error('element search unavailable for this window')
           const ref = await typeByRef(text, {
@@ -1020,20 +1120,10 @@ export function registerGuiTools(
           if (message.includes('element search unavailable') === false) {
             noElementSearch.add(aimed.target.windowId)
           }
-          if (!canPasteAtFocus()) {
-            return {
-              failure: `${message}\nThis window exposes no addressable text field, and pasting by pointing is `
-                + 'not supported on this platform. Use desktop_inspect and desktop_act on a ref if the window has a tree.',
-            }
+          return {
+            failure: `${message}\nThis window exposes no addressable text field, and pasting by pointing is `
+              + 'not supported on this platform. Use desktop_inspect and desktop_act on a ref if the window has a tree.',
           }
-          // macOS (JXA NSPasteboard) and Windows (Win32 koffi clipboard + Ctrl+V)
-          // both deliver text and restore every clipboard format afterwards.
-          await typeAtFocus(text, {
-            ...gesture.replace === true ? { replace: true } : {},
-            ...gesture.submit === true ? { enter: true } : {},
-            windowId: aimed.target.windowId,
-          }, exec.signal)
-          return { how: 'delivered by pasting, with the clipboard put back as it was.' }
         }
       })
       if ('failure' in outcome) {
@@ -1102,11 +1192,16 @@ export function registerGuiTools(
       const lines = magnitude * 3
       const dy = direction === 'up' ? lines : direction === 'down' ? -lines : 0
       const dx = direction === 'right' ? lines : direction === 'left' ? -lines : 0
-      const scrolled = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
-        'mouse-wheel', '--headed', '--x', String(at.x), '--y', String(at.y),
-        ...dy !== 0 ? ['--dy', String(dy)] : [],
-        ...dx !== 0 ? ['--dx', String(dx)] : [],
-      ], exec.signal))
+      const scrolled = await withScreenLock(exec.agent?.id, async (): Promise<Envelope<unknown>> => {
+        if (useWinNative && winMouseWheel(at.x, at.y, dx, dy)) {
+          return { ok: true, data: {} }
+        }
+        return await cli<unknown>([
+          'mouse-wheel', '--headed', '--x', String(at.x), '--y', String(at.y),
+          ...dy !== 0 ? ['--dy', String(dy)] : [],
+          ...dx !== 0 ? ['--dx', String(dx)] : [],
+        ], exec.signal)
+      })
       if (!scrolled.ok) {
         const fresh = await observe(aimed.target, exec.signal, 'the scroll was not delivered.', key, aimed.note)
         return withPicture(failureText(scrolled), fresh)
@@ -1150,10 +1245,15 @@ export function registerGuiTools(
         const fresh = await observe(aimed.target, exec.signal, 'nothing was sent.', key, aimed.note)
         return withPicture(blockedFront, fresh)
       }
-      const sent = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>(
-        ['press', '--headed', '--window-id', aimed.target.windowId, combo],
-        exec.signal,
-      ))
+      const sent = await withScreenLock(exec.agent?.id, async (): Promise<Envelope<unknown>> => {
+        if (useWinNative && await winPressCombo(combo)) {
+          return { ok: true, data: {} }
+        }
+        return await cli<unknown>(
+          ['press', '--headed', '--window-id', aimed.target.windowId, combo],
+          exec.signal,
+        )
+      })
       if (!sent.ok) {
         const fresh = await observe(aimed.target, exec.signal, 'the key was not delivered.', key, aimed.note)
         return withPicture(failureText(sent), fresh)
@@ -1205,11 +1305,16 @@ export function registerGuiTools(
       }
       const start = pointToScreen(aimed.frame as Frame, from)
       const end = pointToScreen(aimed.frame as Frame, to)
-      const dragged = await withScreenLock(exec.agent?.id, async () => await runCli<unknown>([
-        'drag', '--headed',
-        '--from-xy', `${String(start.x)},${String(start.y)}`,
-        '--to-xy', `${String(end.x)},${String(end.y)}`,
-      ], exec.signal))
+      const dragged = await withScreenLock(exec.agent?.id, async (): Promise<Envelope<unknown>> => {
+        if (useWinNative && await winDrag(start, end)) {
+          return { ok: true, data: {} }
+        }
+        return await cli<unknown>([
+          'drag', '--headed',
+          '--from-xy', `${String(start.x)},${String(start.y)}`,
+          '--to-xy', `${String(end.x)},${String(end.y)}`,
+        ], exec.signal)
+      })
       if (!dragged.ok) {
         const fresh = await observe(aimed.target, exec.signal, 'the drag was not delivered.', key, aimed.note)
         return withPicture(failureText(dragged), fresh)
@@ -1270,49 +1375,81 @@ export function registerGuiTools(
       const name = typeof args.name === 'string' ? args.name.trim() : ''
       if (name === '') return { text: 'INVALID_ARGS: name is required.' }
       const key = sessionKey(exec)
-      try {
-        await activate(name)
-      } catch (error) {
-        return { text: `OPEN_FAILED: ${error instanceof Error ? error.message : String(error)}` }
+      const ownedBy = (windows: readonly WindowInfo[], pid: number | undefined): readonly WindowInfo[] => {
+        if (pid !== undefined) {
+          const byPid = windows.filter(window => window.pid === pid)
+          if (byPid.length > 0) return byPid
+        }
+        const byApp = windows.filter(window => sameApp(window.appName, name))
+        if (byApp.length > 0) return byApp
+        return windows.filter(window => matchesApp(window, name))
       }
-      // Only an on-screen window counts as "opened". QQ keeps thirteen windows
-      // and surfaces one; counting a hidden one would report success with a blank
-      // picture and send the model hunting.
-      const deadline = Date.now() + LAUNCH_WAIT_MS
-      let pid = await resolvePid(name, exec.signal)
+
+      // Fast path: if a matching window is already running, focus/restore it in-process
+      // (~20 ms on Windows) without spawning PowerShell or waiting 12 s on localized names.
+      let listed = await inventory(exec.signal, exec.agent?.id)
       let found: WindowInfo | undefined
-      let listed = await inventory(exec.signal)
-      let onlyHiddenSince: number | undefined
-      let attemptedRestore = false
-      const ownedBy = (windows: readonly WindowInfo[]): readonly WindowInfo[] =>
-        pid === undefined
-          ? windows.filter(window => sameApp(window.appName, name))
-          : windows.filter(window => window.pid === pid)
-      while (Date.now() < deadline) {
-        if (pid === undefined) pid = await resolvePid(name, exec.signal)
-        const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data) : []
-        const active = own.filter(window => !isMinimizedWindow(window))
-        found = preferredWindow(active)
-        if (found !== undefined) break
-        // On Windows a minimized window is reported with visible=false or at
-        // (-32000,-32000) and cannot be driven until restored. Try `restore` once.
-        if (own.length > 0 && !attemptedRestore) {
-          attemptedRestore = true
-          const candidate = preferredWindow(own)
-          if (candidate !== undefined) {
-            await cli<unknown>(['restore', '--window-id', candidate.id], exec.signal).catch(() => {})
+      if (listed.ok && listed.data !== undefined) {
+        const already = ownedBy(listed.data, undefined)
+        const existing = preferredWindow(already.filter(window => !isMinimizedWindow(window))) ?? preferredWindow(already)
+        if (existing !== undefined) {
+          if (isMinimizedWindow(existing)) {
+            if (!useWinNative || !winRestoreWindow(existing.id)) {
+              await cli<unknown>(['restore', '--window-id', existing.id], exec.signal).catch(() => {})
+            }
+          }
+          if (useWinNative) {
+            await winFocusWindow(existing.id)
+          } else {
+            await activate(name).catch(() => {})
+          }
+          listed = await inventory(exec.signal, exec.agent?.id)
+          if (listed.ok && listed.data !== undefined) {
+            const refreshed = ownedBy(listed.data, existing.pid)
+            found = preferredWindow(refreshed.filter(window => !isMinimizedWindow(window)))
           }
         }
-        if (own.length > 0 && active.length === 0) {
-          onlyHiddenSince ??= Date.now()
-          if (Date.now() - onlyHiddenSince > 1_500) break
-        } else {
-          onlyHiddenSince = undefined
-        }
-        await new Promise(resolve => setTimeout(resolve, 250))
-        listed = await inventory(exec.signal)
       }
-      const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data) : []
+
+      if (found === undefined) {
+        try {
+          await activate(name)
+        } catch (error) {
+          return { text: `OPEN_FAILED: ${error instanceof Error ? error.message : String(error)}` }
+        }
+        const deadline = Date.now() + LAUNCH_WAIT_MS
+        let pid = await resolvePid(name, exec.signal)
+        listed = await inventory(exec.signal, exec.agent?.id)
+        let onlyHiddenSince: number | undefined
+        let attemptedRestore = false
+        while (Date.now() < deadline) {
+          if (pid === undefined) pid = await resolvePid(name, exec.signal)
+          const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data, pid) : []
+          const active = own.filter(window => !isMinimizedWindow(window))
+          found = preferredWindow(active)
+          if (found !== undefined) break
+          // On Windows a minimized window is reported with visible=false or at
+          // (-32000,-32000) and cannot be driven until restored. Try `restore` once.
+          if (own.length > 0 && !attemptedRestore) {
+            attemptedRestore = true
+            const candidate = preferredWindow(own)
+            if (candidate !== undefined) {
+              if (!useWinNative || !winRestoreWindow(candidate.id)) {
+                await cli<unknown>(['restore', '--window-id', candidate.id], exec.signal).catch(() => {})
+              }
+            }
+          }
+          if (own.length > 0 && active.length === 0) {
+            onlyHiddenSince ??= Date.now()
+            if (Date.now() - onlyHiddenSince > 1_500) break
+          } else {
+            onlyHiddenSince = undefined
+          }
+          await new Promise(resolve => setTimeout(resolve, 250))
+          listed = await inventory(exec.signal, exec.agent?.id)
+        }
+      }
+      const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data, found?.pid) : []
       const hidden = own.filter(window => window.visible === false).length
       if (found === undefined) {
         const names = listed.ok && listed.data !== undefined

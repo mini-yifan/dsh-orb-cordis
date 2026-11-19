@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveConfig } from '../src/config.ts'
 import { guardState } from '../src/guard.ts'
-import { isSubmitAction, normalizeKey, normalizeRef, registerDesktopTools } from '../src/tools.ts'
+import { isIdentityTimeout, isSubmitAction, normalizeKey, normalizeRef, registerDesktopTools } from '../src/tools.ts'
 import { RefBook } from '../src/sessions.ts'
 
 /**
@@ -484,7 +484,7 @@ test('desktop_batch runs multiple steps with one follow-up read and blocks dupli
   assert.equal(calls.filter(c => c.op === 'act').length, 2, 'second submit must never be dispatched')
 })
 
-test('desktop_act escalates Windows POLICY_DENIED on type_text and press_key to headed delivery', async () => {
+test('desktop_act escalates Windows POLICY_DENIED on type_text via set_value first, then headed', async () => {
   const { tools, calls, cliCalls, exec } = harness({
     snapshot: { ...richSnapshot, windowId: 'w-1' },
     denyHeadless: true,
@@ -498,5 +498,65 @@ test('desktop_act escalates Windows POLICY_DENIED on type_text and press_key to 
   const typed = await act.execute({ ref: '@s1:e4', action: 'type_text', text: 'hello' }, exec)
   assert.match(typed.text, /^ok/)
   assert.ok(cliCalls.some(args => args[0] === 'focus-window' && args.includes('w-1')))
-  assert.deepEqual(calls.filter(c => c.op === 'act').map(c => c.policy), [0, 2])
+  // Headless type_text denied -> tries headless set_value (also denied by mock) -> escalates to headed type_text.
+  assert.deepEqual(calls.filter(c => c.op === 'act').map(c => `${c.action?.kind}:${c.policy}`), [
+    'type_text:0',
+    'set_value:0',
+    'type_text:2',
+  ])
+})
+
+test('desktop_act short-circuits Strict resolution identity TIMEOUT without 4-layer retry cascade', async () => {
+  assert.equal(isIdentityTimeout({
+    code: 'TIMEOUT',
+    message: 'Strict resolution could not determine candidate identity from the live accessibility evidence',
+    resultCode: -9,
+  }), true)
+  assert.equal(isIdentityTimeout({
+    code: 'TIMEOUT',
+    message: 'Target did not become actionable within the wait budget',
+    resultCode: -9,
+  }), false)
+
+  const tools = new Map<string, ToolLike>()
+  const refs = new RefBook()
+  const cliCalls: string[][] = []
+  let actCount = 0
+  const client = {
+    alive: true,
+    async request(req: { op: string }) {
+      if (req.op === 'act') {
+        actCount += 1
+        throw Object.assign(new Error('Strict resolution could not determine candidate identity from the live accessibility evidence'), {
+          code: 'TIMEOUT',
+          delivery: 'not_delivered',
+          details: { kind: 'resolution_identity_unknown' },
+        })
+      }
+      return { app: 'Weixin.exe' }
+    },
+    async close() {},
+  }
+  const sessions = { async entry() { return { client, refs, lastUsed: Date.now() } } }
+  const ctx = {
+    tools: { register: (d: ToolLike) => { tools.set(d.name, d) } },
+    effect: () => ({ dispose: () => {} }),
+    get: () => undefined,
+  }
+  guardState().leases.clear()
+  registerDesktopTools(ctx as never, sessions as never, resolveConfig(), {
+    listWindows: async () => ({
+      ok: true,
+      data: [{ id: 'w-9', title: '微信', appName: 'Weixin.exe', pid: 1, focused: true, accessible: true, visible: true, bounds: { x: 0, y: 0, width: 1000, height: 800 } }],
+    }),
+    snapshot: async () => ({ ok: true, data: { ...richSnapshot, app: 'Weixin.exe', windowId: 'w-9' } as never }),
+    runCli: async (args) => { cliCalls.push([...args]); return { ok: true, data: {} as never } },
+    listSurfaces: async () => [],
+  })
+  const exec = { agent: { id: 'session-id-timeout' }, signal: AbortSignal.timeout(5_000) }
+  await tools.get('desktop_inspect')!.execute({ app: 'Weixin.exe' }, exec)
+  const res = await tools.get('desktop_act')!.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.equal(actCount, 1, 'must fail fast after 1 attempt instead of 4-layer retry cascade')
+  assert.equal(cliCalls.length, 0, 'must not call scroll-to or mouse-click on identity timeout')
+  assert.match(res.text, /desktop_see/)
 })

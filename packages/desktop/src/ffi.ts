@@ -485,6 +485,7 @@ export function loadNative(dir: string): NativeLibrary {
         for (let index = 0; index < count; index += 1) {
           const raw = koffi.decode(ad_window_get(list, index), ExactWindowInfo) as {
             size?: number
+            accessible?: boolean
             window?: {
               id?: string
               title?: string
@@ -511,6 +512,7 @@ export function loadNative(dir: string): NativeLibrary {
             appName: info.app_name ?? '',
             pid: info.pid ?? 0,
             focused: info.is_focused === true,
+            accessible: raw.accessible === true,
             ...hasBounds
               ? { bounds: { x: box.x ?? 0, y: box.y ?? 0, width: box.width ?? 0, height: box.height ?? 0 } }
               : {},

@@ -129,7 +129,7 @@ export type HostRequest =
   | { readonly op: 'ping' }
   | { readonly op: 'status' }
   | { readonly op: 'apps' }
-  | { readonly op: 'windows'; readonly app: string }
+  | { readonly op: 'windows'; readonly app?: string }
   | { readonly op: 'frontmost' }
   | { readonly op: 'presence' }
   | { readonly op: 'state' }

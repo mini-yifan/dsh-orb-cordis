@@ -62,31 +62,66 @@ export function windowsLaunchTarget(app: string): string | undefined {
   return WINDOWS_APP_ALIASES[trimmed.toLowerCase()]
 }
 
+/** Alias groups for matching running Windows processes & titles (e.g. WeChat 4.x uses Weixin.exe with title "微信"). */
+const WINDOWS_PROCESS_ALIASES: Record<string, readonly string[]> = {
+  'wechat': ['Weixin', 'WeChat', '微信'],
+  'weixin': ['Weixin', 'WeChat', '微信'],
+  '微信': ['Weixin', 'WeChat', '微信'],
+  'qq': ['QQ'],
+  'chrome': ['chrome', 'Google Chrome'],
+  'google chrome': ['chrome', 'Google Chrome'],
+  'edge': ['msedge', 'Microsoft Edge'],
+  'microsoft edge': ['msedge', 'Microsoft Edge'],
+  'notepad': ['notepad', '记事本'],
+  '记事本': ['notepad', '记事本'],
+  'calculator': ['CalculatorApp', 'Calculator', '计算器'],
+  '计算器': ['CalculatorApp', 'Calculator', '计算器'],
+  'settings': ['SystemSettings', '设置'],
+  '系统设置': ['SystemSettings', '设置'],
+  '设置': ['SystemSettings', '设置'],
+  'wps': ['wps', 'WPS Office'],
+}
+
 /**
- * Build the PowerShell script that activates a running Windows app or launches
- * it cold by alias, path, URI, or `Get-StartApps` display name.
+ * Build the PowerShell script that activates a running Windows app (by title,
+ * process name, or alias) or launches it cold via alias, path, URI, or
+ * `Get-StartApps`.
  *
  * Encoded as UTF-16LE base64 (`-EncodedCommand`) when invoked, so Chinese app
  * names never suffer from PowerShell 5.1 GBK/ANSI script decoding issues.
  */
 export function windowsActivateScript(app: string): string {
   const trimmed = app.trim()
+  const base = trimmed.replace(/\.exe$/i, '')
   const literal = trimmed.replace(/'/g, "''")
   const mapped = windowsLaunchTarget(trimmed)
   const mappedLiteral = mapped !== undefined ? mapped.replace(/'/g, "''") : ''
+  const aliasList = WINDOWS_PROCESS_ALIASES[base.toLowerCase()] ?? [trimmed, base]
+  const candidates = [...new Set([trimmed, base, ...aliasList])]
+    .filter(item => item !== '')
+    .map(item => `'${item.replace(/'/g, "''")}'`)
+    .join(', ')
   return [
     "$ErrorActionPreference = 'Stop'",
     `$name = '${literal}'`,
     `$mapped = '${mappedLiteral}'`,
+    `$candidates = @(${candidates})`,
     '$ws = New-Object -ComObject WScript.Shell',
-    'if ($ws.AppActivate($name)) { exit 0 }',
+    'foreach ($c in $candidates) { if ($ws.AppActivate($c)) { exit 0 } }',
+    '$procs = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }',
+    'foreach ($c in $candidates) {',
+    '  $p = $procs | Where-Object { $_.ProcessName -ieq $c -or $_.MainWindowTitle -like ("*" + $c + "*") } | Select-Object -First 1',
+    '  if ($p -and $ws.AppActivate($p.Id)) { exit 0 }',
+    '}',
     'if ($mapped -ne "") { Start-Process -FilePath $mapped; exit 0 }',
     'if (Test-Path -LiteralPath $name) { Start-Process -FilePath $name; exit 0 }',
     'try {',
     '  $apps = Get-StartApps -ErrorAction SilentlyContinue',
-    '  $hit = $apps | Where-Object { $_.Name -ieq $name } | Select-Object -First 1',
-    '  if (-not $hit) { $hit = $apps | Where-Object { $_.Name -like ("*" + $name + "*") } | Select-Object -First 1 }',
-    '  if ($hit -and $hit.AppID) { Start-Process -FilePath ("shell:AppsFolder\\" + $hit.AppID); exit 0 }',
+    '  foreach ($c in $candidates) {',
+    '    $hit = $apps | Where-Object { $_.Name -ieq $c } | Select-Object -First 1',
+    '    if (-not $hit) { $hit = $apps | Where-Object { $_.Name -like ("*" + $c + "*") } | Select-Object -First 1 }',
+    '    if ($hit -and $hit.AppID) { Start-Process -FilePath ("shell:AppsFolder\\" + $hit.AppID); exit 0 }',
+    '  }',
     '} catch {}',
     'Start-Process -FilePath $name',
   ].join('\n')
