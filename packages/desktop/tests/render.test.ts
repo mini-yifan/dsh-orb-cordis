@@ -79,6 +79,22 @@ test('stops at the node budget and says so', () => {
   assert.match(rendered.text, /node budget/)
 })
 
+test('pruneEmpty drops inert empty containers while keeping static text and refs', () => {
+  const rendered = renderSnapshot(snapshot({
+    role: 'window',
+    name: 'QQ',
+    children: [
+      { role: 'group', children: [{ role: 'group' }] },
+      { role: 'statictext', value: '现在是 16:38' },
+      { role: 'button', name: '发送', ref: '@s1:e9', states: ['offscreen'] },
+    ],
+  }), { pruneEmpty: true })
+  assert.doesNotMatch(rendered.text, /\bgroup\b/)
+  assert.match(rendered.text, /现在是 16:38/)
+  assert.match(rendered.text, /button "发送"/)
+  assert.deepEqual(rendered.elements.get('@s1:e9')?.states, ['offscreen'])
+})
+
 test('reports an incomplete observation', () => {
   const rendered = renderSnapshot(snapshot({ role: 'window', name: 'W' }, { complete: false }))
   assert.match(rendered.text, /INCOMPLETE/)

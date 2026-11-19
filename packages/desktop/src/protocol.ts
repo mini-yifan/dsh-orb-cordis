@@ -161,6 +161,34 @@ export interface HostError {
   readonly resultCode: number
   readonly delivery?: string
   readonly retry?: string
+  /** Structured diagnostic payload from agent-desktop (e.g. actionability checks). */
+  readonly details?: unknown
+}
+
+/** Screen-space bounds returned by `agent-desktop get <ref> --property bounds`. */
+export interface ElementBounds {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+  readonly live?: boolean
+}
+
+/** One entry returned by `agent-desktop find`. */
+export interface FindMatch {
+  readonly ref?: string
+  readonly role: string
+  readonly name?: string
+  readonly value?: string
+  readonly states?: readonly string[]
+  readonly bounds?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+}
+
+/** Normalized `agent-desktop find` result. */
+export interface FindResult {
+  readonly snapshotId: string
+  readonly matches: readonly FindMatch[]
+  readonly rolesPresent?: readonly string[]
 }
 
 /** One response line. */

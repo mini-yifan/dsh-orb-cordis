@@ -299,3 +299,129 @@ test('a text-only model is refused before any window is touched', async () => {
     /needs a model that declares image input.*desktop_inspect/s,
   )
 })
+
+test('shadowless capture maps 0-1000 points directly onto window bounds with 0pt offset', () => {
+  const settingsBounds = { x: 281, y: 33, width: 723, height: 846 }
+  const frame = frameOf(settingsBounds, { width: 1446, height: 1692, scale: 2, shadowless: true })
+  assert.deepEqual(pointToScreen(frame, [0, 0]), { x: 281, y: 33 })
+  assert.deepEqual(pointToScreen(frame, [500, 500]), { x: Math.round(281 + 723 / 2), y: Math.round(33 + 846 / 2) })
+  assert.deepEqual(pointToScreen(frame, [1000, 1000]), { x: 281 + 723, y: 33 + 846 })
+})
+
+test('desktop_open_app returns AX tree without screenshot when window is accessible and rich', async () => {
+  const { RefBook } = await import('../src/sessions.ts')
+  const refs = new RefBook()
+  let captured = false
+  const tools = new Map<string, { name: string, execute: (args: Record<string, unknown>, exec: unknown) => Promise<{ text: string, image?: unknown }> }>()
+  const ctx = {
+    tools: { register: (tool: { name: string }) => { tools.set(tool.name, tool as never) } },
+    effect: () => ({ dispose: () => {} }),
+    get: () => undefined,
+    attachments: {
+      async saveImage() {
+        return { attachmentId: 'sha256:abc', mediaType: 'image/png', bytes: 10, width: 100, height: 50 }
+      },
+    },
+  }
+  const sessions = { async entry() { return { client: { alive: true }, refs, lastUsed: Date.now() } } }
+  registerGuiTools(ctx as never, resolveConfig(), {
+    activate: async () => {},
+    sessions: sessions as never,
+    resolveAppPid: async () => 101,
+    sessionState: async () => ({ locked: false }),
+    listWindows: async () => ({
+      ok: true,
+      data: [{
+        id: 'w-100',
+        title: '系统设置',
+        appName: '系统设置',
+        pid: 101,
+        focused: true,
+        accessible: true,
+        visible: true,
+        bounds: { x: 100, y: 50, width: 723, height: 846 },
+      }],
+    }),
+    snapshot: async () => ({
+      ok: true,
+      data: {
+        app: '系统设置',
+        windowId: 'w-100',
+        windowTitle: '系统设置',
+        snapshotId: 's_open',
+        refCount: 3,
+        complete: true,
+        tree: {
+          role: 'window',
+          children: [
+            { role: 'button', name: '桌面与程序坞', ref: '@s_open:e1', actions: ['Click'] },
+            { role: 'button', name: '外观', ref: '@s_open:e2', actions: ['Click'] },
+            { role: 'combobox', name: '默认网页浏览器', value: 'Google Chrome', ref: '@s_open:e3', actions: ['Click'] },
+          ],
+        },
+      },
+    }),
+    capture: async () => {
+      captured = true
+      return { ok: true, data: { data: '', format: 'png', width: 100, height: 100, scale_factor: 1, shadowless: true } }
+    },
+  })
+  const openTool = tools.get('desktop_open_app')
+  assert.ok(openTool)
+  const res = await openTool.execute({ name: 'System Settings' }, exec)
+  assert.equal(captured, false, 'should not capture screenshot when AX tree is usable')
+  assert.equal(res.image, undefined)
+  assert.match(res.text, /window 系统设置 w-100/)
+  assert.match(res.text, /默认网页浏览器/)
+  assert.equal(refs.lookup('@s_open:e3')?.known, true)
+})
+
+test('desktop_open_app falls back to shadowless screenshot when tree=no or visual=true', async () => {
+  const { RefBook } = await import('../src/sessions.ts')
+  const refs = new RefBook()
+  let captureCount = 0
+  const tools = new Map<string, { name: string, execute: (args: Record<string, unknown>, exec: unknown) => Promise<{ text: string, image?: unknown }> }>()
+  const ctx = {
+    tools: { register: (tool: { name: string }) => { tools.set(tool.name, tool as never) } },
+    effect: () => ({ dispose: () => {} }),
+    get(name: string) {
+      if (name !== 'llm') return undefined
+      return { async resolveModelInfo() { return { inputModalities: ['text', 'image'] } } }
+    },
+    attachments: {
+      async saveImage() {
+        return { attachmentId: 'sha256:abc', mediaType: 'image/png', bytes: 10, width: 723, height: 846 }
+      },
+    },
+  }
+  const sessions = { async entry() { return { client: { alive: true }, refs, lastUsed: Date.now() } } }
+  registerGuiTools(ctx as never, resolveConfig(), {
+    activate: async () => {},
+    sessions: sessions as never,
+    resolveAppPid: async () => 202,
+    sessionState: async () => ({ locked: false }),
+    listWindows: async () => ({
+      ok: true,
+      data: [{
+        id: 'w-200',
+        title: 'CanvasApp',
+        appName: 'CanvasApp',
+        pid: 202,
+        focused: true,
+        accessible: false,
+        visible: true,
+        bounds: { x: 0, y: 0, width: 800, height: 600 },
+      }],
+    }),
+    capture: async () => {
+      captureCount += 1
+      return { ok: true, data: { data: Buffer.from('x').toString('base64'), format: 'png', width: 1600, height: 1200, scale_factor: 2, shadowless: true } }
+    },
+  })
+  const openTool = tools.get('desktop_open_app')
+  assert.ok(openTool)
+  const res = await openTool.execute({ name: 'CanvasApp' }, exec)
+  assert.equal(captureCount, 1)
+  assert.ok(res.image !== undefined)
+  assert.match(res.text, /tree=no/)
+})

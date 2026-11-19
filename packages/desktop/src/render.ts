@@ -18,14 +18,20 @@ export interface RenderOptions {
   readonly maxNodes?: number
   /** Most characters rendered. */
   readonly maxChars?: number
+  /**
+   * Drop inert empty containers (unnamed groups with no text, ref, actions, or
+   * useful descendants). Keeps `include_text` snapshots compact without losing
+   * any static text or ref.
+   */
+  readonly pruneEmpty?: boolean
 }
 
 export interface RenderedTree {
   readonly text: string
   /** Every ref that reached the model; the session refuses refs outside this set. */
   readonly refs: readonly string[]
-  /** Role and name per emitted ref, for repeat detection and guidance. */
-  readonly elements: ReadonlyMap<string, { readonly role: string; readonly name: string }>
+  /** Role, name, and states per emitted ref, for repeat detection and guidance. */
+  readonly elements: ReadonlyMap<string, { readonly role: string; readonly name: string; readonly states?: readonly string[] }>
   readonly nodes: number
   /** Whether the node or character budget cut something. */
   readonly truncated: boolean
@@ -72,6 +78,32 @@ function nodeLine(node: DesktopNode): string {
   return parts.join(' ')
 }
 
+function hasOwnContent(node: DesktopNode): boolean {
+  if (node.ref !== undefined) return true
+  if (node.name !== undefined && node.name !== '') return true
+  if (node.value !== undefined && node.value !== '') return true
+  if (node.childrenCount !== undefined && node.childrenCount > 0) return true
+  return meaningfulActions(node).length > 0
+}
+
+function pruneNode(node: DesktopNode, isRoot: boolean): DesktopNode | undefined {
+  const children = node.children
+  let keptChildren: DesktopNode[] | undefined
+  if (children !== undefined && children.length > 0) {
+    keptChildren = []
+    for (const child of children) {
+      const pruned = pruneNode(child, false)
+      if (pruned !== undefined) keptChildren.push(pruned)
+    }
+  }
+  const hasKeptChildren = keptChildren !== undefined && keptChildren.length > 0
+  if (!isRoot && !hasOwnContent(node) && !hasKeptChildren) return undefined
+  if (children === undefined) return node
+  if (keptChildren !== undefined && keptChildren.length > 0) return { ...node, children: keptChildren }
+  const { children: _dropped, ...rest } = node
+  return rest
+}
+
 /**
  * Render one snapshot.
  * @param snapshot - normalized observation.
@@ -83,7 +115,7 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS
   const lines: string[] = []
   const refs: string[] = []
-  const elements = new Map<string, { role: string; name: string }>()
+  const elements = new Map<string, { role: string; name: string; states?: readonly string[] }>()
   let nodes = 0
   let chars = 0
   let truncated = false
@@ -101,6 +133,10 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
   if (!snapshot.complete) head.push('INCOMPLETE')
   lines.push(head.join(' · '))
 
+  const rootTree = options.pruneEmpty === true
+    ? (pruneNode(snapshot.tree, true) ?? snapshot.tree)
+    : snapshot.tree
+
   const walk = (node: DesktopNode, depth: number): void => {
     if (truncated) return
     if (nodes >= maxNodes || chars >= maxChars) {
@@ -117,15 +153,20 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
     }
     nodes += 1
     const indent = '  '.repeat(depth)
-    lines.push(`${indent}${nodeLine(node)}`)
-    chars += indent.length + nodeLine(node).length + 1
+    const renderedLine = nodeLine(node)
+    lines.push(`${indent}${renderedLine}`)
+    chars += indent.length + renderedLine.length + 1
     if (node.ref !== undefined) {
       refs.push(node.ref)
-      elements.set(node.ref, { role: node.role, name: node.name ?? '' })
+      elements.set(node.ref, {
+        role: node.role,
+        name: node.name ?? '',
+        ...node.states !== undefined && node.states.length > 0 ? { states: node.states } : {},
+      })
     }
     const children = node.children ?? []
     if (node.childrenCount !== undefined && node.childrenCount > 0 && children.length === 0) {
-      const note = `${indent}  … ${node.childrenCount} hidden by depth (snapshot a deeper level)`
+      const note = `${indent}  … ${node.childrenCount} hidden by depth (snapshot a deeper level or drill with root)`
       lines.push(note)
       chars += note.length + 1
       return
@@ -142,7 +183,7 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
     }
   }
 
-  walk(snapshot.tree, 0)
+  walk(rootTree, 0)
 
   if (snapshot.complete === false) {
     lines.push('note: the observation budget ran out; treat this as partial and re-snapshot deeper only where needed.')
@@ -150,8 +191,8 @@ export function renderSnapshot(snapshot: SnapshotData, options: RenderOptions = 
   if (truncated) {
     lines.push(cutBy === 'chars'
       ? 'note: output cut by the character budget, not by node count. Raising max_nodes will not help: '
-        + 'drill into one region instead (a --root read of the container you need) or read the window at a lower depth.'
-      : 'note: output cut at the node budget; re-snapshot with a deeper level or a larger max_nodes for the part you need.')
+        + 'drill into one region with desktop_inspect root=<ref>, use desktop_find, or read at a lower depth.'
+      : 'note: output cut at the node budget; drill with desktop_inspect root=<ref>, use desktop_find, or raise max_nodes.')
   }
   return { text: lines.join('\n'), refs, elements, nodes, truncated }
 }

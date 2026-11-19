@@ -1,19 +1,12 @@
 /**
- * The accessibility half of the desktop agent's tools: read a window's tree, and
- * act on one element by ref.
+ * The accessibility-first toolset of the desktop agent:
+ * - `desktop_inspect`: read a window, subtree (`root`), skeleton, or overlay (`surface`)
+ * - `desktop_find`: search elements by text/name/role/value without dumping the whole tree
+ * - `desktop_act`: operate one element by ref (semantic first, auto `scroll_to`, exact bounds click fallback, optional `submit`)
+ * - `desktop_batch`: execute a short deterministic sequence of AX actions in a single turn
  *
- * This is the second path, not the first. The first is `desktop` in
- * `gui.ts` — one call, one action, one new picture. The tree is worth reaching
- * for when the picture cannot settle a question: the exact identity of a control
- * in a dense list, a field that must be set atomically, an element that is
- * invisible behind a scroll. On an Electron or canvas window the tree is often
- * absent or nearly empty, and both tools say so instead of letting the model
- * drill.
- *
- * Two tools only: `desktop_inspect` reads, `desktop_act` acts on a ref. Every
- * other status query the background preset used to have is gone, because the
- * picture that `desktop` returns already answers "what is in front", "which
- * windows does this app have", and "did it work".
+ * Visual coordinate tools live in `gui.ts` as the zero-offset fallback for windows
+ * that expose no usable accessibility tree (`tree=no` or `tree_thin`).
  * @module @dsh-orb/desktop/src/tools
  */
 
@@ -32,14 +25,35 @@ import {
   releaseLease,
   screenLockOwner,
 } from './guard.ts'
+import { withScreenLock } from './gui-lock.ts'
 import { chooseWindow } from './frame.ts'
 import { chooseTarget, windowLine } from './gui.ts'
 import { agentSessionId } from './sessions.ts'
 import { POLICY } from './ffi.ts'
 import { renderSnapshot } from './render.ts'
-import type { ActionKind, ActionRequest, SnapshotData, HostError, WindowInfo } from './protocol.ts'
+import type {
+  ActionKind,
+  ActionRequest,
+  ElementBounds,
+  FindResult,
+  HostError,
+  SnapshotData,
+  WindowInfo,
+} from './protocol.ts'
 import type { DesktopSessions, SessionEntry } from './sessions.ts'
-import { listWindows, runCli, snapshotWindow, surfacesOf, type Envelope } from './vision.ts'
+import {
+  DEFAULT_SNAPSHOT_DEPTH,
+  MAX_SNAPSHOT_DEPTH,
+  findElements,
+  getElementBounds,
+  listWindows,
+  runCli,
+  snapshotWindow,
+  surfacesOf,
+  type Envelope,
+  type FindElementsOptions,
+  type SnapshotWindowOptions,
+} from './vision.ts'
 
 const TEXT_SCHEMA = {
   type: 'object',
@@ -54,7 +68,19 @@ const TEXT_SCHEMA = {
  * A healthy native app exposes dozens; a cold Electron shell exposes none or a
  * handful of junk. The number is a hint for the model, never a hard switch.
  */
-const MIN_USEFUL_REFS = 3
+export const MIN_USEFUL_REFS = 3
+
+/** First-attempt headless preflight budget: fail fast instead of sitting 5 s on offscreen/readonly controls. */
+const HEADLESS_PREFLIGHT_MS = 1_500
+
+/** Maximum steps allowed in one `desktop_batch` call. */
+const MAX_BATCH_STEPS = 8
+
+/** Maximum wait per step in `desktop_batch` or `wait_ms` in `desktop_act`. */
+const MAX_WAIT_MS = 5_000
+
+/** Roles that commonly spawn a separate menu/sheet/popover surface on click or expand. */
+const MENU_TRIGGER_ROLE = /combobox|popup|menu|button|disclosure|splitbutton/i
 
 interface Call {
   readonly sessionId: string
@@ -100,67 +126,57 @@ function withThinHint(text: string, refs: readonly string[]): string {
 }
 
 /**
- * Read one app's tree, render it, and remember the refs it exposed.
- *
- * Used by both the inspect tool and the post-action observation, so the two can
- * never drift: whatever refs one of them hands the model is exactly what the ref
- * book will accept next.
- * @param call - calling session.
- * @param app - application name, or undefined for the front window.
- * @param config - tunables.
- * @param options - depth and node-budget overrides.
- * @returns the rendered tree and its thin-tree verdict.
+ * Read one app's tree via FFI, render it, and remember the refs it exposed.
  */
 async function readTree(
   call: Call,
   app: string | undefined,
   config: ResolvedConfig,
-  options: { depth?: number, maxNodes?: number } = {},
+  options: { depth?: number; maxNodes?: number; interactive?: boolean } = {},
 ): Promise<TreeRead> {
-  const depth = Math.min(8, Math.max(1, options.depth ?? 3))
+  const depth = Math.min(MAX_SNAPSHOT_DEPTH, Math.max(1, options.depth ?? DEFAULT_SNAPSHOT_DEPTH))
+  const interactive = options.interactive !== false
   const snapshot = await call.client.request<SnapshotData>({
     op: 'snapshot',
     ...app !== undefined && app !== '' ? { app } : {},
     depth,
-    interactive: true,
+    interactive,
     compact: true,
   })
   const rendered = renderSnapshot(snapshot, {
     maxNodes: options.maxNodes ?? config.maxNodes,
     maxChars: config.maxChars,
+    pruneEmpty: !interactive,
   })
-  call.entry.refs.remember(snapshot, rendered.refs, rendered.elements)
+  call.entry.refs.remember(snapshot, rendered.refs, rendered.elements, { depth, interactive })
   return { text: withThinHint(rendered.text, rendered.refs), refs: rendered.refs, thin: rendered.refs.length < MIN_USEFUL_REFS }
 }
 
 /**
- * Read the window a ref belongs to, preferring the exact window.
- *
- * `readTree` can only name an app, and an app with several windows refuses that
- * with AMBIGUOUS_TARGET — QQ always has two. The ref already carries the window
- * it came from, so use it when it is known and fall back to the app name only
- * when it is not. This is what keeps the post-action observation working on
- * multi-window apps instead of failing right after every action.
- * @param call - calling session.
- * @param known - what the ref book recorded for this ref.
- * @param config - tunables.
- * @returns the rendered tree and its thin-tree verdict.
+ * Read the window a ref belongs to, preserving the depth and text mode it was
+ * originally read with (at least 6, never collapsing back to depth 3).
  */
 async function readTreeFor(
   call: Call,
-  known: { readonly app: string, readonly windowId?: string },
+  known: { readonly app: string; readonly windowId?: string; readonly depth?: number; readonly interactive?: boolean },
   config: ResolvedConfig,
-  readWindow: typeof snapshotWindow = snapshotWindow,
+  readWindow: (windowId: string, options: SnapshotWindowOptions, signal: AbortSignal) => Promise<Envelope<SnapshotData>> = snapshotWindow,
 ): Promise<TreeRead> {
+  const depth = Math.min(MAX_SNAPSHOT_DEPTH, Math.max(6, known.depth ?? DEFAULT_SNAPSHOT_DEPTH))
+  const interactive = known.interactive !== false
   if (known.windowId !== undefined && known.windowId !== '') {
     const read = await readWindow(
       known.windowId,
-      { session: agentSessionId(call.sessionId) },
+      { session: agentSessionId(call.sessionId), depth, interactive },
       AbortSignal.timeout(30_000),
     )
     if (read.ok && read.data !== undefined) {
-      const rendered = renderSnapshot(read.data, { maxNodes: config.maxNodes, maxChars: config.maxChars })
-      call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
+      const rendered = renderSnapshot(read.data, {
+        maxNodes: config.maxNodes,
+        maxChars: config.maxChars,
+        pruneEmpty: !interactive,
+      })
+      call.entry.refs.remember(read.data, rendered.refs, rendered.elements, { depth, interactive })
       return {
         text: withThinHint(rendered.text, rendered.refs),
         refs: rendered.refs,
@@ -169,7 +185,7 @@ async function readTreeFor(
     }
     // Fall through: the window may have closed while the app lives on.
   }
-  return await readTree(call, known.app, config)
+  return await readTree(call, known.app, config, { depth, interactive })
 }
 
 /**
@@ -178,21 +194,24 @@ async function readTreeFor(
  * A menu, sheet, popover or alert is a separate surface: the window tree does not
  * change when one opens, so without this a click that opened a dropdown looks
  * exactly like a click that did nothing.
- * @param app - application display name.
- * @returns the surface kinds, empty when none is open.
  */
-async function overlaysNow(app: string): Promise<readonly string[]> {
+async function defaultListSurfaces(app: string, signal: AbortSignal): Promise<readonly string[]> {
   const listed = await runCli<{ surfaces?: readonly (string | { kind?: string })[] }>(
     ['list-surfaces', '--app', app],
-    AbortSignal.timeout(10_000),
+    signal,
   )
   return listed.ok ? (surfacesOf(listed.data?.surfaces) ?? []) : []
 }
 
+function shouldCheckSurfaces(actionKind: string, role: string | undefined): boolean {
+  if (actionKind === 'right_click' || actionKind === 'expand') return true
+  if (actionKind !== 'click' && actionKind !== 'click_bounds') return false
+  if (role === undefined || role === '') return true
+  return MENU_TRIGGER_ROLE.test(role)
+}
+
 /**
  * Ask the library which app owns the foreground and how idle the user is.
- * @param client - session child.
- * @returns the observed state.
  */
 async function osState(client: DesktopClient): Promise<{ app: string | null }> {
   const value = await client.request<{ app?: string | null }>({ op: 'state' })
@@ -200,15 +219,28 @@ async function osState(client: DesktopClient): Promise<{ app: string | null }> {
 }
 
 function asHostError(error: unknown): HostError {
-  const value = error as { code?: string; message?: string }
-  return { code: value.code ?? 'INTERNAL', message: value.message ?? String(error), resultCode: 0 }
+  const value = error as {
+    code?: string
+    message?: string
+    suggestion?: string
+    resultCode?: number
+    delivery?: string
+    retry?: string
+    details?: unknown
+  }
+  return {
+    code: value.code ?? 'INTERNAL',
+    message: value.message ?? String(error),
+    ...value.suggestion !== undefined ? { suggestion: value.suggestion } : {},
+    resultCode: typeof value.resultCode === 'number' ? value.resultCode : 0,
+    ...value.delivery !== undefined ? { delivery: value.delivery } : {},
+    ...value.retry !== undefined ? { retry: value.retry } : {},
+    ...value.details !== undefined ? { details: value.details } : {},
+  }
 }
 
 /**
  * Check ownership before a mutation, then take the app lease.
- * @param call - calling session.
- * @param app - target application.
- * @param config - tunables.
  */
 async function gate(call: Call, app: string, config: ResolvedConfig): Promise<void> {
   const decision = decideMutation({
@@ -246,8 +278,6 @@ const KEY_ALIASES: Record<string, string> = {
 
 /**
  * Normalize a model-supplied key name.
- * @param key - raw key.
- * @returns the library's name for it.
  */
 export function normalizeKey(key: string): string {
   const trimmed = key.trim()
@@ -257,13 +287,6 @@ export function normalizeKey(key: string): string {
 
 /**
  * Accept a ref the way the tree printed it.
- *
- * The renderer shows refs as `{@s1:e4}` so they stand out in the outline, and a
- * model that copies one verbatim — braces included — used to be told it "belongs
- * to no snapshot", which reads as "the tree path does not work here". Stripping
- * the wrapper costs nothing and removes a whole class of dead end.
- * @param raw - whatever the model passed as a ref.
- * @returns the bare `@snapshot:id` form.
  */
 export function normalizeRef(raw: string): string {
   const trimmed = raw.trim()
@@ -306,8 +329,10 @@ function actionOf(input: {
   }
   if (input.direction !== undefined) action.direction = input.direction as 'up' | 'down' | 'left' | 'right'
   if (input.amount !== undefined) action.amount = input.amount
-  if (action.kind === 'type_text' || action.kind === 'set_value') {
-    if (action.text === undefined) throw new Error(`${action.kind} needs text`)
+  if (action.kind === 'type_text' || action.kind === 'set_value' || action.kind === 'select') {
+    if (action.text === undefined || (action.kind === 'select' && action.text.trim() === '')) {
+      throw new Error(`${action.kind} needs text`)
+    }
   }
   if (action.kind === 'press_key' && (action.key === undefined || action.key === '')) {
     throw new Error('press_key needs key')
@@ -319,25 +344,38 @@ function actionOf(input: {
 }
 
 /**
- * Register the accessibility tools on the calling preset.
- * @param ctx - plugin context carrying the tool registry.
- * @param sessions - child-process owner.
- * @param config - resolved tunables.
- */
-/**
  * Side effects that can be replaced, so a test never spawns the CLI or reads a
  * real window. Production passes nothing and gets the real implementations.
  */
 export interface DesktopDependencies {
   /** Window inventory. */
   readonly listWindows?: (signal: AbortSignal) => Promise<Envelope<readonly WindowInfo[]>>
-  /** Accessibility read for one window. */
+  /** Accessibility read for one window, root subtree, or overlay surface. */
   readonly snapshot?: (
     windowId: string,
-    options: { depth?: number, session?: string },
+    options: SnapshotWindowOptions,
     signal: AbortSignal,
   ) => Promise<Envelope<SnapshotData>>
+  /** Filtered accessibility search. */
+  readonly find?: (options: FindElementsOptions, signal: AbortSignal) => Promise<Envelope<FindResult>>
+  /** Live screen bounds of a ref. */
+  readonly getBounds?: (
+    ref: string,
+    session: string | undefined,
+    signal: AbortSignal,
+  ) => Promise<Envelope<ElementBounds>>
+  /** Currently open overlay surfaces for an app. */
+  readonly listSurfaces?: (app: string, signal: AbortSignal) => Promise<readonly string[]>
+  /** Raw CLI runner (used for `scroll-to`, `focus-window`, `mouse-click`, `press`). */
+  readonly runCli?: <T>(args: readonly string[], signal: AbortSignal, stdin?: string) => Promise<Envelope<T>>
 }
+
+const VALID_ACTIONS = new Set<string>([
+  'click', 'double_click', 'right_click', 'set_value', 'type_text', 'press_key',
+  'scroll', 'scroll_to', 'toggle', 'check', 'uncheck', 'expand', 'collapse', 'select', 'clear',
+])
+
+const BATCH_ACTIONS = new Set<string>([...VALID_ACTIONS, 'wait'])
 
 export function registerDesktopTools(
   ctx: Context,
@@ -347,6 +385,10 @@ export function registerDesktopTools(
 ): void {
   const inventory = dependencies.listWindows ?? listWindows
   const readWindow = dependencies.snapshot ?? snapshotWindow
+  const find = dependencies.find ?? findElements
+  const getBounds = dependencies.getBounds ?? getElementBounds
+  const listSurfaces = dependencies.listSurfaces ?? defaultListSurfaces
+  const cli = dependencies.runCli ?? runCli
   let holdTimer: NodeJS.Timeout | undefined
   const effects = new Map<string, EffectRecord>()
 
@@ -382,22 +424,68 @@ export function registerDesktopTools(
     }
   }
 
+  /**
+   * Click the exact screen center of a ref's live AX bounding box.
+   *
+   * Used for explicit `click_bounds` and as the precise fallback when a control
+   * exposes no working semantic action: no screenshot, no guessed coordinates.
+   */
+  const clickByElementBounds = async (
+    call: Call,
+    ref: string,
+    known: { readonly app: string; readonly windowId?: string; readonly states?: readonly string[] },
+    signal: AbortSignal,
+    options: { button?: 'left' | 'right'; count?: number; scrollFirst?: boolean } = {},
+  ): Promise<{ ok: true; cx: number; cy: number; scrolled: boolean } | { ok: false; message: string }> => {
+    const session = agentSessionId(call.sessionId)
+    let scrolled = false
+    if (options.scrollFirst === true || known.states?.includes('offscreen') === true) {
+      await cli<unknown>(['scroll-to', ref, '--session', session], AbortSignal.timeout(15_000))
+      scrolled = true
+    }
+    const boundsRes = await getBounds(ref, session, signal)
+    if (!boundsRes.ok || boundsRes.data === undefined) {
+      return { ok: false, message: boundsRes.error?.message ?? 'element bounds unavailable' }
+    }
+    if (known.windowId !== undefined && known.windowId !== '') {
+      const focused = await cli<unknown>(['focus-window', '--window-id', known.windowId], signal)
+      if (!focused.ok) {
+        return { ok: false, message: focused.error?.message ?? `could not focus window ${known.windowId}` }
+      }
+    }
+    const box = boundsRes.data
+    const cx = Math.round(box.x + box.width / 2)
+    const cy = Math.round(box.y + box.height / 2)
+    const button = options.button ?? 'left'
+    const count = options.count ?? 1
+    const clicked = await withScreenLock(call.sessionId, async () => await cli<unknown>(
+      ['mouse-click', '--headed', '--xy', `${String(cx)},${String(cy)}`, '--button', button, '--count', String(count)],
+      signal,
+    ))
+    if (!clicked.ok) {
+      return { ok: false, message: clicked.error?.message ?? 'bounds mouse-click failed' }
+    }
+    return { ok: true, cx, cy, scrolled }
+  }
+
   ctx.effect(() => () => {
     if (holdTimer !== undefined) clearTimeout(holdTimer)
     const frame = ctx.get('backgroundFrame') as { hide(): Promise<void> } | undefined
     void frame?.hide()
   })
 
+  // ── desktop_inspect ────────────────────────────────────────────────────────
+
   ctx.tools.register(defineTool({
     name: 'desktop_inspect',
     description:
-      'Read one window\'s interface as a text tree: role, name, and a ref like {@s1z2:e4} for every actionable '
-      + 'element. This is the first call for a desktop task. It resolves the window itself (the one you name, else the '
-      + 'app\'s, else the one in front) and its first line says whether that window has a usable tree: '
-      + '`tree=yes` means act on refs with desktop_act, and one action plus its new tree come back in a single call, '
-      + 'so a tree step is one turn. '
-      + '`tree=no`, or a result ending in tree_thin, means this window exposes nothing to address: stop reading and '
-      + 'use desktop_see with the point-based tools instead. Electron and canvas apps are usually tree=no.',
+      'Read one window, subtree, or overlay as an accessibility text tree: role, name, value, and a ref like {@s1:e4} '
+      + 'for every actionable element. Default depth is 12 (up to 32 for deep Electron/web trees). '
+      + 'Use `skeleton: true` on large windows for a fast overview, then `root: "@s1:e3"` to drill into one branch '
+      + 'without losing outer refs. Set `include_text: true` to include static text labels, status text, or chat messages '
+      + 'so you can verify outcomes without taking a screenshot. '
+      + 'For targeted lookup by keyword or role, prefer `desktop_find` instead of dumping a huge tree. '
+      + 'Only when the first line says `tree=no` or output ends in `tree_thin`, switch to `desktop_see` + point tools.',
     parameters: {
       window: {
         type: 'string',
@@ -409,19 +497,29 @@ export function registerDesktopTools(
       },
       depth: {
         type: 'integer',
-        default: 6,
-        description: 'How many levels to read, 1–8. Default: 6. A shallow read hides deep controls '
-          + '(a chat composer sits several groups down) and costs another round trip to re-read.',
+        default: DEFAULT_SNAPSHOT_DEPTH,
+        description: `How many levels to read, 1–${String(MAX_SNAPSHOT_DEPTH)}. Default: ${String(DEFAULT_SNAPSHOT_DEPTH)}.`,
       },
       max_nodes: {
         type: 'integer',
         description: 'Most nodes to render. Default: 140. Raises the character budget with it.',
       },
+      root: {
+        type: 'string',
+        description: 'Drill into one container ref from an earlier snapshot (e.g. @s1:e3). Keeps outer refs valid.',
+      },
+      skeleton: {
+        type: 'boolean',
+        description: 'Return a shallow structural overview with children_count on cut containers. Default: false.',
+      },
+      include_text: {
+        type: 'boolean',
+        description: 'Include static text nodes (labels, status, chat messages) alongside interactive controls. Default: false.',
+      },
       surface: {
         type: 'string',
-        enum: ['menu', 'sheet', 'popover', 'alert'],
-        description: 'Read an overlay instead of the window. A menu, sheet, popover or alert a click opened '
-          + 'is a separate surface: it never appears in the window tree, so this is the only way to see it.',
+        enum: ['menu', 'menubar', 'sheet', 'popover', 'alert'],
+        description: 'Read an overlay instead of the window (menu, menubar, sheet, popover, or alert).',
       },
     },
     output: {
@@ -430,10 +528,59 @@ export function registerDesktopTools(
     },
     async execute(args, exec) {
       const call = await callOf(exec, sessions)
-      // Resolve the window from the OS, not from an app name: the CLI reads by
-      // window id, which is the only form that works when the app owns several
-      // windows, and it is also the only source of the `tree=yes|no` answer that
-      // decides whether the rest of the task goes through the tree at all.
+      const rootRef = typeof args.root === 'string' && args.root.trim() !== '' ? normalizeRef(args.root) : undefined
+      const surface = typeof args.surface === 'string' ? args.surface : undefined
+      const skeleton = args.skeleton === true
+      const includeText = args.include_text === true
+      const interactive = !includeText
+      const depth = Math.min(
+        MAX_SNAPSHOT_DEPTH,
+        Math.max(1, typeof args.depth === 'number' ? args.depth : DEFAULT_SNAPSHOT_DEPTH),
+      )
+
+      if (rootRef !== undefined && surface !== undefined) {
+        return { text: 'INVALID_ARGS: root and surface cannot be combined. Omit one of them.' }
+      }
+
+      if (rootRef !== undefined) {
+        const known = call.entry.refs.lookup(rootRef)
+        try {
+          const read = await readWindow(
+            known?.windowId ?? '',
+            {
+              session: agentSessionId(call.sessionId),
+              root: rootRef,
+              depth,
+              interactive,
+              ...skeleton ? { skeleton: true } : {},
+            },
+            exec.signal,
+          )
+          if (!read.ok || read.data === undefined) {
+            const error = read.error
+            const parts = [`${error?.code ?? 'FAILED'}: ${error?.message ?? 'root snapshot failed'}`]
+            if (error?.suggestion !== undefined) parts.push(error.suggestion)
+            return { text: `desktop_inspect failed\n${parts.join('\n')}` }
+          }
+          const rendered = renderSnapshot(read.data, {
+            maxNodes: typeof args.max_nodes === 'number' ? args.max_nodes : config.maxNodes,
+            maxChars: typeof args.max_nodes === 'number'
+              ? Math.max(config.maxChars, args.max_nodes * 120)
+              : config.maxChars,
+            pruneEmpty: includeText,
+          })
+          // Merge drilled refs into the existing snapshot so outer refs remain valid.
+          call.entry.refs.remember(read.data, rendered.refs, rendered.elements, {
+            depth,
+            interactive,
+            merge: true,
+          })
+          return { text: `drilled ${rootRef}\n${rendered.text}` }
+        } catch (error) {
+          return { text: `desktop_inspect failed\n${failureText(asHostError(error))}` }
+        }
+      }
+
       const listed = await inventory(exec.signal)
       if (!listed.ok || listed.data === undefined) {
         const code = listed.error?.code ?? 'UNKNOWN'
@@ -463,9 +610,7 @@ export function registerDesktopTools(
           .map(window => `${window.windowId} ${String(window.bounds.width)}x${String(window.bounds.height)}`)
           .join(' | ')}`
 
-      // The window itself said there is nothing to address. Say so before paying
-      // for a read that can only fail with ACTION_NOT_SUPPORTED.
-      if (!target.accessible) {
+      if (!target.accessible && surface === undefined) {
         return {
           text: `${heading}${others}\n\ntree=no: this window exposes no accessibility tree, so there are no refs to act `
             + 'on. Stop reading and use desktop_see with this window id, then the point-based tools '
@@ -473,13 +618,14 @@ export function registerDesktopTools(
         }
       }
 
-      const surface = typeof args.surface === 'string' ? args.surface : undefined
       try {
         const read = await readWindow(
           target.windowId,
           {
             session: agentSessionId(call.sessionId),
-            ...args.depth === undefined ? {} : { depth: args.depth },
+            depth,
+            interactive,
+            ...skeleton ? { skeleton: true } : {},
             ...surface === undefined ? {} : { surface, app: target.appName },
           },
           exec.signal,
@@ -495,23 +641,22 @@ export function registerDesktopTools(
           return { text: `desktop_inspect failed\n${heading}${others}\n${parts.join('\n')}` }
         }
         const rendered = renderSnapshot(read.data, {
-          maxNodes: args.max_nodes ?? config.maxNodes,
-          // Asking for more nodes means the model needs more of the tree; a
-          // fixed character budget would cut it at the same place every time.
-          maxChars: args.max_nodes === undefined
-            ? config.maxChars
-            : Math.max(config.maxChars, args.max_nodes * 120),
+          maxNodes: typeof args.max_nodes === 'number' ? args.max_nodes : config.maxNodes,
+          maxChars: typeof args.max_nodes === 'number'
+            ? Math.max(config.maxChars, args.max_nodes * 120)
+            : config.maxChars,
+          pruneEmpty: includeText,
         })
-        call.entry.refs.remember(read.data, rendered.refs, rendered.elements)
+        call.entry.refs.remember(read.data, rendered.refs, rendered.elements, { depth, interactive })
         const overlay = surface !== undefined
           ? `reading the ${surface} overlay`
           : (read.data.surfaces ?? []).length === 0
             ? ''
             : `overlay(s) now open: ${(read.data.surfaces ?? []).join(', ')} — a menu or popup is NOT part of the `
               + 'window tree. Read it with desktop_inspect surface=<kind>, then act on its refs.'
+        const body = surface !== undefined ? rendered.text : withThinHint(rendered.text, rendered.refs)
         return {
-          text: `${heading}${others}${overlay === '' ? '' : `\n${overlay}`}\n`
-            + withThinHint(rendered.text, rendered.refs),
+          text: `${heading}${others}${overlay === '' ? '' : `\n${overlay}`}\n${body}`,
         }
       } catch (error) {
         return { text: `desktop_inspect failed\n${heading}${others}\n${failureText(asHostError(error))}` }
@@ -519,33 +664,181 @@ export function registerDesktopTools(
     },
   }))
 
+  // ── desktop_find ───────────────────────────────────────────────────────────
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_find',
+    description:
+      'Search a window, subtree, or overlay for matching accessibility elements by keyword, name, role, or value, '
+      + 'without dumping the entire tree. Returned refs are immediately actionable with desktop_act or desktop_batch. '
+      + 'Use this first on dense apps (System Settings, Electron apps like QQ/Slack/Chrome) when you know what control '
+      + 'or text you are looking for.',
+    parameters: {
+      window: { type: 'string', description: 'Window id from a previous result. Preferred when you have one.' },
+      app: { type: 'string', description: 'Application name. Omit with window to search the window in front.' },
+      query: { type: 'string', description: 'Fuzzy text match across name, value, title, and description.' },
+      name: { type: 'string', description: 'Match element accessible name or label.' },
+      role: { type: 'string', description: 'Match accessibility role (button, combobox, textfield, checkbox, menuitem, etc.).' },
+      value: { type: 'string', description: 'Match current element value.' },
+      exact: { type: 'boolean', description: 'Require case-insensitive exact match for name/value. Default: false.' },
+      root: { type: 'string', description: 'Search only inside this ref subtree (e.g. @s1:e3).' },
+      surface: {
+        type: 'string',
+        enum: ['menu', 'menubar', 'sheet', 'popover', 'alert'],
+        description: 'Search an open overlay surface instead of the window.',
+      },
+      limit: { type: 'integer', description: 'Maximum matches to return (1–100). Default: 25.' },
+    },
+    output: {
+      schema: TEXT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(args, exec) {
+      const call = await callOf(exec, sessions)
+      const query = typeof args.query === 'string' && args.query.trim() !== '' ? args.query.trim() : undefined
+      const name = typeof args.name === 'string' && args.name.trim() !== '' ? args.name.trim() : undefined
+      const role = typeof args.role === 'string' && args.role.trim() !== '' ? args.role.trim() : undefined
+      const value = typeof args.value === 'string' && args.value.trim() !== '' ? args.value.trim() : undefined
+      if (query === undefined && name === undefined && role === undefined && value === undefined) {
+        return { text: 'INVALID_ARGS: provide at least one of query, name, role, or value.' }
+      }
+      const rootRef = typeof args.root === 'string' && args.root.trim() !== '' ? normalizeRef(args.root) : undefined
+      const surface = typeof args.surface === 'string' ? args.surface : undefined
+      if (rootRef !== undefined && surface !== undefined) {
+        return { text: 'INVALID_ARGS: root and surface cannot be combined.' }
+      }
+
+      let appName = typeof args.app === 'string' && args.app !== '' ? args.app : ''
+      let windowId = typeof args.window === 'string' && args.window !== '' ? args.window : undefined
+      let windowTitle: string | undefined
+      let heading = ''
+
+      if (rootRef !== undefined) {
+        const known = call.entry.refs.lookup(rootRef)
+        if (known !== undefined) {
+          appName = known.app
+          windowId = known.windowId
+          windowTitle = known.windowTitle
+        }
+        heading = `search under ${rootRef}`
+      } else {
+        const listed = await inventory(exec.signal)
+        if (!listed.ok || listed.data === undefined) {
+          const code = listed.error?.code ?? 'UNKNOWN'
+          return {
+            text: `desktop_find failed\n${code}: ${listed.error?.message ?? 'window inventory failed'}`,
+          }
+        }
+        const chosen = chooseTarget(listed.data, {
+          ...windowId !== undefined ? { window: windowId } : {},
+          ...appName !== '' ? { app: appName } : {},
+        }, undefined)
+        if (chosen.target === undefined) {
+          return { text: `desktop_find failed\nWINDOW_NOT_FOUND: ${chosen.why}` }
+        }
+        const target = chosen.target
+        appName = target.appName
+        windowId = target.windowId
+        windowTitle = target.title
+        heading = windowLine(target)
+        if (!target.accessible && surface === undefined) {
+          return {
+            text: `${heading}\n\ntree=no: this window exposes no accessibility tree. `
+              + 'Use desktop_see with this window id and point-based tools instead.',
+          }
+        }
+      }
+
+      const found = await find({
+        ...rootRef !== undefined ? { root: rootRef } : {},
+        ...surface !== undefined ? { surface, app: appName } : {},
+        ...rootRef === undefined && surface === undefined && windowId !== undefined ? { windowId } : {},
+        ...rootRef === undefined && surface === undefined && windowId === undefined && appName !== '' ? { app: appName } : {},
+        ...query !== undefined ? { query } : {},
+        ...name !== undefined ? { name } : {},
+        ...role !== undefined ? { role } : {},
+        ...value !== undefined ? { value } : {},
+        ...args.exact === true ? { exact: true } : {},
+        ...typeof args.limit === 'number' ? { limit: args.limit } : {},
+        session: agentSessionId(call.sessionId),
+      }, exec.signal)
+
+      if (!found.ok || found.data === undefined) {
+        const err = found.error
+        const parts = [`${err?.code ?? 'FAILED'}: ${err?.message ?? 'find failed'}`]
+        if (err?.suggestion !== undefined) parts.push(err.suggestion)
+        return { text: `desktop_find failed\n${heading}\n${parts.join('\n')}` }
+      }
+
+      const data = found.data
+      if (data.snapshotId !== '' && data.matches.length > 0) {
+        call.entry.refs.rememberFind(
+          {
+            app: appName || 'unknown',
+            snapshotId: data.snapshotId,
+            ...windowId !== undefined ? { windowId } : {},
+            ...windowTitle !== undefined ? { windowTitle } : {},
+          },
+          data.matches,
+        )
+      }
+
+      if (data.matches.length === 0) {
+        const rolesHint = data.rolesPresent !== undefined && data.rolesPresent.length > 0
+          ? `\nroles present: ${data.rolesPresent.join(', ')}`
+          : ''
+        return {
+          text: `${heading}\n0 matches.${rolesHint}\nTry a broader query, omit role, or call desktop_inspect with skeleton=true or include_text=true.`,
+        }
+      }
+
+      const lines = [
+        heading,
+        `${String(data.matches.length)} match(es)${data.snapshotId !== '' ? ` · snapshot ${data.snapshotId}` : ''}`,
+      ]
+      for (const m of data.matches) {
+        const parts = [m.role]
+        if (m.name !== undefined && m.name !== '') parts.push(`"${m.name.replace(/\s+/g, ' ').trim().slice(0, 80)}"`)
+        if (m.value !== undefined && m.value !== '') parts.push(`= "${m.value.replace(/\s+/g, ' ').trim().slice(0, 120)}"`)
+        if (m.ref !== undefined) parts.push(`{${m.ref}}`)
+        const states = (m.states ?? []).filter(s => s !== 'enabled')
+        if (states.length > 0) parts.push(`(${states.join(' ')})`)
+        if (m.ref === undefined && m.bounds !== undefined) {
+          parts.push(`[bounds ${Math.round(m.bounds.x)},${Math.round(m.bounds.y)} ${Math.round(m.bounds.width)}x${Math.round(m.bounds.height)}]`)
+        }
+        lines.push(`  ${parts.join(' ')}`)
+      }
+      return { text: lines.join('\n') }
+    },
+  }))
+
+  // ── desktop_act ────────────────────────────────────────────────────────────
+
   ctx.tools.register(defineTool({
     name: 'desktop_act',
     description:
-      'Operate one element by a ref that desktop_inspect showed you. Actions: click, double_click, right_click, '
-      + 'set_value, type_text, press_key, scroll, toggle, check, uncheck, expand, collapse, select, clear. '
-      + 'Prefer set_value over type_text for fields that accept a value. Actions run headless first: no mouse movement, '
-      + 'no focus stealing, so this is the route that does not disturb the user. '
-      + 'The result comes back with a fresh tree of the same window, so you do not need a separate inspect after an '
-      + 'action: read the new refs from this result and act again. '
-      + 'The same action on the same control is refused for about 12 seconds after it may have landed, so never repeat '
-      + 'a click or Enter to "make sure": a submit result already tells you to confirm from the tree it returns. '
-      + 'If this fails because the control exposes no semantic action, do not force it: use desktop_see and '
-      + 'desktop_click on the point. On Windows an element that repeats in its window (identical rows or buttons) '
-      + 'has no ref path either: those have to be clicked by point. '
-      + 'Key names are case-insensitive; Return is accepted for enter.',
+      'Operate one element by a ref from desktop_inspect, desktop_find, or desktop_open_app. '
+      + 'Actions: click, double_click, right_click, set_value, type_text, press_key, scroll, scroll_to, '
+      + 'toggle, check, uncheck, expand, collapse, select, clear, click_bounds. '
+      + 'For combobox/popup menus, prefer `select` with `text` set to the exact option label (e.g. "Safari浏览器"). '
+      + 'Prefer `set_value` over `type_text` for fields; pass `submit: true` to press Return in the same call. '
+      + 'Actions run headless first (no pointer, no focus stealing). If a control is below the fold it is scrolled into '
+      + 'view automatically; if a control has no working semantic action, it falls back to clicking the element\'s exact '
+      + 'AX bounding box (`click_bounds` can also be called directly) instead of guessing pixels. '
+      + 'The result includes a fresh tree of the same window at your current depth, so one action is one turn. '
+      + 'Never repeat a click or Enter within 12 s to "make sure": confirm from the returned tree.',
     parameters: {
-      ref: { type: 'string', required: true, description: 'A fully qualified ref from the latest desktop_inspect.' },
+      ref: { type: 'string', required: true, description: 'A qualified ref from desktop_inspect, desktop_find, or desktop_open_app.' },
       action: {
         type: 'string',
         required: true,
         enum: [
           'click', 'double_click', 'right_click', 'set_value', 'type_text', 'press_key',
-          'scroll', 'toggle', 'check', 'uncheck', 'expand', 'collapse', 'select', 'clear',
+          'scroll', 'scroll_to', 'toggle', 'check', 'uncheck', 'expand', 'collapse', 'select', 'clear', 'click_bounds',
         ],
         description: 'What to do with the element.',
       },
-      text: { type: 'string', description: 'Text for set_value or type_text.' },
+      text: { type: 'string', description: 'Text for set_value, type_text, or the option label for select.' },
       key: { type: 'string', description: 'Named key for press_key, for example s or Return.' },
       modifiers: {
         type: 'array',
@@ -558,6 +851,14 @@ export function registerDesktopTools(
         description: 'Direction for scroll.',
       },
       amount: { type: 'integer', description: 'Scroll amount. Default: 3.' },
+      submit: {
+        type: 'boolean',
+        description: 'For set_value or type_text: press Return right after inserting text. Default: false.',
+      },
+      wait_ms: {
+        type: 'integer',
+        description: 'Optional pause (0–5000 ms) after the action before reading the updated tree.',
+      },
     },
     output: {
       schema: TEXT_SCHEMA,
@@ -574,37 +875,42 @@ export function registerDesktopTools(
           text: `UNKNOWN_REF: "${args.ref}" is not a ref this session was given. A ref is the token the tree `
             + 'prints in braces, passed without the braces: @<snapshot>:e<number>. '
             + (latest === undefined
-              ? 'Call desktop_inspect first: its result contains the refs.'
-              : `Your latest desktop_inspect of ${latest.app} is snapshot ${latest.snapshotId}, `
+              ? 'Call desktop_inspect or desktop_find first: its result contains the refs.'
+              : `Your latest observation of ${latest.app} is snapshot ${latest.snapshotId}, `
                 + `so its refs look like @${latest.snapshotId}:e22.`),
         }
       }
       if (!known.known) {
         return {
           text: 'REF_NOT_SHOWN: that ref was not in the snapshot text you received. '
-            + 'Use a ref that appears in the latest desktop_inspect result, or inspect again.',
+            + 'Use a ref that appears in the latest desktop_inspect or desktop_find result, or inspect again.',
         }
       }
-      const action = actionOf({
-        action: args.action as ActionKind,
-        ...args.text !== undefined ? { text: args.text } : {},
-        ...args.key !== undefined ? { key: normalizeKey(args.key) } : {},
-        ...args.modifiers !== undefined ? { modifiers: args.modifiers } : {},
-        ...args.direction !== undefined ? { direction: args.direction } : {},
-        ...args.action === 'scroll' ? { amount: args.amount ?? 3 } : {},
-      })
+
+      const rawAction = String(args.action)
+      const isClickBounds = rawAction === 'click_bounds'
+      const action = isClickBounds
+        ? undefined
+        : actionOf({
+            action: rawAction as ActionKind,
+            ...args.text !== undefined ? { text: args.text } : {},
+            ...args.key !== undefined ? { key: normalizeKey(args.key) } : {},
+            ...args.modifiers !== undefined ? { modifiers: args.modifiers } : {},
+            ...args.direction !== undefined ? { direction: args.direction } : {},
+            ...rawAction === 'scroll' ? { amount: args.amount ?? 3 } : {},
+          })
+
       const effectKey = [
         call.sessionId,
         known.app,
         known.role ?? '',
         known.name ?? '',
-        action.kind,
-        action.text ?? action.key ?? '',
+        rawAction,
+        args.text ?? (action?.key ?? ''),
+        args.submit === true ? 'submit' : '',
       ].join('\u0000')
       const previous = effects.get(effectKey)
       if (previous !== undefined && previous.landed && Date.now() - previous.at < config.repeatWindowMs) {
-        // The refusal is the moment the model most wants to know what happened,
-        // so hand it the current tree instead of only a "do not repeat".
         let observation = ''
         try {
           const tree = await readTreeFor(call, known, config, readWindow)
@@ -619,96 +925,179 @@ export function registerDesktopTools(
             + observation,
         }
       }
+
       try {
         await gate(call, known.app, config)
         await showRibbon(call, known.app, {
           ...known.windowId !== undefined ? { windowId: known.windowId } : {},
           ...known.windowTitle !== undefined ? { windowTitle: known.windowTitle } : {},
         })
-        // One action, three attempts, each more precise than the last:
-        //   1. semantic, headless — no pointer, no focus;
-        //   2. if it timed out, scroll the element into view by its own ref and
-        //      try again (a control below the fold never becomes actionable, and
-        //      System Settings keeps its most-wanted control there);
-        //   3. if it is still refused, click the element's own frame with real
-        //      input — precision of the frame, not of a guessed point.
-        //
-        // Only pointer and key delivery may reach step 3: retrying a value write
-        // physically would turn a harmless refusal into a stray click.
-        const escalatable = action.kind === 'click' || action.kind === 'double_click'
-          || action.kind === 'right_click' || action.kind === 'press_key'
-        const attempt = async (): Promise<unknown> =>
-          await call.client.request({ op: 'act', ref, action, policy: POLICY.headless })
+
         let data: unknown
         let escalated = false
+        let usedBoundsClick: { cx: number; cy: number } | undefined
         let scrolled = false
-        let failure: unknown
-        try {
-          data = await attempt()
-        } catch (error) {
-          failure = error
-          if (escalatable && asHostError(error).code === 'TIMEOUT') {
-            scrolled = true
-            // `scroll-to` takes the element's ref, so it aims exactly where the
-            // model pointed — no wheel, no coordinates.
-            await runCli<unknown>(
-              ['scroll-to', ref, '--session', agentSessionId(call.sessionId)],
-              AbortSignal.timeout(15_000),
-            )
-            try {
-              data = await attempt()
-              failure = undefined
-            } catch (again) {
-              failure = again
+
+        if (isClickBounds) {
+          const clicked = await clickByElementBounds(call, ref, known, exec.signal)
+          if (!clicked.ok) {
+            throw Object.assign(new Error(clicked.message), {
+              code: 'ACTION_FAILED',
+              delivery: 'not_delivered',
+              retry: 'safe',
+            })
+          }
+          usedBoundsClick = { cx: clicked.cx, cy: clicked.cy }
+          scrolled = clicked.scrolled
+          data = { action: 'click_bounds', ref_id: ref, disposition: { delivery: 'delivered_unverified' } }
+        } else {
+          const act = action as ActionRequest
+          const scrollRetryable = act.kind === 'click' || act.kind === 'double_click'
+            || act.kind === 'right_click' || act.kind === 'press_key'
+            || act.kind === 'expand' || act.kind === 'select'
+          const physicalEscalatable = act.kind === 'click' || act.kind === 'double_click'
+            || act.kind === 'right_click' || act.kind === 'press_key' || act.kind === 'expand'
+          const boundsEscalatable = act.kind === 'click' || act.kind === 'double_click'
+            || act.kind === 'right_click' || act.kind === 'expand'
+
+          const attempt = async (): Promise<unknown> =>
+            await call.client.request({
+              op: 'act',
+              ref,
+              action: act,
+              policy: POLICY.headless,
+              timeout_ms: HEADLESS_PREFLIGHT_MS,
+            })
+
+          let failure: unknown
+          try {
+            data = await attempt()
+          } catch (error) {
+            failure = error
+            if (scrollRetryable && asHostError(error).code === 'TIMEOUT') {
+              scrolled = true
+              await cli<unknown>(
+                ['scroll-to', ref, '--session', agentSessionId(call.sessionId)],
+                AbortSignal.timeout(15_000),
+              )
+              try {
+                data = await attempt()
+                failure = undefined
+              } catch (again) {
+                failure = again
+              }
+            }
+          }
+
+          if (failure !== undefined) {
+            const hostError = asHostError(failure)
+            const retryable = physicalEscalatable
+              && (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED'
+                || hostError.code === 'TIMEOUT')
+            if (!retryable || !config.physicalFallback) throw failure
+
+            const state = await osState(call.client)
+            if (state.app === known.app) {
+              try {
+                data = await call.client.request({
+                  op: 'act',
+                  ref,
+                  action: act,
+                  policy: POLICY.headed,
+                  timeout_ms: 2_000,
+                })
+                escalated = true
+                failure = undefined
+              } catch (headedError) {
+                failure = headedError
+              }
+            }
+
+            // If headed FFI still failed (e.g. macOS AXPopUpButton readonly preflight TIMEOUT)
+            // or the target window wasn't frontmost yet (and we know its exact windowId),
+            // click the element's exact AX bounding box directly instead of making the model guess pixels.
+            if (failure !== undefined && boundsEscalatable && known.windowId !== undefined) {
+              const clicked = await clickByElementBounds(call, ref, known, exec.signal, {
+                button: act.kind === 'right_click' ? 'right' : 'left',
+                count: act.kind === 'double_click' ? 2 : 1,
+                scrollFirst: !scrolled && hostError.code === 'TIMEOUT',
+              })
+              if (clicked.ok) {
+                usedBoundsClick = { cx: clicked.cx, cy: clicked.cy }
+                if (clicked.scrolled) scrolled = true
+                escalated = true
+                data = { action: act.kind, ref_id: ref, disposition: { delivery: 'delivered_unverified' } }
+                failure = undefined
+              }
+            }
+
+            if (failure !== undefined) throw failure
+          }
+        }
+
+        let submitted = action !== undefined && isSubmitAction(action)
+        if (
+          args.submit === true
+          && action !== undefined
+          && (action.kind === 'set_value' || action.kind === 'type_text')
+        ) {
+          const submitAction: ActionRequest = { kind: 'press_key', key: 'enter' }
+          try {
+            await call.client.request({
+              op: 'act',
+              ref,
+              action: submitAction,
+              policy: POLICY.headless,
+              timeout_ms: HEADLESS_PREFLIGHT_MS,
+            })
+            submitted = true
+          } catch {
+            if (known.windowId !== undefined) {
+              const pressed = await withScreenLock(call.sessionId, async () => {
+                await cli<unknown>(['focus-window', '--window-id', known.windowId as string], exec.signal)
+                return await cli<unknown>(
+                  ['press', '--headed', '--window-id', known.windowId as string, 'return'],
+                  exec.signal,
+                )
+              })
+              if (pressed.ok) submitted = true
             }
           }
         }
-        if (failure !== undefined) {
-          const hostError = asHostError(failure)
-          const retryable = escalatable
-            && (hostError.code === 'POLICY_DENIED' || hostError.code === 'ACTION_NOT_SUPPORTED'
-              || hostError.code === 'TIMEOUT')
-          const state = retryable ? await osState(call.client) : undefined
-          if (!retryable || !config.physicalFallback || state?.app !== known.app) throw failure
-          data = await call.client.request({
-            op: 'act',
-            ref,
-            action,
-            policy: POLICY.headed,
-            // Do not sit in the library's 5 s preflight when the control never
-            // becomes actionable; the frame click itself needs no waiting.
-            timeout_ms: 2_000,
-          })
-          escalated = true
-        }
+
         effects.set(effectKey, { at: Date.now(), landed: true })
         refreshLease(known.app, call.sessionId)
+
+        const waitMs = typeof args.wait_ms === 'number'
+          ? Math.min(MAX_WAIT_MS, Math.max(0, Math.round(args.wait_ms)))
+          : 0
+        if (waitMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, waitMs))
+        }
+
         const lines = [actionText(data)]
         if (scrolled) {
-          lines.push('note: this control was below the fold, so it was scrolled into view by its own ref first.')
+          lines.push('note: this control was scrolled into view by its own ref first.')
         }
-        if (action.kind === 'click' || action.kind === 'double_click' || action.kind === 'press_key') {
-          // A popup or menu opens as its own surface; the window tree will look
-          // unchanged, which reads as "the click did nothing" unless we say so.
-          const overlays = await overlaysNow(known.app)
-          if (overlays.length > 0) {
-            lines.push(`overlay(s) now open: ${overlays.join(', ')} — they are not in the tree below. `
-              + 'Read one with desktop_inspect surface=<kind>, then act on its refs.')
-          }
-        }
-        if (escalated) {
+        if (usedBoundsClick !== undefined) {
+          lines.push(
+            `note: clicked the element's exact AX bounds center at screen (${String(usedBoundsClick.cx)},${String(usedBoundsClick.cy)}).`,
+          )
+        } else if (escalated) {
           lines.push('note: this control exposes no semantic action, so it was clicked by its own frame with real '
             + 'input. That is still precise — it is the element\'s frame, not a guessed point.')
         }
+        if (shouldCheckSurfaces(rawAction, known.role)) {
+          const overlays = await listSurfaces(known.app, AbortSignal.timeout(10_000))
+          if (overlays.length > 0) {
+            lines.push(`overlay(s) now open: ${overlays.join(', ')} — they are not in the tree below. `
+              + 'Read one with desktop_inspect surface=<kind>, or search it with desktop_find surface=<kind>.')
+          }
+        }
 
-        // Observe the same window right away. This is the phone's after() applied
-        // to the desktop: one action plus its new tree in a single result, so the
-        // model does not spend a whole turn asking what changed. A failed read is
-        // not a failed action — the action already landed, so only the reading is
-        // reported as missing.
         try {
           const tree = await readTreeFor(call, known, config, readWindow)
-          if (isSubmitAction(action)) {
+          if (submitted) {
             lines.push('note: a submit was sent. Read the tree below before doing anything else;'
               + ' never press it again to "make sure".')
           }
@@ -731,11 +1120,197 @@ export function registerDesktopTools(
             text: `${failureText(hostError)}\n`
               + 'This control has no semantic action, and it could not be clicked either (the window is not in '
               + 'front, or physical input is off). Bring the window forward with desktop_open_app, then retry this '
-              + 'same ref — the frame click is precise and needs no point.',
+              + 'same ref or use action="click_bounds" — the frame click is precise and needs no guessed point.',
           }
         }
         return { text: `desktop_act failed\n${failureText(hostError)}` }
       }
+    },
+  }))
+
+  // ── desktop_batch ──────────────────────────────────────────────────────────
+
+  ctx.tools.register(defineTool({
+    name: 'desktop_batch',
+    description:
+      'Execute a short sequence (1–8 steps) of deterministic accessibility actions in one turn, then return ONE '
+      + 'fresh tree at the end. Ideal for multi-field forms, check/toggle sequences, scroll_to + click, or '
+      + 'set_value + wait + press_key(Return). Stops on the first error by default and blocks duplicate submits '
+      + 'within the same batch.',
+    parameters: {
+      steps: {
+        type: 'array',
+        required: true,
+        description: `Ordered list of 1–${String(MAX_BATCH_STEPS)} steps.`,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ref: { type: 'string', description: 'Qualified ref (required for all actions except wait).' },
+            action: {
+              type: 'string',
+              required: true,
+              enum: [
+                'click', 'double_click', 'right_click', 'set_value', 'type_text', 'press_key',
+                'scroll', 'scroll_to', 'toggle', 'check', 'uncheck', 'expand', 'collapse', 'select', 'clear', 'wait',
+              ],
+              description: 'Action to execute for this step.',
+            },
+            text: { type: 'string', description: 'Text for set_value, type_text, or select.' },
+            key: { type: 'string', description: 'Key name for press_key.' },
+            modifiers: { type: 'array', items: { type: 'string' }, description: 'Modifiers for press_key.' },
+            direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'Direction for scroll.' },
+            amount: { type: 'integer', description: 'Scroll amount.' },
+            ms: { type: 'integer', description: 'Pause duration in ms for wait (0–5000).' },
+          },
+        },
+      },
+      stop_on_error: {
+        type: 'boolean',
+        description: 'Stop executing remaining steps after the first error. Default: true.',
+      },
+    },
+    output: {
+      schema: TEXT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const call = await callOf(exec, sessions)
+      const rawSteps = Array.isArray(args.steps) ? args.steps as Record<string, unknown>[] : []
+      if (rawSteps.length === 0 || rawSteps.length > MAX_BATCH_STEPS) {
+        return {
+          text: `INVALID_ARGS: steps must contain between 1 and ${String(MAX_BATCH_STEPS)} items.`,
+        }
+      }
+      const stopOnError = args.stop_on_error !== false
+      const summary: string[] = []
+      let lastKnown: {
+        app: string
+        windowId?: string
+        windowTitle?: string
+        depth?: number
+        interactive?: boolean
+        role?: string
+      } | undefined
+      let submittedInBatch = false
+      let anyMenuTrigger = false
+
+      for (let i = 0; i < rawSteps.length; i += 1) {
+        const step = rawSteps[i] ?? {}
+        const stepNo = i + 1
+        const kind = typeof step.action === 'string' ? step.action : ''
+        if (!BATCH_ACTIONS.has(kind)) {
+          summary.push(`[${String(stepNo)}] INVALID_ARGS: unsupported action "${kind}"`)
+          if (stopOnError) break
+          continue
+        }
+        if (kind === 'wait') {
+          const ms = Math.min(MAX_WAIT_MS, Math.max(0, Math.round(Number(step.ms ?? 300))))
+          if (ms > 0) await new Promise(resolve => setTimeout(resolve, ms))
+          summary.push(`[${String(stepNo)}] wait ${String(ms)}ms: ok`)
+          continue
+        }
+
+        const rawRef = typeof step.ref === 'string' ? step.ref : ''
+        if (rawRef.trim() === '') {
+          summary.push(`[${String(stepNo)}] INVALID_ARGS: ${kind} requires ref`)
+          if (stopOnError) break
+          continue
+        }
+        const ref = normalizeRef(rawRef)
+        const known = call.entry.refs.lookup(ref)
+        if (known === undefined || !known.known) {
+          summary.push(`[${String(stepNo)}] ${known === undefined ? 'UNKNOWN_REF' : 'REF_NOT_SHOWN'}: ${rawRef}`)
+          if (stopOnError) break
+          continue
+        }
+
+        let action: ActionRequest
+        try {
+          action = actionOf({
+            action: kind as ActionKind,
+            ...typeof step.text === 'string' ? { text: step.text } : {},
+            ...typeof step.key === 'string' ? { key: normalizeKey(step.key) } : {},
+            ...Array.isArray(step.modifiers) ? { modifiers: step.modifiers.map(String) } : {},
+            ...typeof step.direction === 'string' ? { direction: step.direction } : {},
+            ...kind === 'scroll' ? { amount: typeof step.amount === 'number' ? step.amount : 3 } : {},
+          })
+        } catch (error) {
+          summary.push(`[${String(stepNo)}] INVALID_ARGS: ${error instanceof Error ? error.message : String(error)}`)
+          if (stopOnError) break
+          continue
+        }
+
+        const isSubmit = isSubmitAction(action)
+        if (isSubmit && submittedInBatch) {
+          summary.push(`[${String(stepNo)}] SUBMIT_GUARD: a submit already ran in this batch; stopped to prevent duplicate submission.`)
+          break
+        }
+
+        const effectKey = [
+          call.sessionId,
+          known.app,
+          known.role ?? '',
+          known.name ?? '',
+          action.kind,
+          action.text ?? action.key ?? '',
+        ].join('\u0000')
+        const previous = effects.get(effectKey)
+        if (previous !== undefined && previous.landed && Date.now() - previous.at < config.repeatWindowMs) {
+          summary.push(`[${String(stepNo)}] IDENTICAL_ACTION: ${kind} ${ref} ran recently; skipped.`)
+          if (stopOnError) break
+          continue
+        }
+
+        try {
+          await gate(call, known.app, config)
+          const data = await call.client.request({
+            op: 'act',
+            ref,
+            action,
+            policy: POLICY.headless,
+            timeout_ms: HEADLESS_PREFLIGHT_MS,
+          })
+          effects.set(effectKey, { at: Date.now(), landed: true })
+          refreshLease(known.app, call.sessionId)
+          if (isSubmit) submittedInBatch = true
+          if (shouldCheckSurfaces(action.kind, known.role)) anyMenuTrigger = true
+          lastKnown = known
+          summary.push(`[${String(stepNo)}] ${actionText(data).split('\n')[0]}`)
+        } catch (error) {
+          const hostError = asHostError(error)
+          effects.set(effectKey, {
+            at: Date.now(),
+            landed: hostError.delivery !== 'not_delivered' && hostError.code !== 'INVALID_ARGS',
+          })
+          releaseLease(known.app, call.sessionId)
+          lastKnown = known
+          summary.push(`[${String(stepNo)}] FAILED (${kind} ${ref}): ${failureText(hostError).replace(/\n/g, ' | ')}`)
+          if (stopOnError) break
+        }
+      }
+
+      const lines = ['batch result:', ...summary]
+      if (lastKnown !== undefined) {
+        if (anyMenuTrigger) {
+          const overlays = await listSurfaces(lastKnown.app, AbortSignal.timeout(10_000))
+          if (overlays.length > 0) {
+            lines.push(`overlay(s) now open: ${overlays.join(', ')} — read with desktop_inspect surface=<kind>.`)
+          }
+        }
+        try {
+          const tree = await readTreeFor(call, lastKnown, config, readWindow)
+          if (submittedInBatch) {
+            lines.push('note: a submit was sent in this batch. Confirm from the tree below; never submit again.')
+          }
+          lines.push('', `--- ${lastKnown.app} now ---`, tree.text)
+        } catch (error) {
+          const hostError = asHostError(error)
+          lines.push('', `note: follow-up tree read failed (${hostError.code}: ${hostError.message}). Call desktop_inspect before acting again.`)
+        }
+      }
+      return { text: lines.join('\n') }
     },
   }))
 }

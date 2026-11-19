@@ -49,6 +49,6 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => () => {
     void sessions.dispose()
   })
-  registerGuiTools(ctx, resolved)
+  registerGuiTools(ctx, resolved, { sessions })
   registerDesktopTools(ctx, sessions, resolved)
 }

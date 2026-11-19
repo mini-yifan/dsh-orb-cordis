@@ -105,6 +105,55 @@ test('window choice falls back to the title, then the largest', () => {
   assert.equal(largest?.id, 'b')
 })
 
+test('failure text surfaces structured error.details checks and occluder', () => {
+  const text = failureText({
+    code: 'TIMEOUT',
+    message: 'Target did not become actionable',
+    resultCode: -9,
+    details: {
+      kind: 'actionability_timeout',
+      retryable: false,
+      last_report: {
+        checks: [
+          { check: 'visible', status: 'pass' },
+          { check: 'enabled', status: 'fail', reason: 'readonly control' },
+        ],
+      },
+      occluder: { role: 'sheet', name: 'Confirm' },
+    },
+  })
+  assert.match(text, /details: kind=actionability_timeout/)
+  assert.match(text, /failed checks: enabled \(readonly control\)/)
+  assert.match(text, /occluder=sheet "Confirm"/)
+  assert.match(text, /retryable=false/)
+})
+
+test('the ref book preserves depth, merges root drills, and registers find refs', () => {
+  const book = new RefBook()
+  const base: SnapshotData = {
+    app: '系统设置',
+    windowId: 'w-10',
+    snapshotId: 's1',
+    refCount: 2,
+    complete: true,
+    tree: { role: 'window' },
+  }
+  book.remember(base, ['@s1:e1'], new Map([['@s1:e1', { role: 'outline', name: '边栏' }]]), { depth: 16, interactive: false })
+  book.remember(base, ['@s1:e20'], new Map([['@s1:e20', { role: 'combobox', name: '默认网页浏览器', states: ['readonly'] }]]), { merge: true })
+  assert.equal(book.lookup('@s1:e1')?.known, true, 'outer ref stays valid after root merge')
+  assert.equal(book.lookup('@s1:e20')?.known, true)
+  assert.equal(book.lookup('@s1:e20')?.depth, 16)
+  assert.equal(book.lookup('@s1:e20')?.interactive, false)
+  assert.deepEqual(book.lookup('@s1:e20')?.states, ['readonly'])
+
+  book.rememberFind(
+    { app: 'QQ', snapshotId: 's_find', windowId: 'w-99' },
+    [{ ref: '@s_find:e52', role: 'button', name: '我的手机' }, { role: 'statictext', name: '纯文本' }],
+  )
+  assert.equal(book.lookup('@s_find:e52')?.known, true)
+  assert.equal(book.lookup('@s_find:e52')?.windowId, 'w-99')
+})
+
 test('window choice refuses when nothing is big enough to frame', () => {
   assert.equal(chooseWindow([win('w-1', '微信', 1470, 33)], {}), undefined)
   assert.equal(chooseWindow([], {}), undefined)

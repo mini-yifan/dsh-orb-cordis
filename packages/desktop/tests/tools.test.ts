@@ -49,13 +49,24 @@ const richSnapshot = {
   },
 }
 
-function harness(options: { snapshot?: object, denyHeadless?: boolean, accessible?: boolean, frontmost?: string } = {}) {
+function harness(options: {
+  snapshot?: object
+  denyHeadless?: boolean
+  timeoutHeadless?: boolean
+  accessible?: boolean
+  frontmost?: string
+  surfaces?: readonly string[]
+  findResult?: import('../src/protocol.ts').FindResult
+  bounds?: import('../src/protocol.ts').ElementBounds
+} = {}) {
   const tools = new Map<string, ToolLike>()
-  const calls: { op: string, policy?: number }[] = []
+  const calls: { op: string; policy?: number; action?: { kind?: string; text?: string; key?: string }; depth?: number; timeout_ms?: number }[] = []
+  const cliCalls: readonly string[][] = []
+  const snapshotCalls: { windowId: string; options: Record<string, unknown> }[] = []
   const refs = new RefBook()
   const client = {
     alive: true,
-    async request(request: { op: string, policy?: number }) {
+    async request(request: { op: string; policy?: number; action?: { kind?: string; text?: string; key?: string }; depth?: number; timeout_ms?: number }) {
       calls.push(request)
       switch (request.op) {
         case 'snapshot': return options.snapshot ?? snapshotData
@@ -67,7 +78,17 @@ function harness(options: { snapshot?: object, denyHeadless?: boolean, accessibl
               delivery: 'not_delivered',
             })
           }
-          return { action: 'click', ref_id: '@s1:e2', disposition: { delivery: 'delivered_verified' } }
+          if (options.timeoutHeadless === true) {
+            throw Object.assign(new Error('Target did not become actionable within the wait budget'), {
+              code: 'TIMEOUT',
+              delivery: 'not_delivered',
+              details: {
+                kind: 'actionability_timeout',
+                checks: [{ check: 'enabled', status: 'fail', reason: 'readonly' }],
+              },
+            })
+          }
+          return { action: request.action?.kind ?? 'click', ref_id: '@s1:e2', disposition: { delivery: 'delivered_verified' } }
         default: return {}
       }
     },
@@ -103,15 +124,34 @@ function harness(options: { snapshot?: object, denyHeadless?: boolean, accessibl
   guardState().raised = undefined
   registerDesktopTools(ctx as never, sessions as never, resolveConfig(), {
     listWindows: async () => ({ ok: true, data: windows }),
-    snapshot: async () => ({ ok: true, data: options.snapshot ?? snapshotData }),
+    snapshot: async (windowId, snapOptions) => {
+      snapshotCalls.push({ windowId, options: snapOptions as Record<string, unknown> })
+      return { ok: true, data: (options.snapshot ?? snapshotData) as never }
+    },
+    find: async () => ({
+      ok: true,
+      data: options.findResult ?? {
+        snapshotId: 's_find',
+        matches: [{ ref: '@s_find:e7', role: 'combobox', name: '默认网页浏览器', value: 'Google Chrome' }],
+      },
+    }),
+    getBounds: async () => ({
+      ok: true,
+      data: options.bounds ?? { x: 400, y: 500, width: 120, height: 30, live: true },
+    }),
+    listSurfaces: async () => options.surfaces ?? [],
+    runCli: async (args) => {
+      ;(cliCalls as string[][]).push([...args])
+      return { ok: true, data: {} as never }
+    },
   })
-  const exec = { agent: { id: 'session-1' } }
-  return { tools, calls, exec }
+  const exec = { agent: { id: 'session-1' }, signal: AbortSignal.timeout(5_000) }
+  return { tools, calls, cliCalls, snapshotCalls, exec }
 }
 
-test('registers the accessibility pair and nothing else', () => {
+test('registers the enhanced accessibility toolset', () => {
   const { tools } = harness()
-  assert.deepEqual([...tools.keys()].sort(), ['desktop_act', 'desktop_inspect'])
+  assert.deepEqual([...tools.keys()].sort(), ['desktop_act', 'desktop_batch', 'desktop_find', 'desktop_inspect'])
 })
 
 test('inspect renders the tree and remembers its refs', async () => {
@@ -314,4 +354,132 @@ test('key aliases and submit detection', () => {
   assert.equal(isSubmitAction({ kind: 'press_key', key: 'enter' }), true)
   assert.equal(isSubmitAction({ kind: 'press_key', key: 'tab' }), false)
   assert.equal(isSubmitAction({ kind: 'click' }), false)
+})
+
+test('inspect surfaces open overlays and passes depth up to 32, skeleton, include_text, and root drill', async () => {
+  const withSurfaces = { ...richSnapshot, windowId: 'w-1', surfaces: ['menu'] }
+  const { tools, snapshotCalls, exec } = harness({ snapshot: withSurfaces })
+  const inspect = tools.get('desktop_inspect')
+  const act = tools.get('desktop_act')
+  assert.ok(inspect && act)
+
+  const res = await inspect.execute({ app: 'Notes', depth: 24, skeleton: true, include_text: true }, exec)
+  assert.match(res.text, /overlay\(s\) now open: menu/)
+  assert.equal(snapshotCalls[0]?.options.depth, 24)
+  assert.equal(snapshotCalls[0]?.options.skeleton, true)
+  assert.equal(snapshotCalls[0]?.options.interactive, false)
+
+  // Follow-up read after act must preserve depth=24 (never collapse to depth 3).
+  await act.execute({ ref: '@s1:e2', action: 'click' }, exec)
+  assert.equal(snapshotCalls[1]?.options.depth, 24)
+  assert.equal(snapshotCalls[1]?.options.interactive, false)
+})
+
+test('desktop_inspect root drill keeps outer refs valid in RefBook', async () => {
+  const { tools, exec } = harness({
+    snapshot: {
+      ...richSnapshot,
+      windowId: 'w-1',
+    },
+  })
+  const inspect = tools.get('desktop_inspect')
+  const act = tools.get('desktop_act')
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
+  const drilled = await inspect.execute({ root: '@s1:e2', depth: 10 }, exec)
+  assert.match(drilled.text, /^drilled @s1:e2/)
+  // Outer ref @s1:e5 from the initial snapshot must still be usable.
+  const acted = await act.execute({ ref: '@s1:e5', action: 'click' }, exec)
+  assert.match(acted.text, /^ok/)
+})
+
+test('desktop_find registers refs for immediate desktop_act and shows roles_present on miss', async () => {
+  const { tools, exec } = harness({
+    findResult: {
+      snapshotId: 's_find',
+      matches: [
+        { ref: '@s_find:e11', role: 'combobox', name: '默认网页浏览器', value: 'Google Chrome', states: ['readonly'] },
+        { role: 'statictext', name: '默认网页浏览器', bounds: { x: 10, y: 20, width: 80, height: 18 } },
+      ],
+    },
+  })
+  const find = tools.get('desktop_find')
+  const act = tools.get('desktop_act')
+  assert.ok(find && act)
+
+  const found = await find.execute({ app: 'Notes', query: '默认网页浏览器' }, exec)
+  assert.match(found.text, /2 match\(es\)/)
+  assert.match(found.text, /@s_find:e11/)
+  assert.match(found.text, /\[bounds 10,20 80x18\]/)
+
+  const selected = await act.execute({ ref: '@s_find:e11', action: 'select', text: 'Safari浏览器' }, exec)
+  assert.match(selected.text, /^ok/)
+
+  const missHarness = harness({
+    findResult: { snapshotId: 's_empty', matches: [], rolesPresent: ['button', 'combobox'] },
+  })
+  const miss = await missHarness.tools.get('desktop_find')!.execute({ app: 'Notes', role: 'menu' }, exec)
+  assert.match(miss.text, /0 matches/)
+  assert.match(miss.text, /roles present: button, combobox/)
+})
+
+test('desktop_act requires text for select and supports submit=true on set_value', async () => {
+  const { tools, calls, exec } = harness({ snapshot: richSnapshot })
+  const inspect = tools.get('desktop_inspect')
+  const act = tools.get('desktop_act')
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
+
+  await assert.rejects(() => act.execute({ ref: '@s1:e2', action: 'select' }, exec), /select needs text/)
+
+  const res = await act.execute({ ref: '@s1:e4', action: 'set_value', text: 'hello', submit: true }, exec)
+  assert.match(res.text, /^ok/)
+  assert.match(res.text, /submit was sent/)
+  const actCalls = calls.filter(c => c.op === 'act')
+  assert.equal(actCalls.length, 2)
+  assert.equal(actCalls[0]?.action?.kind, 'set_value')
+  assert.equal(actCalls[1]?.action?.kind, 'press_key')
+  assert.equal(actCalls[1]?.action?.key, 'enter')
+})
+
+test('desktop_act escalates TIMEOUT on expand to scroll-to + exact AX bounds click', async () => {
+  const withWindow = { ...richSnapshot, windowId: 'w-1' }
+  const { tools, cliCalls, exec } = harness({
+    snapshot: withWindow,
+    timeoutHeadless: true,
+    frontmost: 'Notes',
+    bounds: { x: 400, y: 500, width: 120, height: 30, live: true },
+  })
+  const inspect = tools.get('desktop_inspect')
+  const act = tools.get('desktop_act')
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
+
+  const res = await act.execute({ ref: '@s1:e2', action: 'expand' }, exec)
+  assert.match(res.text, /^ok/)
+  assert.match(res.text, /exact AX bounds center at screen \(460,515\)/)
+  assert.ok(cliCalls.some(args => args[0] === 'scroll-to' && args[1] === '@s1:e2'))
+  assert.ok(cliCalls.some(args => args[0] === 'mouse-click' && args.includes('460,515')))
+})
+
+test('desktop_batch runs multiple steps with one follow-up read and blocks duplicate submits', async () => {
+  const { tools, calls, snapshotCalls, exec } = harness({ snapshot: { ...richSnapshot, windowId: 'w-1' } })
+  const inspect = tools.get('desktop_inspect')
+  const batch = tools.get('desktop_batch')
+  assert.ok(inspect && batch)
+  await inspect.execute({ app: 'Notes' }, exec)
+  const snapsBefore = snapshotCalls.length
+
+  const res = await batch.execute({
+    steps: [
+      { ref: '@s1:e4', action: 'set_value', text: 'hi' },
+      { ref: '@s1:e4', action: 'press_key', key: 'Return' },
+      { ref: '@s1:e4', action: 'press_key', key: 'Return' },
+    ],
+  }, exec)
+  assert.match(res.text, /\[1\] ok/)
+  assert.match(res.text, /\[2\] ok/)
+  assert.match(res.text, /\[3\] SUBMIT_GUARD/)
+  assert.equal(snapshotCalls.length - snapsBefore, 1, 'batch should perform exactly one follow-up tree read')
+  assert.equal(calls.filter(c => c.op === 'act').length, 2, 'second submit must never be dispatched')
 })

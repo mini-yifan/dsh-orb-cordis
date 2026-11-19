@@ -45,6 +45,7 @@ function toError(error: NativeError): HostError {
     resultCode: error.resultCode,
     ...error.delivery !== undefined ? { delivery: error.delivery } : {},
     ...error.retry !== undefined ? { retry: error.retry } : {},
+    ...error.details !== undefined ? { details: error.details } : {},
   }
 }
 

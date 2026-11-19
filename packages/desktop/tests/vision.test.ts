@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { normalizeRawNode, picturePadding } from '../src/vision.ts'
+import { normalizeRawNode, numericWindowId, picturePadding, pngDimensions } from '../src/vision.ts'
 
 // Measured on this machine: a QQ window of 1470x846 points at 2x captures
 // 3076x1828, i.e. 68 physical pixels of drop shadow on every side.
@@ -53,4 +53,26 @@ test('a window-id read keeps nesting and drops levels past the depth limit', () 
 
 test('an unknown node still gets a role so the tree never has holes', () => {
   assert.equal(normalizeRawNode({}, 2).role, 'element')
+})
+
+test('numericWindowId extracts CGWindowID from w-prefixed and raw ids', () => {
+  assert.equal(numericWindowId('w-37196'), '37196')
+  assert.equal(numericWindowId('37196'), '37196')
+  assert.equal(numericWindowId('  w-42  '), '42')
+  assert.equal(numericWindowId('hwnd-abc'), undefined)
+  assert.equal(numericWindowId(''), undefined)
+})
+
+test('pngDimensions reads width and height from a valid PNG IHDR header', () => {
+  const buf = Buffer.alloc(24)
+  // PNG signature
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buf, 0)
+  // IHDR length (13) + type ("IHDR")
+  buf.writeUInt32BE(13, 8)
+  buf.write('IHDR', 12, 'ascii')
+  buf.writeUInt32BE(1446, 16)
+  buf.writeUInt32BE(1692, 20)
+  assert.deepEqual(pngDimensions(buf), { width: 1446, height: 1692 })
+  assert.equal(pngDimensions(Buffer.from('not a png')), undefined)
+  assert.equal(pngDimensions(Buffer.alloc(10)), undefined)
 })

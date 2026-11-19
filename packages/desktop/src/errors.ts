@@ -77,16 +77,65 @@ const GUIDANCE: Record<string, Guidance> = {
 }
 
 /**
+ * Extract actionable diagnostic clues from `agent-desktop`'s `error.details`.
+ *
+ * Actionability timeouts and verification failures carry structured `kind`,
+ * `checks[]` (e.g. `enabled`, `visible`, `occluded`), and `occluder` info;
+ * surfacing them stops the model from guessing blindly on `TIMEOUT`.
+ */
+export function formatErrorDetails(details: unknown): string | undefined {
+  if (details === null || typeof details !== 'object') return undefined
+  const record = details as {
+    kind?: unknown
+    retryable?: unknown
+    checks?: unknown
+    last_report?: { checks?: unknown }
+    occluder?: { role?: unknown; name?: unknown }
+  }
+  const parts: string[] = []
+  if (typeof record.kind === 'string' && record.kind !== '') {
+    parts.push(`kind=${record.kind}`)
+  }
+  const rawChecks = Array.isArray(record.checks)
+    ? record.checks
+    : Array.isArray(record.last_report?.checks)
+      ? record.last_report.checks
+      : []
+  const failed: string[] = []
+  for (const item of rawChecks) {
+    if (item === null || typeof item !== 'object') continue
+    const check = item as { check?: unknown; status?: unknown; reason?: unknown }
+    if (check.status !== 'fail') continue
+    const name = typeof check.check === 'string' ? check.check : 'check'
+    const reason = typeof check.reason === 'string' && check.reason !== '' ? ` (${check.reason})` : ''
+    failed.push(`${name}${reason}`)
+  }
+  if (failed.length > 0) parts.push(`failed checks: ${failed.join(', ')}`)
+  if (record.occluder !== undefined && record.occluder !== null && typeof record.occluder === 'object') {
+    const role = typeof record.occluder.role === 'string' ? record.occluder.role : 'element'
+    const name = typeof record.occluder.name === 'string' && record.occluder.name !== ''
+      ? ` "${record.occluder.name}"`
+      : ''
+    parts.push(`occluder=${role}${name}`)
+  }
+  if (record.retryable === false) parts.push('retryable=false')
+  return parts.length > 0 ? parts.join('; ') : undefined
+}
+
+/**
  * Render one failure.
  * @param error - coded failure.
- * @returns two lines: what happened, and what to do next.
+ * @returns two or three lines: what happened, diagnostic details if any, and what to do next.
  */
 export function failureText(error: HostError): string {
   const guidance = GUIDANCE[error.code]
   const next = guidance?.next ?? error.suggestion ?? 'Report this to the foreground agent and stop.'
+  const detailLine = formatErrorDetails(error.details)
   const retrySafe = error.delivery === 'not_delivered' || error.retry === 'safe'
   const retryNote = retrySafe ? '' : '\nnote: this action may already have landed; never repeat it blindly.'
-  return `${error.code}: ${error.message}\nnext: ${next}${retryNote}`
+  return `${error.code}: ${error.message}`
+    + `${detailLine === undefined ? '' : `\ndetails: ${detailLine}`}`
+    + `\nnext: ${next}${retryNote}`
 }
 
 /**

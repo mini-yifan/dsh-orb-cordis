@@ -30,15 +30,28 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { ResolvedConfig } from './config.ts'
-import type { WindowInfo } from './protocol.ts'
-import { failureText, storePicture, typeImageValue, type ImageValue } from './vision.ts'
+import type { SnapshotData, WindowInfo } from './protocol.ts'
+import {
+  DEFAULT_SNAPSHOT_DEPTH,
+  captureWindow,
+  failureText,
+  listWindows,
+  picturePadding,
+  runCli,
+  snapshotWindow,
+  storePicture,
+  typeImageValue,
+  type Envelope,
+  type ImageValue,
+  type SnapshotWindowOptions,
+} from './vision.ts'
 import { activateApp } from './activate.ts'
 import { typeAtFocus, typeByRef } from './hid.ts'
 import { withScreenLock } from './gui-lock.ts'
-import { agentSessionId } from './sessions.ts'
+import { renderSnapshot } from './render.ts'
+import { agentSessionId, type DesktopSessions } from './sessions.ts'
 import { requireImageRoute } from './route.ts'
 import { sessionState } from './session-state.ts'
-import { captureWindow, listWindows, picturePadding, runCli } from './vision.ts'
 
 /** A point is a fraction of the picture on a 0–1000 grid, on both axes. */
 export const POINT_SPAN = 1000
@@ -135,8 +148,18 @@ export function pointToScreen(
  */
 export function frameOf(
   bounds: Rect,
-  shot: { readonly width: number, readonly height: number, readonly scale: number },
+  shot: { readonly width: number, readonly height: number, readonly scale: number, readonly shadowless?: boolean },
 ): Pick<Frame, 'left' | 'top' | 'spanX' | 'spanY'> {
+  // Shadowless captures (macOS `screencapture -o`) cover the exact window
+  // rectangle with 0 pt error on both axes, immune to asymmetric drop shadows.
+  if (shot.shadowless === true) {
+    return {
+      left: bounds.x,
+      top: bounds.y,
+      spanX: bounds.width,
+      spanY: bounds.height,
+    }
+  }
   // A capture that reports no scale (the OS tool) is exactly the window, so the
   // raster's own width is the scale. The CLI reports it directly and may include
   // the drop shadow, which `picturePadding` then measures.
@@ -445,6 +468,26 @@ const PICTURE_OUTPUT = {
 export interface GuiDependencies {
   /** Bring one app to the front. */
   readonly activate?: (app: string) => Promise<void>
+  /** Shared session store so `desktop_open_app` can populate RefBook when returning an AX tree. */
+  readonly sessions?: DesktopSessions
+  /** Window inventory override for tests. */
+  readonly listWindows?: (signal: AbortSignal) => Promise<Envelope<readonly WindowInfo[]>>
+  /** PID resolver override for tests. */
+  readonly resolveAppPid?: (name: string, signal: AbortSignal) => Promise<number | undefined>
+  /** Accessibility snapshot override for tests. */
+  readonly snapshot?: (
+    windowId: string,
+    options: SnapshotWindowOptions,
+    signal: AbortSignal,
+  ) => Promise<Envelope<SnapshotData>>
+  /** Window capture override for tests. */
+  readonly capture?: (
+    windowId: string,
+    signal: AbortSignal,
+    bounds?: { readonly width: number; readonly height: number },
+  ) => Promise<Envelope<import('./vision.ts').ScreenshotData>>
+  /** Screen-lock probe override for tests. */
+  readonly sessionState?: () => Promise<{ readonly locked: boolean | 'unknown' }>
 }
 
 export function registerGuiTools(
@@ -453,6 +496,12 @@ export function registerGuiTools(
   dependencies: GuiDependencies = {},
 ): void {
   const activate = dependencies.activate ?? activateApp
+  const sessions = dependencies.sessions
+  const inventory = dependencies.listWindows ?? listWindows
+  const resolvePid = dependencies.resolveAppPid ?? resolveAppPid
+  const readWindow = dependencies.snapshot ?? snapshotWindow
+  const capture = dependencies.capture ?? captureWindow
+  const readLockState = dependencies.sessionState ?? sessionState
   /** The picture each session last received. */
   const frames = new Map<string, Frame>()
   /** When each (window, gesture) last landed, for the repeat guard. */
@@ -496,13 +545,13 @@ export function registerGuiTools(
     key: string,
     note = '',
   ): Promise<Observed> => {
-    let captured = await captureWindow(target.windowId, signal)
+    let captured = await capture(target.windowId, signal, target.bounds)
     if (!captured.ok && captured.error?.code === 'WINDOW_NOT_FOUND') {
       // System Settings renames its window per pane ("系统设置" → "桌面与程序坞"),
       // and the CLI treats a changed identity as a different window, so a capture
       // by the old id fails even though the app never moved. Re-resolve by pid —
       // the one identity that survives a title change — and try once more.
-      const listed = await listWindows(signal)
+      const listed = await inventory(signal)
       const again = listed.ok && listed.data !== undefined
         ? preferredWindow(listed.data.filter(window => window.pid === target.pid && window.visible !== false))
         : undefined
@@ -515,7 +564,7 @@ export function registerGuiTools(
           focused: again.focused,
           visible: again.visible !== false,
         }
-        captured = await captureWindow(target.windowId, signal)
+        captured = await capture(target.windowId, signal, target.bounds)
       }
     }
     if (!captured.ok || captured.data === undefined) {
@@ -533,7 +582,12 @@ export function registerGuiTools(
       windowId: target.windowId,
       appName: target.appName,
       bounds: target.bounds,
-      ...frameOf(target.bounds, { width: shot.width, height: shot.height, scale: shot.scale_factor }),
+      ...frameOf(target.bounds, {
+        width: shot.width,
+        height: shot.height,
+        scale: shot.scale_factor,
+        ...shot.shadowless === true ? { shadowless: true } : {},
+      }),
     })
     const lines = [lead, windowLine(target)]
     if (note !== '') lines.push(note)
@@ -602,7 +656,7 @@ export function registerGuiTools(
     windows: readonly WindowInfo[]
     refusal?: Observed
   }> => {
-    const listed = await listWindows(exec.signal)
+    const listed = await inventory(exec.signal)
     if (!listed.ok || listed.data === undefined) {
       const code = listed.error?.code ?? 'UNKNOWN'
       const hint = code === 'TIMEOUT'
@@ -719,11 +773,10 @@ export function registerGuiTools(
     await new Promise(resolve => setTimeout(resolve, config.postActionWaitMs))
   }
 
-  /** Common prelude: image route, lock check. Returns a refusal or undefined. */
-  const admit = async (exec: ToolExecution): Promise<Observed | undefined> => {
-    await requireImageRoute(ctx, exec)
-    const screen = await sessionState()
-    if (screen.locked) {
+  /** Check screen lock without requiring image modality (used by tree-first open_app). */
+  const checkLock = async (): Promise<Observed | undefined> => {
+    const screen = await readLockState()
+    if (screen.locked === true) {
       return {
         text: 'SCREEN_LOCKED: this Mac is locked, so no picture can be taken and no click can land. '
           + 'Unlocking needs the password and is not something this worker can do. Stop trying desktop tools: '
@@ -731,6 +784,12 @@ export function registerGuiTools(
       }
     }
     return undefined
+  }
+
+  /** Common prelude: image route, lock check. Returns a refusal or undefined. */
+  const admit = async (exec: ToolExecution): Promise<Observed | undefined> => {
+    await requireImageRoute(ctx, exec)
+    return await checkLock()
   }
 
   /**
@@ -1160,17 +1219,24 @@ export function registerGuiTools(
   ctx.tools.register(defineTool({
     name: 'desktop_open_app',
     description:
-      'Bring an app to the front, or launch it, then return the picture of its window. '
-      + 'Use the name the user said, or a bundle identifier. If the app is running but shows no window, the result '
-      + 'says so instead of handing back a window nobody can see.',
+      'Bring an app to the front, or launch it. When the window exposes a usable accessibility tree (tree=yes), '
+      + 'this returns the window metadata and its compact accessibility tree with actionable refs right away (no '
+      + 'screenshot needed, saving a round trip). Only when the window has no usable tree (tree=no or tree_thin), '
+      + 'or when `visual: true` is passed, does it capture and return a shadowless window picture. '
+      + 'Use the name the user said, or a bundle identifier.',
     parameters: {
       name: { type: 'string', required: true, description: 'Application name or bundle identifier.' },
+      visual: {
+        type: 'boolean',
+        description: 'Force returning a screenshot even when the window has an accessibility tree. Default: false.',
+      },
     },
     output: PICTURE_OUTPUT,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const blocked = await admit(exec)
-      if (blocked !== undefined) return blocked
+      const wantVisual = args.visual === true
+      const locked = wantVisual ? await admit(exec) : await checkLock()
+      if (locked !== undefined) return locked
       const name = typeof args.name === 'string' ? args.name.trim() : ''
       if (name === '') return { text: 'INVALID_ARGS: name is required.' }
       const key = sessionKey(exec)
@@ -1182,26 +1248,17 @@ export function registerGuiTools(
       // Only an on-screen window counts as "opened". QQ keeps thirteen windows
       // and surfaces one; counting a hidden one would report success with a blank
       // picture and send the model hunting.
-      //
-      // An app that owns windows but shows none is not still starting — it is
-      // minimized or closed to its menu bar. Give that state 1.5 s and then say
-      // so, instead of waiting the full deadline for a window that cannot appear.
-      // Match windows by owning process, not by the name the caller typed.
-      // macOS localizes app names: "System Settings" is 系统设置 here, and the
-      // name match failed for twelve seconds on a window that was already open.
-      // The CLI's own matcher accepts a display name, a localized name and a
-      // bundle id alike, so ask it once for the pid.
       const deadline = Date.now() + LAUNCH_WAIT_MS
-      let pid = await resolveAppPid(name, exec.signal)
+      let pid = await resolvePid(name, exec.signal)
       let found: WindowInfo | undefined
-      let listed = await listWindows(exec.signal)
+      let listed = await inventory(exec.signal)
       let onlyHiddenSince: number | undefined
       const ownedBy = (windows: readonly WindowInfo[]): readonly WindowInfo[] =>
         pid === undefined
           ? windows.filter(window => sameApp(window.appName, name))
           : windows.filter(window => window.pid === pid)
       while (Date.now() < deadline) {
-        if (pid === undefined) pid = await resolveAppPid(name, exec.signal)
+        if (pid === undefined) pid = await resolvePid(name, exec.signal)
         const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data) : []
         found = preferredWindow(own)
         if (found?.visible === false) found = undefined
@@ -1213,7 +1270,7 @@ export function registerGuiTools(
           onlyHiddenSince = undefined
         }
         await new Promise(resolve => setTimeout(resolve, 250))
-        listed = await listWindows(exec.signal)
+        listed = await inventory(exec.signal)
       }
       const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data) : []
       const hidden = own.filter(window => window.visible === false).length
@@ -1226,8 +1283,8 @@ export function registerGuiTools(
             text: `OPEN_FAILED: ${name} is running but has no window on screen: `
               + `${String(own.length)} window(s) of it exist and none is visible. It is minimized, or closed to `
               + 'its menu bar. Bring it up from the Dock or menu bar, or quit it and launch it again, then use '
-              + 'desktop_see. Do not click a window that is not on screen: it cannot be focused, so nothing in it '
-              + 'will work.',
+              + 'desktop_inspect or desktop_see. Do not click a window that is not on screen: it cannot be focused, '
+              + 'so nothing in it will work.',
           }
         }
         return { text: `OPEN_FAILED: ${name} is not running after ${String(LAUNCH_WAIT_MS / 1000)}s `
@@ -1237,7 +1294,7 @@ export function registerGuiTools(
         ? `${name} is up.`
         : `${name} is up. ${String(hidden)} other window(s) of it are not on screen; they cannot be clicked, `
           + 'so do not go looking for them.'
-      return await observe({
+      const target: Target = {
         windowId: found.id,
         appName: found.appName,
         title: found.title,
@@ -1246,7 +1303,46 @@ export function registerGuiTools(
         accessible: found.accessible === true,
         visible: found.visible !== false,
         pid: found.pid,
-      }, exec.signal, prefix, key)
+      }
+
+      // Tree-first: when the window exposes a usable AX tree, return it right
+      // away (no screenshot, no extra desktop_inspect turn) and populate RefBook.
+      const sessionId = exec.agent?.id
+      if (!wantVisual && target.accessible && sessions !== undefined && typeof sessionId === 'string' && sessionId !== '') {
+        try {
+          const entry = await sessions.entry(sessionId)
+          const read = await readWindow(
+            target.windowId,
+            { session: agentSessionId(sessionId), depth: DEFAULT_SNAPSHOT_DEPTH, interactive: true },
+            exec.signal,
+          )
+          if (read.ok && read.data !== undefined) {
+            const rendered = renderSnapshot(read.data, {
+              maxNodes: config.maxNodes,
+              maxChars: config.maxChars,
+            })
+            if (rendered.refs.length >= 3) {
+              entry.refs.remember(read.data, rendered.refs, rendered.elements, {
+                depth: DEFAULT_SNAPSHOT_DEPTH,
+                interactive: true,
+              })
+              return {
+                text: `${prefix}\n${windowLine(target)}\n${rendered.text}`,
+                window_id: target.windowId,
+              }
+            }
+          }
+        } catch {
+          // Fall back cleanly to a shadowless screenshot when the AX read fails.
+        }
+      }
+
+      // No usable tree (or visual=true requested): verify image modality and capture.
+      if (!wantVisual) await requireImageRoute(ctx, exec)
+      const fallbackNote = !wantVisual && target.accessible
+        ? 'note: accessibility tree was thin or unreadable, so a window picture was captured instead.'
+        : ''
+      return await observe(target, exec.signal, prefix, key, fallbackNote)
     },
   }))
 }

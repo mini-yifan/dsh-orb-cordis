@@ -24,13 +24,28 @@ const REMEMBERED_SNAPSHOTS = 8
 /** How often the maintenance tick runs. */
 const TICK_MS = 5000
 
+export interface RememberedElement {
+  readonly role: string
+  readonly name: string
+  readonly states?: readonly string[]
+}
+
 interface Remembered {
   readonly app: string
-  readonly refs: ReadonlySet<string>
-  readonly elements: ReadonlyMap<string, { role: string; name: string }>
-  readonly at: number
-  readonly windowId?: string
-  readonly windowTitle?: string
+  readonly refs: Set<string>
+  readonly elements: Map<string, RememberedElement>
+  at: number
+  windowId?: string
+  windowTitle?: string
+  depth?: number
+  interactive?: boolean
+}
+
+export interface RememberOptions {
+  readonly depth?: number
+  readonly interactive?: boolean
+  /** Merge refs into an existing snapshot entry instead of replacing it (used for `--root` drills and `find`). */
+  readonly merge?: boolean
 }
 
 /** What one session may address, and which app each ref belongs to. */
@@ -41,26 +56,78 @@ export class RefBook {
    * Remember the refs one snapshot put in front of the model.
    * @param snapshot - the observation.
    * @param refs - refs the renderer emitted.
+   * @param elements - per-ref metadata for guidance and repeat detection.
+   * @param options - read parameters and merge flag for subtree drills.
    */
   remember(
     snapshot: SnapshotData,
     refs: readonly string[],
-    elements: ReadonlyMap<string, { role: string; name: string }> = new Map(),
+    elements: ReadonlyMap<string, RememberedElement> = new Map(),
+    options: RememberOptions = {},
   ): void {
     if (snapshot.snapshotId === '' || refs.length === 0) return
+    const existing = options.merge === true ? this.bySnapshot.get(snapshot.snapshotId) : undefined
+    if (existing !== undefined) {
+      for (const ref of refs) existing.refs.add(ref)
+      for (const [ref, meta] of elements) existing.elements.set(ref, meta)
+      existing.at = Date.now()
+      if (snapshot.windowId !== undefined) existing.windowId = snapshot.windowId
+      if (snapshot.windowTitle !== undefined) existing.windowTitle = snapshot.windowTitle
+      if (options.depth !== undefined) existing.depth = options.depth
+      if (options.interactive !== undefined) existing.interactive = options.interactive
+      return
+    }
     this.bySnapshot.set(snapshot.snapshotId, {
       app: snapshot.app,
       refs: new Set(refs),
-      elements,
+      elements: new Map(elements),
       at: Date.now(),
       ...snapshot.windowId !== undefined ? { windowId: snapshot.windowId } : {},
       ...snapshot.windowTitle !== undefined ? { windowTitle: snapshot.windowTitle } : {},
+      ...options.depth !== undefined ? { depth: options.depth } : {},
+      ...options.interactive !== undefined ? { interactive: options.interactive } : {},
     })
     while (this.bySnapshot.size > REMEMBERED_SNAPSHOTS) {
       const oldest = this.bySnapshot.keys().next().value
       if (oldest === undefined) break
       this.bySnapshot.delete(oldest)
     }
+  }
+
+  /**
+   * Remember refs returned by `desktop_find` so they can be acted on immediately.
+   */
+  rememberFind(
+    meta: { readonly app: string; readonly snapshotId: string; readonly windowId?: string; readonly windowTitle?: string },
+    matches: readonly { readonly ref?: string; readonly role: string; readonly name?: string; readonly states?: readonly string[] }[],
+  ): void {
+    if (meta.snapshotId === '') return
+    const refs: string[] = []
+    const elements = new Map<string, RememberedElement>()
+    for (const match of matches) {
+      if (match.ref === undefined || match.ref === '') continue
+      refs.push(match.ref)
+      elements.set(match.ref, {
+        role: match.role,
+        name: match.name ?? '',
+        ...match.states !== undefined && match.states.length > 0 ? { states: match.states } : {},
+      })
+    }
+    if (refs.length === 0) return
+    this.remember(
+      {
+        app: meta.app,
+        snapshotId: meta.snapshotId,
+        refCount: refs.length,
+        complete: true,
+        ...meta.windowId !== undefined ? { windowId: meta.windowId } : {},
+        ...meta.windowTitle !== undefined ? { windowTitle: meta.windowTitle } : {},
+        tree: { role: 'window' },
+      },
+      refs,
+      elements,
+      { merge: true },
+    )
   }
 
   /**
@@ -91,8 +158,11 @@ export class RefBook {
     known: boolean
     role?: string
     name?: string
+    states?: readonly string[]
     windowId?: string
     windowTitle?: string
+    depth?: number
+    interactive?: boolean
   } | undefined {
     const match = /^@([^:]+):/.exec(ref)
     if (match === null) return undefined
@@ -105,8 +175,11 @@ export class RefBook {
       app: entry.app,
       known: entry.refs.has(ref),
       ...element !== undefined ? { role: element.role, name: element.name } : {},
+      ...element?.states !== undefined ? { states: element.states } : {},
       ...entry.windowId !== undefined ? { windowId: entry.windowId } : {},
       ...entry.windowTitle !== undefined ? { windowTitle: entry.windowTitle } : {},
+      ...entry.depth !== undefined ? { depth: entry.depth } : {},
+      ...entry.interactive !== undefined ? { interactive: entry.interactive } : {},
     }
   }
 

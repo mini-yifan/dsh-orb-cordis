@@ -91,6 +91,7 @@ export interface NativeError {
   readonly suggestion?: string
   readonly delivery?: string
   readonly retry?: string
+  readonly details?: unknown
 }
 
 /** The loaded library, bound once per child process. */
@@ -321,7 +322,10 @@ export function loadNative(dir: string): NativeLibrary {
     const json = takeString(pointer)
     if (json === '') return { ok: false, error: lastError(resultCode) }
     try {
-      const parsed = JSON.parse(json) as { ok?: boolean; error?: { code?: string; message?: string; suggestion?: string } }
+      const parsed = JSON.parse(json) as {
+        ok?: boolean
+        error?: { code?: string; message?: string; suggestion?: string; details?: unknown }
+      }
       if (parsed.ok === true) return { ok: true, json }
       return {
         ok: false,
@@ -330,6 +334,7 @@ export function loadNative(dir: string): NativeLibrary {
           code: parsed.error?.code ?? (RESULT_CODES[resultCode] ?? 'UNKNOWN'),
           message: parsed.error?.message ?? 'agent-desktop call failed',
           ...parsed.error?.suggestion !== undefined ? { suggestion: parsed.error.suggestion } : {},
+          ...parsed.error?.details !== undefined ? { details: parsed.error.details } : {},
           ...readSemantics(),
         },
       }
