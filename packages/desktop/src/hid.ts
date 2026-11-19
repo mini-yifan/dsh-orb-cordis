@@ -1,31 +1,35 @@
 /**
- * Typing text into whatever has keyboard focus.
+ * Typing text into whatever has keyboard focus, plus accessibility-first text
+ * entry (`typeByRef`) across macOS and Windows.
  *
- * `agent-desktop type` goes through the accessibility tree and needs a ref, so a
- * window that exposes no tree — an Electron shell, a canvas UI, anything
- * `list-windows` marks `accessible: false` — cannot be typed into at all. That
- * is the one hole a point-based flow cannot close with the CLI.
- *
- * Computer Use closes it by pasting: put the text on the pasteboard, press
- * Cmd-V, then put every item of the user's clipboard back exactly as it was.
- * That is what this module does, on the same JXA `osascript` the foreground
- * tools already use, and it is why a point-based `type` needs no accessibility.
- *
- * The restore matters: a copied image or a file list is only one `NSData` per
- * type on the pasteboard, and leaving our text there destroys what the user had.
- * Windows has no equivalent that survives a medium-sized clipboard, so there we
- * paste through the CLI and say so in the tool text.
+ * - When a window exposes an addressable text field, `typeByRef` tries semantic
+ *   `set-value --stdin` first (headless on both macOS and Windows, no clipboard),
+ *   falling back to `type --stdin` (with `--headed` on Windows, where strict
+ *   headless `type` always returns `POLICY_DENIED`).
+ * - When a window exposes NO accessibility tree (Canvas / custom Electron),
+ *   `typeAtFocus` pastes through the clipboard and restores every saved format
+ *   afterwards: `NSPasteboard` + JXA `Cmd+V` on macOS, Win32 `koffi` clipboard
+ *   snapshot + `agent-desktop press --headed ctrl+v` on Windows.
  * @module @dsh-orb/desktop/src/hid
  */
 
 import { execFile } from 'node:child_process'
-import { runCli } from './vision.ts'
+import { runCli, type Envelope } from './vision.ts'
+import {
+  restoreWindowsClipboard,
+  saveWindowsClipboard,
+  setWindowsClipboardText,
+  type WindowsClipboardSnapshot,
+} from './win-clipboard.ts'
 
 /** Where the platform's scripting host lives. */
 const OSASCRIPT = '/usr/bin/osascript'
 
 /** One keystroke script may run this long before it is killed. */
 const HID_TIMEOUT_MS = 15_000
+
+/** Pause after Ctrl+V before restoring the clipboard so slow apps consume the paste. */
+const WIN_PASTE_SETTLE_MS = 120
 
 /**
  * JXA preamble: key events, and a clipboard round trip that keeps every type.
@@ -120,7 +124,7 @@ function restoreClipboard(pb, items) {
 `
 
 /**
- * Build the JXA body for one text delivery.
+ * Build the JXA body for one macOS text delivery.
  * @param text - characters to deliver.
  * @param options - select-all first, Return afterwards.
  * @returns the script to hand `osascript`.
@@ -150,32 +154,74 @@ export function pasteScript(
 
 /**
  * Whether this platform can deliver text without an accessibility ref.
- * @returns true on macOS (JXA key events) and Windows (cut through the focused control).
+ * @returns true on macOS (JXA paste) and Windows (Win32 clipboard + Ctrl+V).
  */
 export function canPasteAtFocus(): boolean {
   return process.platform === 'darwin' || process.platform === 'win32'
 }
 
+export interface WindowsPasteDependencies {
+  readonly saveClipboard?: () => WindowsClipboardSnapshot
+  readonly setClipboardText?: (text: string) => void
+  readonly restoreClipboard?: (snapshot: WindowsClipboardSnapshot) => void
+  readonly runCli?: <T>(args: readonly string[], signal: AbortSignal, stdin?: string) => Promise<Envelope<T>>
+  readonly settleMs?: number
+}
+
+/**
+ * Paste text at keyboard focus on Windows while preserving every clipboard format.
+ */
+export async function pasteAtFocusWindows(
+  text: string,
+  options: { replace?: boolean; enter?: boolean; windowId?: string } = {},
+  signal: AbortSignal,
+  deps: WindowsPasteDependencies = {},
+): Promise<void> {
+  const save = deps.saveClipboard ?? saveWindowsClipboard
+  const writeText = deps.setClipboardText ?? setWindowsClipboardText
+  const restore = deps.restoreClipboard ?? restoreWindowsClipboard
+  const cli = deps.runCli ?? runCli
+  const settleMs = deps.settleMs ?? WIN_PASTE_SETTLE_MS
+  const target = options.windowId !== undefined && options.windowId !== ''
+    ? ['--window-id', options.windowId]
+    : []
+
+  const previous = save()
+  try {
+    writeText(text)
+    if (options.replace === true) {
+      const sel = await cli<unknown>(['press', '--headed', ...target, 'ctrl+a'], signal)
+      if (!sel.ok) throw new Error(sel.error?.message ?? 'ctrl+a failed')
+    }
+    const pasted = await cli<unknown>(['press', '--headed', ...target, 'ctrl+v'], signal)
+    if (!pasted.ok) throw new Error(pasted.error?.message ?? 'ctrl+v failed')
+    if (settleMs > 0) await new Promise(resolve => setTimeout(resolve, settleMs))
+  } finally {
+    restore(previous)
+  }
+  if (options.enter === true) {
+    const submitted = await cli<unknown>(['press', '--headed', ...target, 'return'], signal)
+    if (!submitted.ok) throw new Error(submitted.error?.message ?? 'return failed after paste')
+  }
+}
+
 /**
  * Paste text into whatever holds keyboard focus, then restore the clipboard.
  *
- * The caller has already put the caret where the text belongs (a click, or an
- * earlier focus action). Nothing here reads the accessibility tree.
- * @param text - characters to deliver.
- * @param options - replace the focused field's content, and submit afterwards.
- * @param signal - cooperative cancellation.
- * @throws when the platform cannot post key events or the scripting host refuses.
+ * Works on both macOS (JXA `NSPasteboard` + `Cmd+V`) and Windows (Win32
+ * multi-format clipboard snapshot + `agent-desktop press --headed ctrl+v`).
  */
 export async function typeAtFocus(
   text: string,
-  options: { replace?: boolean, enter?: boolean } = {},
+  options: { replace?: boolean; enter?: boolean; windowId?: string } = {},
   signal: AbortSignal,
 ): Promise<void> {
   if (!canPasteAtFocus()) {
     throw new Error('typing into a window without an accessibility tree is not supported on this platform')
   }
   if (process.platform === 'win32') {
-    throw new Error('windows typing goes through the accessibility tree; call typeTextByRef instead')
+    await pasteAtFocusWindows(text, options, signal)
+    return
   }
   await new Promise<void>((resolve, reject) => {
     execFile(
@@ -216,17 +262,25 @@ export function refOf(found: FoundElement | undefined): string | undefined {
   return found?.match?.ref_id ?? found?.matches?.[0]?.ref_id
 }
 
+export interface TypeByRefDependencies {
+  readonly runCli?: <T>(args: readonly string[], signal: AbortSignal, stdin?: string) => Promise<Envelope<T>>
+  readonly platform?: NodeJS.Platform
+}
+
 export async function typeByRef(
   text: string,
   options: { windowId: string, session?: string, replace?: boolean, enter?: boolean },
   signal: AbortSignal,
+  deps: TypeByRefDependencies = {},
 ): Promise<string> {
+  const cli = deps.runCli ?? runCli
+  const platform = deps.platform ?? process.platform
   const scope = options.session === undefined || options.session === '' ? [] : ['--session', options.session]
   const window = ['--window-id', options.windowId]
   // One probe first: if the click already focused the field, this is the whole
   // lookup. Each `find` traverses the window, so they run in parallel below
   // rather than one after another.
-  const focused = await runCli<FoundElement>(
+  const focused = await cli<FoundElement>(
     ['find', ...window, ...scope, '--state', 'focused=true', '--first'],
     signal,
   )
@@ -235,7 +289,7 @@ export async function typeByRef(
   if (ref !== undefined && !TEXT_ROLES.includes((role ?? '').toLowerCase())) ref = undefined
   if (ref === undefined) {
     const probes = await Promise.all(TEXT_ROLES.map(async candidate => {
-      const found = await runCli<FoundElement>(
+      const found = await cli<FoundElement>(
         ['find', ...window, ...scope, '--role', candidate, '--first'],
         signal,
       )
@@ -253,16 +307,41 @@ export async function typeByRef(
       + 'so this text cannot be inserted through the accessibility tree',
     )
   }
-  if (options.replace === true) {
-    await runCli<unknown>(['clear', ref, ...scope], signal)
+
+  // Prefer semantic `set-value` when replacing (or on Windows where strict-headless
+  // `type` always returns POLICY_DENIED). It never touches the clipboard.
+  let inserted = false
+  if (options.replace === true || platform === 'win32') {
+    const setRes = await cli<unknown>(['set-value', ref, ...scope, '--stdin'], signal, text)
+    if (setRes.ok) inserted = true
   }
-  const typed = await runCli<unknown>(['type', ref, ...scope, '--stdin'], signal, text)
-  if (!typed.ok) {
-    const detail = typed.error?.message ?? 'type failed'
-    throw new Error(`typing into ${ref} (${role ?? 'element'}) failed: ${detail}`)
+
+  if (!inserted) {
+    if (options.replace === true) {
+      await cli<unknown>(['clear', ref, ...scope], signal)
+    }
+    // On Windows, `agent-desktop type` requires `--headed` (SendInput); headless always refuses.
+    const typeArgs = platform === 'win32'
+      ? ['--headed', 'type', ref, ...scope, '--stdin']
+      : ['type', ref, ...scope, '--stdin']
+    let typed = await cli<unknown>(typeArgs, signal, text)
+    if (!typed.ok && typed.error?.code === 'POLICY_DENIED' && platform !== 'win32') {
+      typed = await cli<unknown>(['--headed', 'type', ref, ...scope, '--stdin'], signal, text)
+    }
+    if (!typed.ok) {
+      const detail = typed.error?.message ?? 'type failed'
+      throw new Error(`typing into ${ref} (${role ?? 'element'}) failed: ${detail}`)
+    }
   }
+
   if (options.enter === true) {
-    const submitted = await runCli<unknown>(['press', ...window, ...scope, 'return'], signal)
+    const pressArgs = platform === 'win32'
+      ? ['press', '--headed', ...window, ...scope, 'return']
+      : ['press', ...window, ...scope, 'return']
+    let submitted = await cli<unknown>(pressArgs, signal)
+    if (!submitted.ok && submitted.error?.code === 'POLICY_DENIED' && platform !== 'win32') {
+      submitted = await cli<unknown>(['press', '--headed', ...window, ...scope, 'return'], signal)
+    }
     if (!submitted.ok) {
       throw new Error(`the text was inserted but Return failed: ${submitted.error?.message ?? 'press failed'}`)
     }

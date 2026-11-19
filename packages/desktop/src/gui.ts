@@ -46,7 +46,7 @@ import {
   type SnapshotWindowOptions,
 } from './vision.ts'
 import { activateApp } from './activate.ts'
-import { typeAtFocus, typeByRef } from './hid.ts'
+import { canPasteAtFocus, typeAtFocus, typeByRef } from './hid.ts'
 import { withScreenLock } from './gui-lock.ts'
 import { renderSnapshot } from './render.ts'
 import { agentSessionId, type DesktopSessions } from './sessions.ts'
@@ -213,6 +213,18 @@ function isSubstantial(window: WindowInfo): boolean {
   const bounds = window.bounds
   if (bounds === undefined) return false
   return bounds.width >= MIN_TARGET_WIDTH && bounds.height >= MIN_TARGET_HEIGHT
+}
+
+/**
+ * Whether a window is minimized or parked at Windows' off-screen minimized
+ * sentinel coordinates (`-32000, -32000`). Minimized windows on Windows cannot
+ * be driven through UIA until restored via `agent-desktop restore`.
+ */
+export function isMinimizedWindow(window: WindowInfo): boolean {
+  if (window.visible === false) return true
+  const b = window.bounds
+  if (b === undefined) return false
+  return b.x <= -30_000 || b.y <= -30_000
 }
 
 function area(rect: Rect): number {
@@ -486,6 +498,8 @@ export interface GuiDependencies {
     signal: AbortSignal,
     bounds?: { readonly width: number; readonly height: number },
   ) => Promise<Envelope<import('./vision.ts').ScreenshotData>>
+  /** Raw CLI runner override for tests. */
+  readonly runCli?: <T>(args: readonly string[], signal: AbortSignal, stdin?: string) => Promise<Envelope<T>>
   /** Screen-lock probe override for tests. */
   readonly sessionState?: () => Promise<{ readonly locked: boolean | 'unknown' }>
 }
@@ -501,6 +515,7 @@ export function registerGuiTools(
   const resolvePid = dependencies.resolveAppPid ?? resolveAppPid
   const readWindow = dependencies.snapshot ?? snapshotWindow
   const capture = dependencies.capture ?? captureWindow
+  const cli = dependencies.runCli ?? runCli
   const readLockState = dependencies.sessionState ?? sessionState
   /** The picture each session last received. */
   const frames = new Map<string, Frame>()
@@ -615,8 +630,20 @@ export function registerGuiTools(
     signal: AbortSignal,
   ): Promise<string | undefined> => {
     if (target.focused) return undefined
-    const raised = await runCli<unknown>(['focus-window', '--window-id', target.windowId], signal)
+    let raised = await cli<unknown>(['focus-window', '--window-id', target.windowId], signal)
     if (raised.ok) return undefined
+    // On Windows, `focus-window` can occasionally fail with "Window focus did
+    // not settle" due to foreground lock rules even when unlocked. Try raising
+    // via `activate` once and re-check before giving up.
+    if (target.visible) {
+      try {
+        await activate(target.appName)
+        raised = await cli<unknown>(['focus-window', '--window-id', target.windowId], signal)
+        if (raised.ok) return undefined
+      } catch {
+        // Keep the original `focus-window` error below.
+      }
+    }
     if (!target.visible) {
       const alternatives = windows
         .filter(window => window.id !== target.windowId && window.visible !== false && isSubstantial(window))
@@ -778,9 +805,10 @@ export function registerGuiTools(
     const screen = await readLockState()
     if (screen.locked === true) {
       return {
-        text: 'SCREEN_LOCKED: this Mac is locked, so no picture can be taken and no click can land. '
-          + 'Unlocking needs the password and is not something this worker can do. Stop trying desktop tools: '
-          + 'finish what you can without the screen, then report what is blocked and what the user must do.',
+        text: 'SCREEN_LOCKED: this computer\'s screen is locked (or running outside an interactive desktop session), '
+          + 'so no picture can be taken and no click can land. Unlocking needs the user and is not something this '
+          + 'worker can do. Stop trying desktop tools: finish what you can without the screen, then report what is '
+          + 'blocked and what the user must do.',
       }
     }
     return undefined
@@ -992,16 +1020,18 @@ export function registerGuiTools(
           if (message.includes('element search unavailable') === false) {
             noElementSearch.add(aimed.target.windowId)
           }
-          if (process.platform !== 'darwin') {
+          if (!canPasteAtFocus()) {
             return {
-              failure: `${message}\nThis window exposes no addressable text field, and typing by pointing is `
-                + 'implemented on macOS only. Use desktop_inspect and desktop_act on a ref if the window has a tree.',
+              failure: `${message}\nThis window exposes no addressable text field, and pasting by pointing is `
+                + 'not supported on this platform. Use desktop_inspect and desktop_act on a ref if the window has a tree.',
             }
           }
-          // macOS can still deliver it: paste, then put every clipboard type back.
+          // macOS (JXA NSPasteboard) and Windows (Win32 koffi clipboard + Ctrl+V)
+          // both deliver text and restore every clipboard format afterwards.
           await typeAtFocus(text, {
             ...gesture.replace === true ? { replace: true } : {},
             ...gesture.submit === true ? { enter: true } : {},
+            windowId: aimed.target.windowId,
           }, exec.signal)
           return { how: 'delivered by pasting, with the clipboard put back as it was.' }
         }
@@ -1253,6 +1283,7 @@ export function registerGuiTools(
       let found: WindowInfo | undefined
       let listed = await inventory(exec.signal)
       let onlyHiddenSince: number | undefined
+      let attemptedRestore = false
       const ownedBy = (windows: readonly WindowInfo[]): readonly WindowInfo[] =>
         pid === undefined
           ? windows.filter(window => sameApp(window.appName, name))
@@ -1260,10 +1291,19 @@ export function registerGuiTools(
       while (Date.now() < deadline) {
         if (pid === undefined) pid = await resolvePid(name, exec.signal)
         const own = listed.ok && listed.data !== undefined ? ownedBy(listed.data) : []
-        found = preferredWindow(own)
-        if (found?.visible === false) found = undefined
+        const active = own.filter(window => !isMinimizedWindow(window))
+        found = preferredWindow(active)
         if (found !== undefined) break
-        if (own.length > 0 && !own.some(window => window.visible !== false)) {
+        // On Windows a minimized window is reported with visible=false or at
+        // (-32000,-32000) and cannot be driven until restored. Try `restore` once.
+        if (own.length > 0 && !attemptedRestore) {
+          attemptedRestore = true
+          const candidate = preferredWindow(own)
+          if (candidate !== undefined) {
+            await cli<unknown>(['restore', '--window-id', candidate.id], exec.signal).catch(() => {})
+          }
+        }
+        if (own.length > 0 && active.length === 0) {
           onlyHiddenSince ??= Date.now()
           if (Date.now() - onlyHiddenSince > 1_500) break
         } else {

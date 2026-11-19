@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveConfig } from '../src/config.ts'
-import { chooseTarget, cliCombo, frameOf, frameStillValid, pointToScreen, registerGuiTools } from '../src/gui.ts'
-import { pasteScript, refOf } from '../src/hid.ts'
+import { chooseTarget, cliCombo, frameOf, frameStillValid, isMinimizedWindow, pointToScreen, registerGuiTools } from '../src/gui.ts'
+import { pasteAtFocusWindows, pasteScript, refOf, typeByRef } from '../src/hid.ts'
+import { windowsActivateScript, windowsLaunchTarget } from '../src/activate.ts'
+import { probeWindowsSessionState } from '../src/session-state.ts'
 import type { WindowInfo } from '../src/protocol.ts'
 
 /**
@@ -424,4 +426,138 @@ test('desktop_open_app falls back to shadowless screenshot when tree=no or visua
   assert.equal(captureCount, 1)
   assert.ok(res.image !== undefined)
   assert.match(res.text, /tree=no/)
+})
+
+test('windowsLaunchTarget and windowsActivateScript support aliases, URIs, and Get-StartApps cold launch', () => {
+  assert.equal(windowsLaunchTarget('系统设置'), 'ms-settings:')
+  assert.equal(windowsLaunchTarget('Settings'), 'ms-settings:')
+  assert.equal(windowsLaunchTarget('计算器'), 'calc.exe')
+  assert.equal(windowsLaunchTarget('ms-settings:defaultapps'), 'ms-settings:defaultapps')
+  assert.equal(windowsLaunchTarget('C:\\Windows\\notepad.exe'), undefined)
+  assert.equal(windowsLaunchTarget('QQ'), undefined)
+
+  const script = windowsActivateScript('微信')
+  assert.match(script, /WScript\.Shell/)
+  assert.match(script, /AppActivate\(\$name\)/)
+  assert.match(script, /Get-StartApps/)
+  assert.match(script, /shell:AppsFolder/)
+  assert.match(script, /Start-Process -FilePath \$name/)
+})
+
+test('isMinimizedWindow catches Windows -32000 minimized bounds and desktop_open_app auto-restores', async () => {
+  assert.equal(isMinimizedWindow(win('w-1', 'QQ', 'QQ', 160, 28, { bounds: { x: -32000, y: -32000, width: 160, height: 28 } })), true)
+  assert.equal(isMinimizedWindow(win('w-1', 'QQ', 'QQ', 800, 600, { visible: false })), true)
+  assert.equal(isMinimizedWindow(win('w-1', 'QQ', 'QQ', 800, 600, { visible: true })), false)
+
+  const { RefBook } = await import('../src/sessions.ts')
+  const refs = new RefBook()
+  const cliCalls: string[][] = []
+  let restored = false
+  const tools = new Map<string, { name: string, execute: (args: Record<string, unknown>, exec: unknown) => Promise<{ text: string }> }>()
+  const ctx = {
+    tools: { register: (tool: { name: string }) => { tools.set(tool.name, tool as never) } },
+    effect: () => ({ dispose: () => {} }),
+    get: () => undefined,
+    attachments: { async saveImage() { return { attachmentId: 'sha256:x', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } } },
+  }
+  const sessions = { async entry() { return { client: { alive: true }, refs, lastUsed: Date.now() } } }
+  registerGuiTools(ctx as never, resolveConfig(), {
+    activate: async () => {},
+    sessions: sessions as never,
+    resolveAppPid: async () => 501,
+    sessionState: async () => ({ locked: false }),
+    runCli: async (args) => {
+      cliCalls.push([...args])
+      if (args[0] === 'restore') restored = true
+      return { ok: true, data: {} as never }
+    },
+    listWindows: async () => ({
+      ok: true,
+      data: [{
+        id: 'w-501',
+        title: 'QQ',
+        appName: 'QQ',
+        pid: 501,
+        focused: restored,
+        accessible: true,
+        visible: true,
+        bounds: restored ? { x: 100, y: 100, width: 900, height: 650 } : { x: -32000, y: -32000, width: 160, height: 28 },
+      }],
+    }),
+    snapshot: async () => ({
+      ok: true,
+      data: {
+        app: 'QQ',
+        windowId: 'w-501',
+        snapshotId: 's_win',
+        refCount: 3,
+        complete: true,
+        tree: {
+          role: 'window',
+          children: [
+            { role: 'button', name: 'A', ref: '@s_win:e1' },
+            { role: 'button', name: 'B', ref: '@s_win:e2' },
+            { role: 'button', name: 'C', ref: '@s_win:e3' },
+          ],
+        },
+      },
+    }),
+  })
+  const res = await tools.get('desktop_open_app')!.execute({ name: 'QQ' }, exec)
+  assert.ok(cliCalls.some(args => args[0] === 'restore' && args.includes('w-501')))
+  assert.match(res.text, /window QQ w-501 900x650/)
+})
+
+test('typeByRef tries set-value first on Windows and falls back to --headed type + press', async () => {
+  const calls: string[][] = []
+  const ref = await typeByRef('你好世界', { windowId: 'w-9', session: 'dsh_1', enter: true }, AbortSignal.timeout(5_000), {
+    platform: 'win32',
+    runCli: async (args) => {
+      calls.push([...args])
+      if (args[0] === 'find') return { ok: true, data: { match: { ref_id: '@s1:e4', role: 'textfield' } } as never }
+      if (args[0] === 'set-value') return { ok: false, error: { code: 'ACTION_NOT_SUPPORTED', message: 'no value pattern' } }
+      return { ok: true, data: {} as never }
+    },
+  })
+  assert.equal(ref, '@s1:e4')
+  assert.ok(calls.some(a => a[0] === 'set-value' && a[1] === '@s1:e4'))
+  assert.ok(calls.some(a => a[0] === '--headed' && a[1] === 'type' && a[2] === '@s1:e4'))
+  assert.ok(calls.some(a => a[0] === 'press' && a[1] === '--headed' && a.includes('return')))
+})
+
+test('pasteAtFocusWindows saves clipboard, sends ctrl+a/ctrl+v, restores clipboard even on error, then sends return', async () => {
+  const order: string[] = []
+  const snap = { entries: [{ format: 13, bytes: Buffer.from('OLD\0', 'utf16le') }], dropped: [] }
+  await pasteAtFocusWindows('新文本', { replace: true, enter: true, windowId: 'w-7' }, AbortSignal.timeout(5_000), {
+    settleMs: 0,
+    saveClipboard: () => { order.push('save'); return snap },
+    setClipboardText: (t) => { order.push(`set:${t}`) },
+    restoreClipboard: (s) => { order.push(`restore:${s.entries.length}`) },
+    runCli: async (args) => {
+      order.push(`cli:${args.join(' ')}`)
+      return { ok: true, data: {} as never }
+    },
+  })
+  assert.deepEqual(order, [
+    'save',
+    'set:新文本',
+    'cli:press --headed --window-id w-7 ctrl+a',
+    'cli:press --headed --window-id w-7 ctrl+v',
+    'restore:1',
+    'cli:press --headed --window-id w-7 return',
+  ])
+})
+
+test('probeWindowsSessionState detects locked (null handle), unlocked, and unknown states', () => {
+  let closed = false
+  assert.deepEqual(probeWindowsSessionState({
+    OpenInputDesktop: () => 0n,
+    CloseDesktop: () => 1,
+  }), { locked: true, unknown: false })
+  assert.deepEqual(probeWindowsSessionState({
+    OpenInputDesktop: () => 1234n,
+    CloseDesktop: () => { closed = true; return 1 },
+  }), { locked: false, unknown: false })
+  assert.equal(closed, true)
+  assert.deepEqual(probeWindowsSessionState(null), { locked: false, unknown: true })
 })

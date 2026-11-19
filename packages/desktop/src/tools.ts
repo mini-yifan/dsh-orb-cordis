@@ -955,8 +955,11 @@ export function registerDesktopTools(
           const scrollRetryable = act.kind === 'click' || act.kind === 'double_click'
             || act.kind === 'right_click' || act.kind === 'press_key'
             || act.kind === 'expand' || act.kind === 'select'
+          // On Windows, `type_text`, `right_click`, `double_click`, and non-frontmost
+          // `press_key` return POLICY_DENIED in strict headless mode and require headed delivery.
           const physicalEscalatable = act.kind === 'click' || act.kind === 'double_click'
-            || act.kind === 'right_click' || act.kind === 'press_key' || act.kind === 'expand'
+            || act.kind === 'right_click' || act.kind === 'press_key'
+            || act.kind === 'expand' || act.kind === 'type_text'
           const boundsEscalatable = act.kind === 'click' || act.kind === 'double_click'
             || act.kind === 'right_click' || act.kind === 'expand'
 
@@ -997,19 +1000,46 @@ export function registerDesktopTools(
             if (!retryable || !config.physicalFallback) throw failure
 
             const state = await osState(call.client)
-            if (state.app === known.app) {
+            let frontNow = state.app === known.app
+            if (
+              !frontNow
+              && (act.kind === 'type_text' || act.kind === 'press_key')
+              && known.windowId !== undefined
+            ) {
+              const focused = await cli<unknown>(['focus-window', '--window-id', known.windowId], exec.signal)
+              if (focused.ok) frontNow = true
+            }
+            if (frontNow) {
               try {
-                data = await call.client.request({
+                data = await withScreenLock(call.sessionId, async () => await call.client.request({
                   op: 'act',
                   ref,
                   action: act,
                   policy: POLICY.headed,
                   timeout_ms: 2_000,
-                })
+                }))
                 escalated = true
                 failure = undefined
               } catch (headedError) {
                 failure = headedError
+              }
+            }
+
+            // On Windows, `press_key` to a non-frontmost or UIA-restricted window
+            // can still succeed via CLI `press --headed --window-id` once focused.
+            if (failure !== undefined && act.kind === 'press_key' && known.windowId !== undefined && act.key !== undefined) {
+              const combo = [...(act.modifiers ?? []), act.key].join('+')
+              const pressed = await withScreenLock(call.sessionId, async () => {
+                await cli<unknown>(['focus-window', '--window-id', known.windowId as string], exec.signal)
+                return await cli<unknown>(
+                  ['press', '--headed', '--window-id', known.windowId as string, combo],
+                  exec.signal,
+                )
+              })
+              if (pressed.ok) {
+                escalated = true
+                data = { action: 'press_key', ref_id: ref, disposition: { delivery: 'delivered_unverified' } }
+                failure = undefined
               }
             }
 
@@ -1265,13 +1295,33 @@ export function registerDesktopTools(
 
         try {
           await gate(call, known.app, config)
-          const data = await call.client.request({
-            op: 'act',
-            ref,
-            action,
-            policy: POLICY.headless,
-            timeout_ms: HEADLESS_PREFLIGHT_MS,
-          })
+          let data: unknown
+          try {
+            data = await call.client.request({
+              op: 'act',
+              ref,
+              action,
+              policy: POLICY.headless,
+              timeout_ms: HEADLESS_PREFLIGHT_MS,
+            })
+          } catch (firstErr) {
+            const firstHost = asHostError(firstErr)
+            const batchHeaded = config.physicalFallback
+              && firstHost.code === 'POLICY_DENIED'
+              && (action.kind === 'type_text' || action.kind === 'press_key'
+                || action.kind === 'right_click' || action.kind === 'double_click')
+            if (!batchHeaded) throw firstErr
+            if (known.windowId !== undefined) {
+              await cli<unknown>(['focus-window', '--window-id', known.windowId], exec.signal).catch(() => {})
+            }
+            data = await withScreenLock(call.sessionId, async () => await call.client.request({
+              op: 'act',
+              ref,
+              action,
+              policy: POLICY.headed,
+              timeout_ms: 2_000,
+            }))
+          }
           effects.set(effectKey, { at: Date.now(), landed: true })
           refreshLease(known.app, call.sessionId)
           if (isSubmit) submittedInBatch = true

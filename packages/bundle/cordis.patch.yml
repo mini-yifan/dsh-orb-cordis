@@ -159,6 +159,9 @@
                 A menu, menubar, sheet, popover or alert is a separate surface. When a click opens one, the window tree does
                 not change and the picture does not show it: read it with `desktop_inspect surface=<kind>` or search it with
                 `desktop_find surface=<kind>`, then act on its refs. If a click appears to do nothing, check for an overlay first.
+                Platform notes: on Windows use `ctrl` for standard shortcuts (e.g. `["ctrl","c"]`, `["ctrl","v"]`; `cmd` maps
+                to the Windows key), use `menu` or `sheet` overlays (Windows has no `menubar` surface), and when repeated
+                identical rows/buttons return `AMBIGUOUS_TARGET`, switch to `desktop_see` + `desktop_click` for that control.
                 Never address the same control through both paths in one breath: a ref and a point for one control
                 is how double presses happen.
                 A physical click or level-3 action raises its window first and moves the real pointer, so whoever is at the machine

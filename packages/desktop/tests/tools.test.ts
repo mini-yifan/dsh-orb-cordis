@@ -483,3 +483,20 @@ test('desktop_batch runs multiple steps with one follow-up read and blocks dupli
   assert.equal(snapshotCalls.length - snapsBefore, 1, 'batch should perform exactly one follow-up tree read')
   assert.equal(calls.filter(c => c.op === 'act').length, 2, 'second submit must never be dispatched')
 })
+
+test('desktop_act escalates Windows POLICY_DENIED on type_text and press_key to headed delivery', async () => {
+  const { tools, calls, cliCalls, exec } = harness({
+    snapshot: { ...richSnapshot, windowId: 'w-1' },
+    denyHeadless: true,
+    frontmost: 'Word',
+  })
+  const inspect = tools.get('desktop_inspect')
+  const act = tools.get('desktop_act')
+  assert.ok(inspect && act)
+  await inspect.execute({ app: 'Notes' }, exec)
+
+  const typed = await act.execute({ ref: '@s1:e4', action: 'type_text', text: 'hello' }, exec)
+  assert.match(typed.text, /^ok/)
+  assert.ok(cliCalls.some(args => args[0] === 'focus-window' && args.includes('w-1')))
+  assert.deepEqual(calls.filter(c => c.op === 'act').map(c => c.policy), [0, 2])
+})
