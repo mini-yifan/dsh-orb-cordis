@@ -84,3 +84,27 @@ export function isUsableObservationRaster(data: Uint8Array): boolean {
     && size.width >= MIN_USABLE_OBSERVATION_EDGE
     && size.height >= MIN_USABLE_OBSERVATION_EDGE
 }
+
+/**
+ * Clamp width and height proportionally so neither edge exceeds `maxLongEdge`.
+ * Never upsamples an image whose longer edge is already `<= maxLongEdge`.
+ */
+export function clampedLongEdgeSize(
+  width: number,
+  height: number,
+  maxLongEdge: number | undefined,
+): ObservationRasterSize {
+  const safeW = Math.max(1, Math.round(width))
+  const safeH = Math.max(1, Math.round(height))
+  if (maxLongEdge === undefined || !Number.isFinite(maxLongEdge) || maxLongEdge < 1) {
+    return { width: safeW, height: safeH }
+  }
+  const cap = Math.floor(maxLongEdge)
+  const longer = Math.max(safeW, safeH)
+  if (longer <= cap) return { width: safeW, height: safeH }
+  const ratio = cap / longer
+  return {
+    width: Math.max(1, Math.round(safeW * ratio)),
+    height: Math.max(1, Math.round(safeH * ratio)),
+  }
+}

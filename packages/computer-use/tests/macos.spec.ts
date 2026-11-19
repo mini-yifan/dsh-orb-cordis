@@ -233,19 +233,60 @@ describe('macOS backend with an injected runner', () => {
     }])
   })
 
-  it('captures the observed rectangle with one screencapture region call', async () => {
+  it('captures the observed rectangle with macos-sck-capture by default and supports maxLongEdge', async () => {
     const files: string[] = []
     const args: string[][] = []
     const backend = createMacosDesktopBackend(runner({ files, args }))
     const [screen] = await backend.listScreens()
     files.length = 0
     args.length = 0
-    const captured = await backend.capture(screen!)
+    const captured = await backend.capture(screen!, undefined, { maxLongEdge: 1280 })
     expect(captured.mediaType).toBe('image/png')
     expect(captured.data).toEqual(FAKE_DESKTOP_PNG)
-    expect(files).toEqual(['/usr/sbin/screencapture'])
-    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '0,0,100,50'])
-    expect(args[0]?.slice(4, 6)).toEqual(['-t', 'jpg'])
+    expect(files).toEqual([macosSckCaptureHelperPath()])
+    expect(args[0]).toEqual([
+      '--region=0,0,100,50',
+      '--max-long-edge=1280',
+      expect.stringMatching(/^--out=/u),
+    ])
+  })
+
+  it('falls back to screencapture -R and sips -Z when macos-sck-capture fails', async () => {
+    const files: string[] = []
+    const args: string[][] = []
+    const base = runner({ files, args })
+    const largePng = Buffer.from(FAKE_DESKTOP_PNG)
+    // Patch width/height in IHDR to 2800x1600 so sips -Z 1280 runs after fallback capture.
+    largePng.writeUInt32BE(2800, 16)
+    largePng.writeUInt32BE(1600, 20)
+    const backend = createMacosDesktopBackend(async (file, argv, options) => {
+      if (file === macosSckCaptureHelperPath()) {
+        files.push(file)
+        args.push([...argv])
+        throw new Error('sck unavailable')
+      }
+      if (file === '/usr/sbin/screencapture') {
+        files.push(file)
+        args.push([...argv])
+        await writeCaptureFile(String(argv.at(-1)), largePng)
+        return { stdout: '', stderr: '' }
+      }
+      if (file === '/usr/bin/sips') {
+        files.push(file)
+        args.push([...argv])
+        await writeCaptureFile(String(argv.at(-1)), FAKE_DESKTOP_PNG)
+        return { stdout: '', stderr: '' }
+      }
+      return base(file, argv, options)
+    })
+    const [screen] = await backend.listScreens()
+    files.length = 0
+    args.length = 0
+    const captured = await backend.capture(screen!, undefined, { maxLongEdge: 1280 })
+    expect(captured.data).toEqual(FAKE_DESKTOP_PNG)
+    expect(files).toEqual([macosSckCaptureHelperPath(), '/usr/sbin/screencapture', '/usr/bin/sips'])
+    expect(args[1]?.slice(0, 6)).toEqual(['-x', '-C', '-R', '0,0,100,50', '-t', 'jpg'])
+    expect(args[2]?.slice(0, 2)).toEqual(['-Z', '1280'])
   })
 
   it('captures a screen rectangle when inspect reports open menus', async () => {
@@ -266,8 +307,8 @@ describe('macOS backend with an injected runner', () => {
     files.length = 0
     args.length = 0
     await backend.capture(screen!)
-    expect(files).toEqual(['/usr/sbin/screencapture'])
-    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '10,20,400,300'])
+    expect(files).toEqual([macosSckCaptureHelperPath()])
+    expect(args[0]).toEqual(['--region=10,20,400,300', expect.stringMatching(/^--out=/u)])
   })
 
   it('captures a screen rectangle when the surface has no window id', async () => {
@@ -277,8 +318,8 @@ describe('macOS backend with an injected runner', () => {
     await backend.capture({
       index: 0, bounds: { x: 0, y: 0, width: 100, height: 50 }, scale: 2,
     })
-    expect(files).toEqual(['/usr/sbin/screencapture'])
-    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '0,0,100,50'])
+    expect(files).toEqual([macosSckCaptureHelperPath()])
+    expect(args[0]).toEqual(['--region=0,0,100,50', expect.stringMatching(/^--out=/u)])
   })
 
   it('keeps a secondary-display rectangle in global coordinates instead of the main display', async () => {
@@ -307,8 +348,8 @@ describe('macOS backend with an injected runner', () => {
     files.length = 0
     args.length = 0
     await backend.capture(screen!)
-    expect(files).toEqual(['/usr/sbin/screencapture'])
-    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '-218,-1080,1920,1080'])
+    expect(files).toEqual([macosSckCaptureHelperPath()])
+    expect(args[0]).toEqual(['--region=-218,-1080,1920,1080', expect.stringMatching(/^--out=/u)])
   })
 
   it('clips the observed rectangle to the display that owns the window', async () => {
@@ -331,7 +372,7 @@ describe('macOS backend with an injected runner', () => {
     files.length = 0
     args.length = 0
     await backend.capture(screen!)
-    expect(args[0]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '-100,900,100,180'])
+    expect(args[0]).toEqual(['--region=-100,900,100,180', expect.stringMatching(/^--out=/u)])
   })
 
   it('reports no surface when the observed rectangle misses its display', async () => {
@@ -879,7 +920,7 @@ describe('macOS backend with an injected runner', () => {
     expect(screen?.bounds).toEqual({ x: 100, y: 0, width: 200, height: 10 })
     const numberedArgs = args.length
     await backend.capture(screen!)
-    expect(args[numberedArgs]?.slice(0, 4)).toEqual(['-x', '-C', '-R', '100,0,200,10'])
+    expect(args[numberedArgs]?.slice(0, 1)).toEqual(['--region=100,0,200,10'])
     scripts.length = 0
     await backend.click({ screen: screen!, position: [250, 0], button: 'left', count: 1 })
     // 25% of the captured raster is 100 + 0.25 * 200 = 150; the unrounded frame would say 151.
@@ -1054,6 +1095,7 @@ describe('macOS backend with an injected runner', () => {
 
   it('stringifies non-Error capture failures', async () => {
     const mixed: CommandRunner = async (file, args, options) => {
+      if (file === macosSckCaptureHelperPath()) throw new Error('sck unavailable')
       if (file === '/usr/sbin/screencapture') throw 'denied'
       return runner({})(file, args, options)
     }

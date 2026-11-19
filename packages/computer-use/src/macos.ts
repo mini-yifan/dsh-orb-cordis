@@ -50,6 +50,7 @@ import {
   type TypeInput,
 } from './backend.ts'
 import { mapNormalizedToGlobal } from './coordinates.ts'
+import { observationRasterSize } from './raster.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -72,6 +73,7 @@ export type CommandRunner = (
 ) => Promise<CommandResult>
 
 const SCREENCAPTURE = '/usr/sbin/screencapture'
+const SIPS = '/usr/bin/sips'
 const OSASCRIPT = '/usr/bin/osascript'
 const OPEN = '/usr/bin/open'
 
@@ -1020,6 +1022,16 @@ export function createMacosDesktopBackend(
       const dir = await mkdtemp(join(tmpdir(), 'dsh-computer-use-'))
       const file = join(dir, 'screen.jpg')
       const excludeWindowIds = activeCaptureExcludeWindowIds()
+      const maxLongEdge = options?.maxLongEdge !== undefined && Number.isFinite(options.maxLongEdge) && options.maxLongEdge >= 1
+        ? Math.floor(options.maxLongEdge)
+        : undefined
+      const sckHelperArgs = (region: string, ids: readonly number[]): string[] => [
+        `--region=${region}`,
+        ...ids.length > 0 ? [`--exclude=${ids.join(',')}`] : [],
+        ...maxLongEdge !== undefined ? [`--max-long-edge=${String(maxLongEdge)}`] : [],
+        ...options?.cursor === false ? ['--no-cursor'] : [],
+        `--out=${file}`,
+      ]
       const overlayCapture = async (region: string, ids: readonly number[]): Promise<void> => {
         try {
           if (excludedRegionCapture !== undefined) {
@@ -1031,11 +1043,7 @@ export function createMacosDesktopBackend(
             })
             return
           }
-          await run(macosSckCaptureHelperPath(), [
-            `--region=${region}`,
-            `--exclude=${ids.join(',')}`,
-            `--out=${file}`,
-          ], { signal })
+          await run(macosSckCaptureHelperPath(), sckHelperArgs(region, ids), { signal })
         } catch (error: unknown) {
           throw new Error(`computer-use: overlay-exclude capture failed: ${errorDetail(error)}`)
         }
@@ -1043,16 +1051,34 @@ export function createMacosDesktopBackend(
       try {
         const region = regionCaptureSpec(screen.bounds)
         if (excludeWindowIds.length === 0) {
-          // `-R` reads the rectangle from the display that owns it, at that display's pixel
-          // scale, and `-C` bakes the system cursor in so the agent sees where its clicks land.
-          // A bare `screencapture` would write the main display only and the observed window
-          // of a secondary display would come back as main-display pixels.
-          const cursor = options?.cursor === false ? [] : ['-C']
-          await run(SCREENCAPTURE, ['-x', ...cursor, '-R', region, '-t', 'jpg', file], { signal })
+          // Prefer macos-sck-capture when present so every macOS observation gets
+          // the high-contrast red/white cursor ring and native ScreenCaptureKit scaling;
+          // fall back to `screencapture -R` when the helper is absent or refuses.
+          let capturedViaSck = false
+          const helper = macosSckCaptureHelperPath()
+          if (existsSync(helper)) {
+            try {
+              await run(helper, sckHelperArgs(region, []), { signal })
+              capturedViaSck = true
+            } catch (error: unknown) {
+              if (isAbortError(error, signal)) throw error
+            }
+          }
+          if (!capturedViaSck) {
+            const cursor = options?.cursor === false ? [] : ['-C']
+            await run(SCREENCAPTURE, ['-x', ...cursor, '-R', region, '-t', 'jpg', file], { signal })
+          }
         } else {
           await overlayCapture(region, excludeWindowIds)
         }
-        const data = await readFile(file)
+        let data = await readFile(file)
+        if (maxLongEdge !== undefined) {
+          const size = observationRasterSize(data)
+          if (size !== undefined && Math.max(size.width, size.height) > maxLongEdge) {
+            await run(SIPS, ['-Z', String(maxLongEdge), file], { signal })
+            data = await readFile(file)
+          }
+        }
         return { data, mediaType: mediaTypeOf(data) }
       } catch (error: unknown) {
         if (error instanceof Error && error.message.startsWith('computer-use: overlay-exclude capture failed:')) {

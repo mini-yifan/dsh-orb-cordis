@@ -290,7 +290,7 @@ describe('profile preferences', () => {
     assert.equal(profileDirectory({ get: () => ({ dir: '/tmp/dsh-profile' }) }), '/tmp/dsh-profile')
     const fallback = profileDirectory({ get: () => undefined })
     assert.equal(fallback, process.cwd())
-    assert.equal(defaultMillifraction('win32'), true)
+    assert.equal(defaultMillifraction('win32'), false)
     assert.equal(defaultMillifraction('darwin'), false)
     assert.equal(defaultMillifraction('linux'), false)
   })

@@ -21,13 +21,16 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { CapturedScreen, ClickButton, DesktopBackend, DesktopForeground } from './backend.ts'
 import type { ResolvedComputerUseConfig } from './config.ts'
 import {
+  boundsStillMatch,
   coordinateModeOf,
   coordinateOutcome,
   coordinatesRemain,
   firstFrameNotice,
   installCoordinateMode,
   lastAttachedRaster,
+  lastObservedBounds,
   lastObservedWindow,
+  registerModeTool,
   rememberObservation,
   toolsForCoordinateMode,
   type CoordinateOutcome,
@@ -144,6 +147,7 @@ const COORDINATE_FIELDS = {
   },
   attachedWidth: { type: 'integer' },
   attachedHeight: { type: 'integer' },
+  viewportChanged: { type: 'boolean' },
 } as const
 
 function genericExecute(title: string, rawInput: unknown): GenericCallView {
@@ -180,6 +184,10 @@ function hidPosition(exec: ToolExecution, position: readonly number[]): [number,
   return modelPositionToHid(position, mode, mode === 'pixel' ? lastAttachedRaster(session) : undefined)
 }
 
+function stripScreenBounds(screens: readonly ObservedScreen[]): ObservedScreen[] {
+  return screens.map(({ bounds: _bounds, ...rest }) => rest)
+}
+
 function observedFields(
   session: Session | undefined,
   observation: { screens: ObservedScreen[]; foreground: DesktopForeground },
@@ -188,10 +196,15 @@ function observedFields(
   foreground: DesktopForeground
 } & CoordinateOutcome {
   return {
-    screens: observation.screens,
+    screens: stripScreenBounds(observation.screens),
     foreground: observation.foreground,
     ...coordinateOutcome(session, observation.screens),
   }
+}
+
+function viewportChangedText(outcome: CoordinateOutcome): string {
+  return `VIEWPORT_CHANGED: the frontmost window moved, resized, or changed after the last screenshot, `
+    + `so this action was not sent. Use the fresh screenshot below and try again. ${coordinatesRemain(outcome)}`
 }
 
 async function recapture(
@@ -281,6 +294,9 @@ export function applyComputerUse(
   })
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const nextAssembly = await next()
+    // DSH 0.2.x removed `tools` from `PromptPresentation`; guard so pixel mode never
+    // calls `.map` on `undefined` when running on 0.2.x hosts.
+    if (!Array.isArray(nextAssembly.tools)) return nextAssembly
     const mode = coordinateModeOf(context.agent?.session)
     if (mode === 'millifraction') return nextAssembly
     return { ...nextAssembly, tools: toolsForCoordinateMode(nextAssembly.tools, mode) }
@@ -294,7 +310,7 @@ export function applyComputerUse(
     })
   })
 
-  ctx.tools.register(defineTool({
+  ctx.tools.register(registerModeTool(ctx, defineTool({
     name: 'click',
     description:
       'Click at a 0–1000 position on the attached frontmost-window screenshot, then return the post-action screenshot. '
@@ -343,7 +359,7 @@ export function applyComputerUse(
         },
       },
       render: (_args, value) => resultBlocks(
-        clickResultText(value),
+        value.viewportChanged === true ? viewportChangedText(value) : clickResultText(value),
         value.screens,
         value.foreground,
         value,
@@ -364,6 +380,20 @@ export function applyComputerUse(
       return guiTurn(backend, exec, async () => {
         const screens = await backend.listScreens(exec.signal)
         const screen = requireScreen(screens, args.screen_index)
+        const session = sessionOf(exec)
+        const previousBounds = lastObservedBounds(session)
+        if (!boundsStillMatch(previousBounds, screen.bounds)) {
+          const observation = await recapture(ctx, backend, exec)
+          return {
+            screenIndex: args.screen_index,
+            position,
+            button,
+            count,
+            ...modifiers === undefined ? {} : { modifiers },
+            viewportChanged: true,
+            ...observedFields(session, observation),
+          }
+        }
         await backend.click({
           screen,
           position: hidPosition(exec, position),
@@ -378,13 +408,13 @@ export function applyComputerUse(
           button,
           count,
           ...modifiers === undefined ? {} : { modifiers },
-          ...observedFields(sessionOf(exec), observation),
+          ...observedFields(session, observation),
         }
       })
     },
-  }))
+  })))
 
-  ctx.tools.register(defineTool({
+  ctx.tools.register(registerModeTool(ctx, defineTool({
     name: 'input_text',
     description:
       'Click to focus a 0–1000 position on the attached frontmost-window screenshot, type text, optionally replace existing content and press Enter, then return the post-action screenshot.',
@@ -424,7 +454,9 @@ export function applyComputerUse(
         },
       },
       render: (_args, value) => resultBlocks(
-        `Typed on screen ${String(value.screenIndex)} at [${value.position.join(', ')}] (replace=${String(value.replace)}, submit=${String(value.submit)}). ${coordinatesRemain(value)}`,
+        value.viewportChanged === true
+          ? viewportChangedText(value)
+          : `Typed on screen ${String(value.screenIndex)} at [${value.position.join(', ')}] (replace=${String(value.replace)}, submit=${String(value.submit)}). ${coordinatesRemain(value)}`,
         value.screens,
         value.foreground,
         value,
@@ -440,6 +472,19 @@ export function applyComputerUse(
       return guiTurn(backend, exec, async () => {
         const screens = await backend.listScreens(exec.signal)
         const screen = requireScreen(screens, args.screen_index)
+        const session = sessionOf(exec)
+        if (!boundsStillMatch(lastObservedBounds(session), screen.bounds)) {
+          const observation = await recapture(ctx, backend, exec)
+          return {
+            screenIndex: args.screen_index,
+            position,
+            text: args.text,
+            replace,
+            submit,
+            viewportChanged: true,
+            ...observedFields(session, observation),
+          }
+        }
         await backend.typeText({
           screen,
           position: hidPosition(exec, position),
@@ -454,13 +499,13 @@ export function applyComputerUse(
           text: args.text,
           replace,
           submit,
-          ...observedFields(sessionOf(exec), observation),
+          ...observedFields(session, observation),
         }
       })
     },
-  }))
+  })))
 
-  ctx.tools.register(defineTool({
+  ctx.tools.register(registerModeTool(ctx, defineTool({
     name: 'scroll',
     description:
       'Scroll up or down at a 0–1000 position on the attached frontmost-window screenshot, then return the post-action screenshot. scroll_level is 1–10.',
@@ -499,7 +544,9 @@ export function applyComputerUse(
         },
       },
       render: (_args, value) => resultBlocks(
-        `Scrolled ${value.direction} on screen ${String(value.screenIndex)} at [${value.position.join(', ')}] (level ${String(value.scrollLevel)}). ${coordinatesRemain(value)}`,
+        value.viewportChanged === true
+          ? viewportChangedText(value)
+          : `Scrolled ${value.direction} on screen ${String(value.screenIndex)} at [${value.position.join(', ')}] (level ${String(value.scrollLevel)}). ${coordinatesRemain(value)}`,
         value.screens,
         value.foreground,
         value,
@@ -520,6 +567,18 @@ export function applyComputerUse(
       return guiTurn(backend, exec, async () => {
         const screens = await backend.listScreens(exec.signal)
         const screen = requireScreen(screens, args.screen_index)
+        const session = sessionOf(exec)
+        if (!boundsStillMatch(lastObservedBounds(session), screen.bounds)) {
+          const observation = await recapture(ctx, backend, exec)
+          return {
+            screenIndex: args.screen_index,
+            position,
+            direction: args.direction,
+            scrollLevel: args.scroll_level,
+            viewportChanged: true,
+            ...observedFields(session, observation),
+          }
+        }
         await backend.scroll({
           screen,
           position: hidPosition(exec, position),
@@ -532,11 +591,11 @@ export function applyComputerUse(
           position,
           direction: args.direction,
           scrollLevel: args.scroll_level,
-          ...observedFields(sessionOf(exec), observation),
+          ...observedFields(session, observation),
         }
       })
     },
-  }))
+  })))
 
   ctx.tools.register(defineTool({
     name: 'hotkey',
@@ -745,7 +804,7 @@ export function applyComputerUse(
     },
   }))
 
-  ctx.tools.register(defineTool({
+  ctx.tools.register(registerModeTool(ctx, defineTool({
     name: 'long_press',
     description:
       'Press and hold the left button at a 0–1000 position on the attached frontmost-window screenshot, then return the post-action screenshot. '
@@ -778,7 +837,9 @@ export function applyComputerUse(
         },
       },
       render: (_args, value) => resultBlocks(
-        `Long-pressed screen ${String(value.screenIndex)} at [${value.position.join(', ')}] for ${String(value.durationSeconds)}s. ${coordinatesRemain(value)}`,
+        value.viewportChanged === true
+          ? viewportChangedText(value)
+          : `Long-pressed screen ${String(value.screenIndex)} at [${value.position.join(', ')}] for ${String(value.durationSeconds)}s. ${coordinatesRemain(value)}`,
         value.screens,
         value.foreground,
         value,
@@ -797,6 +858,17 @@ export function applyComputerUse(
       return guiTurn(backend, exec, async () => {
         const screens = await backend.listScreens(exec.signal)
         const screen = requireScreen(screens, args.screen_index)
+        const session = sessionOf(exec)
+        if (!boundsStillMatch(lastObservedBounds(session), screen.bounds)) {
+          const observation = await recapture(ctx, backend, exec)
+          return {
+            screenIndex: args.screen_index,
+            position,
+            durationSeconds,
+            viewportChanged: true,
+            ...observedFields(session, observation),
+          }
+        }
         await backend.longPress({
           screen,
           position: hidPosition(exec, position),
@@ -807,13 +879,13 @@ export function applyComputerUse(
           screenIndex: args.screen_index,
           position,
           durationSeconds,
-          ...observedFields(sessionOf(exec), observation),
+          ...observedFields(session, observation),
         }
       })
     },
-  }))
+  })))
 
-  ctx.tools.register(defineTool({
+  ctx.tools.register(registerModeTool(ctx, defineTool({
     name: 'drag',
     description:
       'Drag from a start 0–1000 position to an end 0–1000 position on the attached frontmost-window screenshot, then return the post-action screenshot.',
@@ -856,8 +928,10 @@ export function applyComputerUse(
         },
       },
       render: (_args, value) => resultBlocks(
-        `Dragged from screen ${String(value.startScreenIndex)} [${value.startPosition.join(', ')}] `
-        + `to screen ${String(value.endScreenIndex)} [${value.endPosition.join(', ')}]. ${coordinatesRemain(value)}`,
+        value.viewportChanged === true
+          ? viewportChangedText(value)
+          : `Dragged from screen ${String(value.startScreenIndex)} [${value.startPosition.join(', ')}] `
+            + `to screen ${String(value.endScreenIndex)} [${value.endPosition.join(', ')}]. ${coordinatesRemain(value)}`,
         value.screens,
         value.foreground,
         value,
@@ -876,6 +950,18 @@ export function applyComputerUse(
         const screens = await backend.listScreens(exec.signal)
         const startScreen = requireScreen(screens, args.start_screen_index)
         const endScreen = requireScreen(screens, args.end_screen_index)
+        const session = sessionOf(exec)
+        if (!boundsStillMatch(lastObservedBounds(session), startScreen.bounds)) {
+          const observation = await recapture(ctx, backend, exec)
+          return {
+            startScreenIndex: args.start_screen_index,
+            startPosition,
+            endScreenIndex: args.end_screen_index,
+            endPosition,
+            viewportChanged: true,
+            ...observedFields(session, observation),
+          }
+        }
         await backend.drag({
           startScreen,
           startPosition: hidPosition(exec, startPosition),
@@ -888,11 +974,11 @@ export function applyComputerUse(
           startPosition,
           endScreenIndex: args.end_screen_index,
           endPosition,
-          ...observedFields(sessionOf(exec), observation),
+          ...observedFields(session, observation),
         }
       })
     },
-  }))
+  })))
 
   ctx.tools.register(defineTool({
     name: 'open_in_browser',
@@ -1132,6 +1218,7 @@ export function applyComputerUse(
         logicalWidth: seed.screen.bounds.width,
         logicalHeight: seed.screen.bounds.height,
         scale: seed.screen.scale,
+        bounds: { ...seed.screen.bounds },
         ...seed.screen.windowId === undefined ? {} : { windowId: seed.screen.windowId },
         ...seed.screen.transientWindowIds === undefined ? {} : { transientWindowIds: [...seed.screen.transientWindowIds] },
         ...seed.screen.appName === undefined ? {} : { appName: seed.screen.appName },

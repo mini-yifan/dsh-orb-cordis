@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CapturedScreen, DesktopBackend, DesktopForeground, ScreenInfo } from './backend.ts'
 import { FOCUS_FALLBACK_FOREGROUND } from './backend.ts'
+import { OBSERVATION_MAX_LONG_EDGE } from './observe.ts'
 import { runWithCaptureExcludeWindowIds } from './capture-exclude.ts'
 import type { ComputerUseOverlayGuard } from './overlay-guard.ts'
 import type { CoordinateMode } from './coordinate-mode.ts'
@@ -176,7 +177,10 @@ export function installLassoCapture(ctx: Context, backend: DesktopBackend): Lass
                 ...found.appName === undefined ? {} : { appName: found.appName },
               }
             : { index: 0, bounds: target, scale: display.scale }
-          const captured = await backend.capture(screen, input.signal, { cursor: false })
+          const captured = await backend.capture(screen, input.signal, {
+            cursor: false,
+            maxLongEdge: OBSERVATION_MAX_LONG_EDGE,
+          })
           return { ...captured, screen, foreground, bounds: target }
         })
       if (guard === undefined) return run([])
