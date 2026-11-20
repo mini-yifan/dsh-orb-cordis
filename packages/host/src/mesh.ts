@@ -156,6 +156,7 @@ export interface MeshService {
   tree(): MeshTree | Promise<MeshTree>
   page(nodeId: string, sessionId: string, since?: number): MeshPage | Promise<MeshPage>
   stream(nodeId: string, sessionId: string, since: number): MeshPage | Promise<MeshPage>
+  createSession?(nodeId: string, workspaceId: string): MeshSession | Promise<MeshSession>
   prompt(nodeId: string, sessionId: string, text: string): MeshOk | Promise<MeshOk>
   cancel(nodeId: string, sessionId: string): MeshOk | Promise<MeshOk>
   interactions(): MeshInteraction[]
@@ -393,6 +394,8 @@ export class MockMeshService implements MeshService {
   }
   private answered = new Set<string>()
   private pages = new Map<string, MeshFrame[]>()
+  private createdSessions: MeshSession[] = []
+  private createdSeq = 0
 
   constructor(private readonly clock: () => number = now) {
     this.rebuildPages()
@@ -431,9 +434,37 @@ export class MockMeshService implements MeshService {
     return {
       nodes: this.nodes(),
       workspaces: workspaces(),
-      sessions: sessions(this.clock()),
+      sessions: this.allSessions(),
       cursor: 1,
     }
+  }
+
+  createSession(nodeId: string, workspaceId: string): MeshSession {
+    if (!this.paired) throw new MeshRequestError(409, 'unpaired', '尚未加入互联')
+    const trimmed = workspaceId.trim()
+    if (trimmed === '') throw new MeshRequestError(400, 'invalid_workspace', '工作区不能为空')
+    if (nodeId === LOCAL_NODE_ID) {
+      throw new MeshRequestError(400, 'local_not_remote', '不能把本机当作远端设备')
+    }
+    const peer = this.peerRows().find((node) => node.nodeId === nodeId)
+    if (peer === undefined || !peer.online) {
+      throw new MeshRequestError(503, 'offline', '目标设备不在线')
+    }
+    const exists = workspaces().some((ws) => ws.nodeId === nodeId && ws.workspaceId === trimmed)
+    if (!exists) throw new MeshRequestError(404, 'workspace_not_found', '工作区不存在')
+    this.createdSeq += 1
+    const created: MeshSession = {
+      nodeId,
+      workspaceId: trimmed,
+      sessionId: `session-new-${this.createdSeq}`,
+      title: '新对话',
+      status: 'idle',
+      controllable: true,
+      updatedAt: this.clock(),
+    }
+    this.createdSessions.unshift(created)
+    this.pages.set(this.key(nodeId, created.sessionId), [])
+    return created
   }
 
   page(nodeId: string, sessionId: string, since = 0): MeshPage {
@@ -608,6 +639,7 @@ export class MockMeshService implements MeshService {
 
   unpair(): MeshOk {
     this.paired = false
+    this.createdSessions = []
     return { ok: true }
   }
 
@@ -636,15 +668,20 @@ export class MockMeshService implements MeshService {
     return `${nodeId}\u0000${sessionId}`
   }
 
+  private allSessions(): MeshSession[] {
+    return [...this.createdSessions, ...sessions(this.clock())]
+  }
+
   private rebuildPages(): void {
     this.pages.clear()
+    this.createdSessions = []
   }
 
   private frames(nodeId: string, sessionId: string): MeshFrame[] {
     const key = this.key(nodeId, sessionId)
     const existing = this.pages.get(key)
     if (existing !== undefined) return existing
-    const session = sessions(this.clock()).find((row) => row.nodeId === nodeId && row.sessionId === sessionId)
+    const session = this.allSessions().find((row) => row.nodeId === nodeId && row.sessionId === sessionId)
     if (session === undefined) {
       throw new MeshRequestError(404, 'session_not_found', '会话不存在')
     }
@@ -655,7 +692,7 @@ export class MockMeshService implements MeshService {
   }
 
   private requireControllable(nodeId: string, sessionId: string): void {
-    const session = sessions(this.clock()).find((row) => row.nodeId === nodeId && row.sessionId === sessionId)
+    const session = this.allSessions().find((row) => row.nodeId === nodeId && row.sessionId === sessionId)
     if (session === undefined) {
       throw new MeshRequestError(404, 'session_not_found', '会话不存在')
     }
@@ -704,6 +741,7 @@ interface PluginMeshLike {
   tree(): unknown
   page(nodeId: string, sessionId: string, maxMessages?: number): unknown
   stream(nodeId: string, sessionId: string, since: number): unknown
+  createSession?(nodeId: string, workspaceId: string): unknown
   prompt(nodeId: string, sessionId: string, text: string): unknown
   cancel(nodeId: string, sessionId: string): unknown
   interactions(): unknown
@@ -811,6 +849,26 @@ class PluginMeshService implements MeshService {
     return {
       items,
       cursor: typeof value?.cursor === 'number' ? value.cursor : (items.at(-1)?.seq ?? since),
+    }
+  }
+
+  async createSession(nodeId: string, workspaceId: string): Promise<MeshSession> {
+    if (typeof this.plugin.createSession !== 'function') {
+      throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持远端新建会话')
+    }
+    const value = record(await this.plugin.createSession(nodeId, workspaceId))
+    const sessionId = typeof value?.sessionId === 'string' ? value.sessionId : ''
+    if (sessionId === '') {
+      throw new MeshRequestError(502, 'invalid_session', '目标设备未返回会话编号')
+    }
+    return {
+      nodeId,
+      workspaceId,
+      sessionId,
+      title: typeof value?.title === 'string' && value.title.trim() !== '' ? value.title.trim() : sessionId,
+      status: normalizeSessionStatus(value?.status),
+      controllable: value?.controllable !== false,
+      updatedAt: typeof value?.updatedAt === 'number' && Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
     }
   }
 

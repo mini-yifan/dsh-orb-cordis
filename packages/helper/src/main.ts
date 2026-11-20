@@ -1180,7 +1180,7 @@ interface MeshWireResponse {
 }
 
 /** Paths the Mesh page may reach. This mirrors the host's `/.dsh-orb/mesh/*` surface. */
-const MESH_PATH = /^\/(?:status|nodes|tree|events|interactions|tasks|prefs|pair|unpair|name)$|^\/sessions\/[^/]{1,200}\/[^/]{1,200}\/(?:page|stream|prompt|cancel)$|^\/interactions\/[^/]{1,200}\/answer$/
+const MESH_PATH = /^\/(?:status|nodes|tree|events|interactions|tasks|prefs|pair|unpair|name)$|^\/sessions\/[^/]{1,200}\/create$|^\/sessions\/[^/]{1,200}\/[^/]{1,200}\/(?:page|stream|prompt|cancel)$|^\/interactions\/[^/]{1,200}\/answer$/
 
 const MAX_MESH_RESPONSE_BYTES = 8 * 1024 * 1024
 

@@ -1,7 +1,7 @@
 // Interconnect window. The page only draws: every read and write goes through the
 // preload bridge, which forwards to orb-host's `/.dsh-orb/mesh/*` adapter.
 
-import { CHEVRON_DOWN, CHEVRON_UP, FOLDER, icon } from './icons.js'
+import { CHEVRON_DOWN, CHEVRON_UP, FOLDER, PLUS, icon } from './icons.js'
 import { renderMarkdownFragment } from './markdown.js'
 import {
   attachmentsForSession,
@@ -31,8 +31,12 @@ const state = {
   error: '',
   /** Currently expanded peer device id; null means all devices start collapsed. */
   expandedNodeId: null,
+  /** Workspaces manually collapsed via their folder row. */
+  collapsedWorkspaces: new Set(),
   /** Workspaces the reader expanded past the session preview. */
   expanded: new Set(),
+  /** Workspace key currently creating a new remote session. */
+  creatingWorkspaceKey: null,
   /** Bookmark click target waiting until the tree contains that Session. */
   pendingOpen: null,
 }
@@ -140,6 +144,25 @@ function workspaceKey(nodeId, workspaceId) {
   return `${nodeId}\u0000${workspaceId}`
 }
 
+function resetWorkspaceStates() {
+  state.collapsedWorkspaces.clear()
+  state.expanded.clear()
+}
+
+function revealSessionInTree(target, tree = peerTreeNow()) {
+  if (state.expandedNodeId !== target.nodeId) {
+    resetWorkspaceStates()
+    state.expandedNodeId = target.nodeId
+  }
+  const key = workspaceKey(target.nodeId, target.workspaceId)
+  state.collapsedWorkspaces.delete(key)
+  const siblings = (Array.isArray(tree.sessions) ? tree.sessions : [])
+    .filter((session) => session.nodeId === target.nodeId && session.workspaceId === target.workspaceId)
+    .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+  const index = siblings.findIndex((session) => session.sessionId === target.sessionId)
+  if (index >= SESSION_PREVIEW) state.expanded.add(key)
+}
+
 function isTaskSession(session) {
   if (session === undefined) return false
   if (typeof session.taskId === 'string' && session.taskId !== '') return true
@@ -235,8 +258,7 @@ async function load() {
       const target = findSession(peers, pending.nodeId, pending.sessionId)
       if (target !== undefined) {
         state.selected = { nodeId: pending.nodeId, sessionId: pending.sessionId }
-        state.expandedNodeId = target.nodeId
-        state.expanded.add(workspaceKey(target.nodeId, target.workspaceId))
+        revealSessionInTree(target, peers)
         state.pendingOpen = null
       }
     }
@@ -378,8 +400,7 @@ async function applyOpenTarget(payload) {
   const targetSession = findSession(peers, target.nodeId, target.sessionId)
   if (targetSession !== undefined) {
     state.pendingOpen = null
-    state.expandedNodeId = targetSession.nodeId
-    state.expanded.add(workspaceKey(targetSession.nodeId, targetSession.workspaceId))
+    revealSessionInTree(targetSession, peers)
     await selectSession(target.nodeId, target.sessionId)
     return
   }
@@ -388,6 +409,45 @@ async function applyOpenTarget(payload) {
 }
 
 /* ----- Actions ----- */
+
+async function createWorkspaceSession(node, workspace) {
+  if (node.online === false || state.busy || state.creatingWorkspaceKey !== null) return
+  const key = workspaceKey(node.nodeId, workspace.workspaceId)
+  state.creatingWorkspaceKey = key
+  state.error = ''
+  renderTree()
+  try {
+    const body = await request('POST', `/sessions/${encodeURIComponent(node.nodeId)}/create`, {
+      workspaceId: workspace.workspaceId,
+    })
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+    if (sessionId === '') {
+      throw new Error(t('目标设备未返回新会话编号', 'The target device did not return a session id'))
+    }
+    const createdSession = {
+      nodeId: node.nodeId,
+      workspaceId: workspace.workspaceId,
+      sessionId,
+      title: typeof body?.title === 'string' && body.title.trim() !== '' ? body.title.trim() : t('新对话', 'New session'),
+      status: typeof body?.status === 'string' && body.status !== '' ? body.status : 'idle',
+      controllable: body?.controllable !== false,
+      updatedAt: typeof body?.updatedAt === 'number' && Number.isFinite(body.updatedAt) ? body.updatedAt : Date.now(),
+    }
+    const existing = Array.isArray(state.tree.sessions) ? state.tree.sessions : []
+    if (!existing.some((row) => row.nodeId === createdSession.nodeId && row.sessionId === createdSession.sessionId)) {
+      state.tree = { ...state.tree, sessions: [createdSession, ...existing] }
+    }
+    state.expandedNodeId = node.nodeId
+    state.collapsedWorkspaces.delete(key)
+    state.creatingWorkspaceKey = null
+    await selectSession(createdSession.nodeId, createdSession.sessionId)
+    if (!els.input.disabled) els.input.focus()
+  } catch (error) {
+    state.creatingWorkspaceKey = null
+    showError(error)
+    render()
+  }
+}
 
 async function sendPrompt() {
   const session = selectedSession()
@@ -544,6 +604,7 @@ function renderTree() {
     head.append(element('span', 'mesh-node-state', stateLabel), chevron)
     head.addEventListener('click', () => {
       state.expandedNodeId = state.expandedNodeId === node.nodeId ? null : node.nodeId
+      resetWorkspaceStates()
       renderTree()
     })
     wrapper.append(head)
@@ -562,12 +623,47 @@ function renderTree() {
           .localeCompare(String(right.workspace.name ?? right.workspace.workspaceId))
       ))
       for (const { workspace, sessions } of workspaces) {
+        const key = workspaceKey(node.nodeId, workspace.workspaceId)
+        const workspaceCollapsed = state.collapsedWorkspaces.has(key)
         const row = element('div', 'mesh-workspace')
+        const toggle = element('button', 'mesh-workspace-toggle')
+        toggle.type = 'button'
+        toggle.setAttribute('aria-expanded', workspaceCollapsed ? 'false' : 'true')
         const folder = icon(FOLDER, 14)
         folder.classList.add('mesh-workspace-icon')
-        row.append(folder, element('span', 'mesh-workspace-name', workspace.name ?? workspace.workspaceId))
+        const wsChevron = icon(workspaceCollapsed ? CHEVRON_DOWN : CHEVRON_UP, 12)
+        wsChevron.classList.add('mesh-workspace-chevron')
+        toggle.append(folder, element('span', 'mesh-workspace-name', workspace.name ?? workspace.workspaceId), wsChevron)
+        toggle.addEventListener('click', () => {
+          if (state.collapsedWorkspaces.has(key)) {
+            state.collapsedWorkspaces.delete(key)
+            state.expanded.delete(key)
+          } else {
+            state.collapsedWorkspaces.add(key)
+            state.expanded.delete(key)
+          }
+          renderTree()
+        })
+        row.append(toggle)
+        if (node.online !== false) {
+          const add = element('button', 'mesh-workspace-add')
+          add.type = 'button'
+          add.title = t('新建对话', 'New session')
+          add.setAttribute('aria-label', t(
+            `在 ${workspace.name ?? workspace.workspaceId} 新建对话`,
+            `New session in ${workspace.name ?? workspace.workspaceId}`,
+          ))
+          add.disabled = state.busy || state.creatingWorkspaceKey !== null
+          add.append(icon(PLUS, 13))
+          add.addEventListener('click', () => { void createWorkspaceSession(node, workspace) })
+          row.append(add)
+        }
         body.append(row)
-        const key = workspaceKey(node.nodeId, workspace.workspaceId)
+        if (workspaceCollapsed) continue
+        if (sessions.length === 0) {
+          body.append(element('p', 'mesh-workspace-empty', t('暂无会话', 'No sessions yet')))
+          continue
+        }
         const expanded = state.expanded.has(key)
         const shown = expanded ? sessions : sessions.slice(0, SESSION_PREVIEW)
         for (const session of shown) {
@@ -593,16 +689,18 @@ function renderTree() {
         }
         const hidden = sessions.length - shown.length
         if (hidden > 0) {
-          const more = element('button', 'mesh-more', t(`展开其余 ${hidden} 个会话`, `Show ${hidden} more`))
+          const more = element('button', 'mesh-more')
           more.type = 'button'
+          more.append(icon(CHEVRON_DOWN, 12), element('span', undefined, t(`展开其余 ${hidden} 个会话`, `Show ${hidden} more`)))
           more.addEventListener('click', () => {
             state.expanded.add(key)
             renderTree()
           })
           body.append(more)
         } else if (expanded && sessions.length > SESSION_PREVIEW) {
-          const less = element('button', 'mesh-more', t('收起', 'Show less'))
+          const less = element('button', 'mesh-more')
           less.type = 'button'
+          less.append(icon(CHEVRON_UP, 12), element('span', undefined, t('收起', 'Show less')))
           less.addEventListener('click', () => {
             state.expanded.delete(key)
             renderTree()

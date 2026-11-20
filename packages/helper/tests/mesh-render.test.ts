@@ -114,11 +114,31 @@ describe('mesh window markup and wiring', () => {
 
   it('collapses peer devices by default, toggles one at a time, and focuses the bookmark device', () => {
     assert.match(mesh, /expandedNodeId: null/)
+    assert.match(mesh, /collapsedWorkspaces: new Set\(\)/)
     assert.match(mesh, /const expandedNode = state\.expandedNodeId === node\.nodeId/)
     assert.match(mesh, /state\.expandedNodeId = state\.expandedNodeId === node\.nodeId \? null : node\.nodeId/)
+    assert.match(mesh, /resetWorkspaceStates\(\)/)
     assert.match(mesh, /if \(expandedNode\) \{/)
+    assert.match(mesh, /function revealSessionInTree\(target, tree = peerTreeNow\(\)\)/)
     assert.match(mesh, /state\.expandedNodeId = target\.nodeId/)
-    assert.match(mesh, /state\.expandedNodeId = targetSession\.nodeId/)
+    assert.match(mesh, /state\.collapsedWorkspaces\.delete\(key\)/)
+    assert.match(mesh, /if \(index >= SESSION_PREVIEW\) state\.expanded\.add\(key\)/)
+    assert.match(mesh, /revealSessionInTree\(target, peers\)/)
+    assert.match(mesh, /revealSessionInTree\(targetSession, peers\)/)
+  })
+
+  it('supports collapsing workspaces back to initial preview and creating remote sessions with plus', () => {
+    assert.match(mesh, /element\('button', 'mesh-workspace-toggle'\)/)
+    assert.match(mesh, /state\.collapsedWorkspaces\.has\(key\)/)
+    assert.match(mesh, /state\.expanded\.delete\(key\)/)
+    assert.match(mesh, /element\('button', 'mesh-workspace-add'\)/)
+    assert.match(mesh, /async function createWorkspaceSession\(node, workspace\)/)
+    assert.match(mesh, /request\('POST', `\/sessions\/\$\{encodeURIComponent\(node\.nodeId\)\}\/create`/)
+    assert.match(mesh, /if \(!els\.input\.disabled\) els\.input\.focus\(\)/)
+    assert.match(mesh, /element\('button', 'mesh-more'\)/)
+    assert.match(mesh, /t\('收起', 'Show less'\)/)
+    assert.match(css, /\.mesh-workspace-toggle \{/)
+    assert.match(css, /\.mesh-workspace-add \{/)
   })
 
   it('selects the remote task after a bookmark opens the window', () => {
@@ -150,6 +170,7 @@ describe('mesh window markup and wiring', () => {
   it('reaches the host only through an allowlisted Mesh bridge with the helper token', () => {
     assert.match(main, /orb:mesh-request/)
     assert.match(main, /const MESH_PATH = \/\^\\\/\(\?:status\|nodes\|tree/)
+    assert.match(main, /\\\/sessions\\\/\[\^\/\]\{1,200\}\\\/create\$/)
     assert.match(main, /'x-dsh-orb-helper': token/)
     assert.match(main, /path: `\/\.dsh-orb\/mesh\$\{request\.path\}`/)
     // The host widens its helper exemption only for the Mesh prefix.

@@ -64,6 +64,15 @@ describe('real mesh service adapter', () => {
         cursor: 1,
       }),
       stream: async () => ({}),
+      createSession: async (nodeId: string, workspaceId: string) => ({
+        nodeId,
+        workspaceId,
+        sessionId: 'session-created-adapter',
+        title: '新建对话',
+        status: 'idle',
+        controllable: true,
+        updatedAt: 99,
+      }),
       prompt: async () => undefined,
       cancel: async () => undefined,
       interactions: () => [],
@@ -94,5 +103,15 @@ describe('real mesh service adapter', () => {
     })), [{ nodeId: 'node-b', workspaceId: 'ws-1', sessionId: 'session-1', taskId: 'task-1', controllable: true }])
     const page = await mesh.page('node-b', 'session-1')
     assert.deepEqual(page.items.map(item => [item.seq, item.event.type]), [[1, 'user/message']])
+    const created = await mesh.createSession!('node-b', 'ws-1')
+    assert.deepEqual(created, {
+      nodeId: 'node-b',
+      workspaceId: 'ws-1',
+      sessionId: 'session-created-adapter',
+      title: '新建对话',
+      status: 'idle',
+      controllable: true,
+      updatedAt: 99,
+    })
   })
 })

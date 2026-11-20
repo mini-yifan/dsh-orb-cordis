@@ -697,6 +697,19 @@ async function handleMesh(
       sendJson(res, 200, await mesh.rename(name))
       return
     }
+    const create = /^\/sessions\/([^/]+)\/create$/.exec(rest)
+    if (method === 'POST' && create !== null) {
+      const nodeId = decodeURIComponent(create[1] ?? '')
+      const workspaceId = asRecord(await readJson(req))?.workspaceId
+      if (typeof workspaceId !== 'string' || workspaceId.trim() === '') {
+        throw new MeshRequestError(400, 'invalid_workspace', '工作区不能为空')
+      }
+      if (typeof mesh.createSession !== 'function') {
+        throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持远端新建会话')
+      }
+      sendJson(res, 200, await mesh.createSession(nodeId, workspaceId.trim()))
+      return
+    }
     const session = /^\/sessions\/([^/]+)\/([^/]+)\/(page|stream|prompt|cancel)$/.exec(rest)
     if (session !== null) {
       const nodeId = decodeURIComponent(session[1] ?? '')

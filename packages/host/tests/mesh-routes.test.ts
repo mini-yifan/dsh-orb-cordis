@@ -186,6 +186,17 @@ describe('mesh bridge routes', () => {
     assert.equal(normalPrompted.status, 200)
     assert.equal((await call('POST', '/.dsh-orb/mesh/sessions/node-company/session-quote-history/cancel')).status, 200)
 
+    const createdSession = await call('POST', '/.dsh-orb/mesh/sessions/node-company/create', JSON.stringify({ workspaceId: 'ws-quote' }))
+    assert.equal(createdSession.status, 200)
+    assert.equal(createdSession.body.nodeId, 'node-company')
+    assert.equal(createdSession.body.workspaceId, 'ws-quote')
+    assert.equal(createdSession.body.controllable, true)
+    assert.equal((await call('GET', '/.dsh-orb/mesh/tree')).body.sessions.some((s: { sessionId: string }) => s.sessionId === createdSession.body.sessionId), true)
+    assert.equal((await call('POST', `/.dsh-orb/mesh/sessions/node-company/${createdSession.body.sessionId}/prompt`, JSON.stringify({ text: '新建会话第一条消息' }))).status, 200)
+    assert.equal((await call('POST', '/.dsh-orb/mesh/sessions/node-company/create', JSON.stringify({ workspaceId: '  ' }))).status, 400)
+    assert.equal((await call('POST', '/.dsh-orb/mesh/sessions/node-test/create', JSON.stringify({ workspaceId: 'ws-deploy' }))).status, 503)
+    assert.equal((await call('POST', '/.dsh-orb/mesh/sessions/node-local/create', JSON.stringify({ workspaceId: 'ws-brand' }))).status, 400)
+
     const openedMesh = await call('POST', '/.dsh-orb/mesh/open', undefined, { 'x-dsh-user': 'ok' })
     assert.equal(openedMesh.status, 200)
     assert.equal(meshOpened, 1)
