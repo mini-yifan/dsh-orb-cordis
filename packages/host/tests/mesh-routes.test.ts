@@ -114,6 +114,7 @@ describe('mesh bridge routes', () => {
 
     const status = await call('GET', '/.dsh-orb/mesh/status')
     assert.equal(status.status, 200)
+    assert.equal(status.body.defaultServer, 'https://dshorb.top')
     assert.equal(status.body.paired, true)
     assert.equal(status.body.connection, 'connected')
     assert.equal(status.body.node.name, '书房 Mac')

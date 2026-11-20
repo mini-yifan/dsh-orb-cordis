@@ -37,17 +37,20 @@ const PREFIX = '/.dsh-orb'
 const MESH_PREFIX = `${PREFIX}/mesh`
 const HELPER_HEADER = 'x-dsh-orb-helper'
 
+const DEFAULT_MESH_SERVER = 'https://dshorb.top'
+
 /**
- * The default interconnect server, if the operator configured one.
+ * The default interconnect server for DSH Orb.
  *
- * Intentionally an environment value rather than a constant: this source tree is
- * published, and a baked-in domain would make every fork point at someone else's
- * server by default. A distribution can set `DSH_ORB_DEFAULT_MESH_SERVER`.
+ * Precedence: explicit plugin config (`defaultServer`), then
+ * `DSH_ORB_DEFAULT_MESH_SERVER`, then `DEFAULT_MESH_SERVER`.
  */
 function defaultMeshServer(deps?: { defaultServer?: string }): string {
   const fromConfig = (deps?.defaultServer ?? '').trim()
   if (fromConfig !== '') return fromConfig
-  return (process.env.DSH_ORB_DEFAULT_MESH_SERVER ?? '').trim()
+  const fromEnv = (process.env.DSH_ORB_DEFAULT_MESH_SERVER ?? '').trim()
+  if (fromEnv !== '') return fromEnv
+  return DEFAULT_MESH_SERVER
 }
 
 interface RouteContext {
