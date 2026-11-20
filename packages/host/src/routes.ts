@@ -83,6 +83,8 @@ export interface OrbControl {
    * interconnect approval flow needs.
    */
   openExternal?(url: string): void
+  /** Ask the helper process to focus or open the interconnect window; false when the ball is off or unreachable. */
+  openMeshWindow?(): boolean
   publishChrome(): Promise<void>
   setOverlayModel(selection: AgentModelSelection): Promise<void>
   setBackgroundModel(selection: AgentModelSelection): Promise<void>
@@ -386,7 +388,11 @@ async function handle(deps: RouteDeps, mesh: MeshService, req: IncomingMessage, 
   // The helper's Mesh window talks to this bridge with its socket token. The routes are
   // not platform-gated: settings can read Mesh status on a host without a ball.
   if (path === MESH_PREFIX || path.startsWith(`${MESH_PREFIX}/`)) {
-    await handleMesh(mesh, method, path.slice(MESH_PREFIX.length), url, req, res, { defaultServer: deps.defaultServer, openExternal: deps.control.openExternal?.bind(deps.control) })
+    await handleMesh(mesh, method, path.slice(MESH_PREFIX.length), url, req, res, {
+      defaultServer: deps.defaultServer,
+      openExternal: deps.control.openExternal?.bind(deps.control),
+      openMeshWindow: deps.control.openMeshWindow?.bind(deps.control),
+    })
     return
   }
   if ((method === 'GET' || method === 'HEAD') && path === `${PREFIX}/avatar`) {
@@ -583,7 +589,7 @@ async function handleMesh(
   url: URL,
   req: IncomingMessage,
   res: ServerResponse,
-  options: { defaultServer?: string; openExternal?: (url: string) => void } = {},
+  options: { defaultServer?: string; openExternal?: (url: string) => void; openMeshWindow?: () => boolean } = {},
 ): Promise<void> {
   try {
     if (method === 'GET' && rest === '/status') {
@@ -676,6 +682,13 @@ async function handleMesh(
         throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持网页授权')
       }
       sendJson(res, 200, await mesh.finishLink())
+      return
+    }
+    if (method === 'POST' && rest === '/open') {
+      if (options.openMeshWindow?.() !== true) {
+        throw new MeshRequestError(409, 'ball_disabled', '请先开启悬浮球后再打开互联窗口')
+      }
+      sendJson(res, 200, { ok: true })
       return
     }
     if (method === 'POST' && rest === '/name') {

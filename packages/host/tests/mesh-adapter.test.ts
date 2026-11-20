@@ -51,6 +51,7 @@ describe('real mesh service adapter', () => {
               sessionId: 'session-1',
               title: '整理文件',
               status: 'running',
+              taskId: 'task-1',
               controllable: true,
               updatedAt: 42,
             }],
@@ -88,8 +89,9 @@ describe('real mesh service adapter', () => {
       nodeId: session.nodeId,
       workspaceId: session.workspaceId,
       sessionId: session.sessionId,
+      taskId: session.taskId,
       controllable: session.controllable,
-    })), [{ nodeId: 'node-b', workspaceId: 'ws-1', sessionId: 'session-1', controllable: true }])
+    })), [{ nodeId: 'node-b', workspaceId: 'ws-1', sessionId: 'session-1', taskId: 'task-1', controllable: true }])
     const page = await mesh.page('node-b', 'session-1')
     assert.deepEqual(page.items.map(item => [item.seq, item.event.type]), [[1, 'user/message']])
   })

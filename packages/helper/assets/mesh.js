@@ -1,7 +1,7 @@
 // Interconnect window. The page only draws: every read and write goes through the
 // preload bridge, which forwards to orb-host's `/.dsh-orb/mesh/*` adapter.
 
-import { FOLDER, icon } from './icons.js'
+import { CHEVRON_DOWN, CHEVRON_UP, FOLDER, icon } from './icons.js'
 import { renderMarkdownFragment } from './markdown.js'
 import {
   attachmentsForSession,
@@ -29,7 +29,8 @@ const state = {
   locale: (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en',
   busy: false,
   error: '',
-  collapsed: new Set(),
+  /** Currently expanded peer device id; null means all devices start collapsed. */
+  expandedNodeId: null,
   /** Workspaces the reader expanded past the session preview. */
   expanded: new Set(),
   /** Bookmark click target waiting until the tree contains that Session. */
@@ -139,6 +140,19 @@ function workspaceKey(nodeId, workspaceId) {
   return `${nodeId}\u0000${workspaceId}`
 }
 
+function isTaskSession(session) {
+  if (session === undefined) return false
+  if (typeof session.taskId === 'string' && session.taskId !== '') return true
+  return state.tasks.some((row) => (
+    row?.targetNodeId === session.nodeId && row?.sessionId === session.sessionId
+  ))
+}
+
+function canControlSession(session) {
+  if (session === undefined || session.controllable !== true) return false
+  return nodeById(session.nodeId)?.online !== false
+}
+
 const RAW_SESSION_TITLE = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** A task prompt or a short context line beats a raw UUID in the sidebar. */
@@ -221,6 +235,7 @@ async function load() {
       const target = findSession(peers, pending.nodeId, pending.sessionId)
       if (target !== undefined) {
         state.selected = { nodeId: pending.nodeId, sessionId: pending.sessionId }
+        state.expandedNodeId = target.nodeId
         state.expanded.add(workspaceKey(target.nodeId, target.workspaceId))
         state.pendingOpen = null
       }
@@ -363,6 +378,7 @@ async function applyOpenTarget(payload) {
   const targetSession = findSession(peers, target.nodeId, target.sessionId)
   if (targetSession !== undefined) {
     state.pendingOpen = null
+    state.expandedNodeId = targetSession.nodeId
     state.expanded.add(workspaceKey(targetSession.nodeId, targetSession.workspaceId))
     await selectSession(target.nodeId, target.sessionId)
     return
@@ -375,7 +391,7 @@ async function applyOpenTarget(payload) {
 
 async function sendPrompt() {
   const session = selectedSession()
-  if (session === undefined || session.controllable !== true || state.busy) return
+  if (!canControlSession(session) || state.busy) return
   const text = els.input.value.trim()
   if (text === '') return
   state.busy = true
@@ -395,7 +411,7 @@ async function sendPrompt() {
 
 async function stopCurrent() {
   const session = selectedSession()
-  if (session === undefined || session.controllable !== true || state.busy) return
+  if (!canControlSession(session) || state.busy) return
   state.busy = true
   state.error = ''
   render()
@@ -411,7 +427,7 @@ async function stopCurrent() {
 }
 
 async function stopAllRemoteTasks() {
-  const sessions = (state.tree.sessions ?? []).filter((session) => session.controllable === true)
+  const sessions = peerTreeNow().sessions.filter((session) => isTaskSession(session) && canControlSession(session))
   if (sessions.length === 0) {
     toast(t('没有正在运行的远程任务', 'No remote task is running'))
     return
@@ -495,7 +511,7 @@ function renderTop() {
     els.summary.textContent = `${t('本机', 'This device')}：${node.name ?? '—'} · ${server.url ?? '—'} · ${t('已连接', 'Connected')} ${status.peersOnline ?? 0}/${status.peersTotal ?? 0}`
     els.dot.className = `mesh-dot ${status.connection === 'connected' ? 'is-online' : 'is-offline'}`
   }
-  const sessions = peerTreeNow().sessions.filter((session) => session.controllable === true)
+  const sessions = peerTreeNow().sessions.filter((session) => isTaskSession(session) && canControlSession(session))
   els.stopAll.disabled = state.busy || sessions.length === 0
   els.refresh.disabled = state.busy
 }
@@ -515,22 +531,23 @@ function renderTree() {
   for (const group of groups) {
     const node = group.node
     const wrapper = element('div', `mesh-node${node.online === false ? ' is-offline' : ''}`)
-    const collapsed = state.collapsed.has(node.nodeId)
+    const expandedNode = state.expandedNodeId === node.nodeId
     const head = element('button', 'mesh-node-head')
     head.type = 'button'
-    head.setAttribute('aria-expanded', collapsed ? 'false' : 'true')
+    head.setAttribute('aria-expanded', expandedNode ? 'true' : 'false')
     head.append(svgDot(node.online !== false), element('span', 'mesh-node-name', node.name ?? node.nodeId))
     const stateLabel = node.online === false
       ? `${t('离线', 'Offline')}${typeof node.lastSeenAt === 'number' ? ` · ${formatLastSeen(node.lastSeenAt, Date.now(), zh())}` : ''}`
       : t('在线', 'Online')
-    head.append(element('span', 'mesh-node-state', stateLabel))
+    const chevron = icon(expandedNode ? CHEVRON_UP : CHEVRON_DOWN, 14)
+    chevron.classList.add('mesh-node-chevron')
+    head.append(element('span', 'mesh-node-state', stateLabel), chevron)
     head.addEventListener('click', () => {
-      if (state.collapsed.has(node.nodeId)) state.collapsed.delete(node.nodeId)
-      else state.collapsed.add(node.nodeId)
+      state.expandedNodeId = state.expandedNodeId === node.nodeId ? null : node.nodeId
       renderTree()
     })
     wrapper.append(head)
-    if (!collapsed) {
+    if (expandedNode) {
       const body = element('div', 'mesh-node-body')
       const workspaces = group.workspaces.map((workspace) => {
         const sessions = [...workspace.sessions].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
@@ -563,7 +580,7 @@ function renderTree() {
           button.type = 'button'
           button.dataset.nodeId = session.nodeId
           button.dataset.sessionId = session.sessionId
-          button.title = session.controllable === true ? title : sessionHint(zh())
+          button.title = canControlSession(session) ? title : sessionHint(zh())
           if (active) button.setAttribute('aria-current', 'true')
           button.append(element('span', 'mesh-session-title', title))
           if (meta.text !== '') {
@@ -607,7 +624,7 @@ function renderDetail() {
   els.sessionHead.hidden = empty
   els.transcript.hidden = empty
   els.attachments.hidden = empty
-  els.hint.hidden = empty || session?.controllable === true
+  els.hint.hidden = empty || canControlSession(session)
   els.composer.hidden = empty
   els.empty.hidden = !empty
   if (empty) {
@@ -640,7 +657,7 @@ function renderEmpty(session) {
     ? t('正在读取本机互联状态。', 'Reading the local interconnect status.')
     : unpaired
       ? t('在 设置 → 互联 里粘贴配对串，连接后这里会出现其他设备与工作区。', 'Paste a pairing string under Settings → Interconnect; devices and workspaces appear here once connected.')
-      : t('左侧是设备、工作区和会话；所有会话都能查看，只有任务会话可以输入指令。', 'The left side lists devices, workspaces, and sessions. Every session is viewable; only task sessions accept commands.')
+      : t('左侧是设备、工作区和会话；点击任意设备展开后，可直接查看并继续其中的会话。', 'The left side lists devices, workspaces, and sessions. Click a device to expand it and continue any session.')
   els.empty.append(element('h2', undefined, title), element('p', undefined, detail))
   if (unpaired) {
     const button = element('button', undefined, t('打开互联设置', 'Open interconnect settings'))
@@ -811,10 +828,10 @@ function renderAttachments(session) {
 }
 
 function renderComposer(session) {
-  const controllable = session.controllable === true
+  const controllable = canControlSession(session)
   els.input.disabled = !controllable || state.busy
   els.input.placeholder = controllable
-    ? t('输入指令，交给远端任务会话…', 'Send a command to this remote task session…')
+    ? t('输入消息，继续这段远端会话…', 'Send a message to continue this remote session…')
     : sessionHint(zh())
   els.send.disabled = !controllable || state.busy
   els.stop.disabled = !controllable || state.busy

@@ -184,6 +184,13 @@ main {
   white-space: nowrap;
 }
 
+.mesh-node-chevron {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  opacity: 0.65;
+}
+
 .mesh-node.is-offline .mesh-node-name,
 .mesh-node.is-offline .mesh-workspace-name {
   color: var(--dsw-alias-label-tertiary, #777);

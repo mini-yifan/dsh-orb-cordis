@@ -1870,6 +1870,13 @@ export class OrbRuntime {
     openSystemUrl(url)
   }
 
+  /** Ask the helper to open the interconnect window when the floating ball is enabled and connected. */
+  openMeshWindow(): boolean {
+    if (!this.store.ballEnabled() || this.sockets.size === 0) return false
+    this.broadcast({ type: 'open-mesh' })
+    return true
+  }
+
   helperAuthorized(token: string): boolean {
     return tokensMatch(token, this.token)
   }

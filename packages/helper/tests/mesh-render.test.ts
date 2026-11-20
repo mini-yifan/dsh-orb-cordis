@@ -57,14 +57,15 @@ describe('mesh window markup and wiring', () => {
     assert.match(css, /\.mesh-attachment \{/)
   })
 
-  it('disables the composer for every non-task session and explains why', () => {
-    assert.match(mesh, /const controllable = session\.controllable === true/)
+  it('disables the composer when a session is offline or not controllable and explains why', () => {
+    assert.match(mesh, /function canControlSession\(session\)/)
+    assert.match(mesh, /const controllable = canControlSession\(session\)/)
     assert.match(mesh, /els\.input\.disabled = !controllable \|\| state\.busy/)
     assert.match(mesh, /els\.send\.disabled = !controllable \|\| state\.busy/)
     assert.match(mesh, /els\.stop\.disabled = !controllable \|\| state\.busy/)
     assert.match(mesh, /els\.hint\.textContent = sessionHint\(zh\(\)\)/)
     assert.match(mesh, /els\.input\.placeholder = controllable/)
-    assert.match(mesh, /session\.controllable !== true/)
+    assert.match(mesh, /!canControlSession\(session\)/)
     assert.equal(mesh.includes('innerHTML'), false)
   })
 
@@ -87,9 +88,10 @@ describe('mesh window markup and wiring', () => {
     assert.match(mesh, /const follow = els\.transcript\.scrollHeight/)
   })
 
-  it('stops all remote tasks only after an explicit confirmation', () => {
+  it('stops only remote task sessions after an explicit confirmation', () => {
     assert.match(mesh, /async function stopAllRemoteTasks\(\)/)
-    assert.match(mesh, /filter\(\(session\) => session\.controllable === true\)/)
+    assert.match(mesh, /function isTaskSession\(session\)/)
+    assert.match(mesh, /filter\(\(session\) => isTaskSession\(session\) && canControlSession\(session\)\)/)
     assert.match(mesh, /window\.confirm\(question\)/)
     assert.match(mesh, /request\('POST', sessionPath\(session, 'cancel'\)\)/)
     assert.match(mesh, /没有正在运行的远程任务/)
@@ -108,6 +110,15 @@ describe('mesh window markup and wiring', () => {
     assert.match(mesh, /api\?\.openSettings\?\.\(\)/)
     assert.match(main, /ipcMain\.on\('orb:mesh-open-settings'/)
     assert.match(main, /write\(\{ type: 'open-settings', section: 'orb-mesh' \}\)/)
+  })
+
+  it('collapses peer devices by default, toggles one at a time, and focuses the bookmark device', () => {
+    assert.match(mesh, /expandedNodeId: null/)
+    assert.match(mesh, /const expandedNode = state\.expandedNodeId === node\.nodeId/)
+    assert.match(mesh, /state\.expandedNodeId = state\.expandedNodeId === node\.nodeId \? null : node\.nodeId/)
+    assert.match(mesh, /if \(expandedNode\) \{/)
+    assert.match(mesh, /state\.expandedNodeId = target\.nodeId/)
+    assert.match(mesh, /state\.expandedNodeId = targetSession\.nodeId/)
   })
 
   it('selects the remote task after a bookmark opens the window', () => {
@@ -293,8 +304,8 @@ describe('mesh transcript model', () => {
   it('labels status, presence, and who may answer', () => {
     assert.equal(sessionStatusLabel('waiting-approval', true), '等待确认')
     assert.equal(sessionStatusLabel('waiting-question', false), 'Waiting for answer')
-    assert.match(sessionHint(true), /只能在设备上操作/)
-    assert.match(sessionHint(false), /dispatch a task/)
+    assert.match(sessionHint(true), /离线或暂不支持远端输入/)
+    assert.match(sessionHint(false), /offline or remote input is unavailable/)
     assert.equal(formatLastSeen(1_000_000, 1_030_000, true), '刚刚')
     assert.equal(formatLastSeen(1_000_000, 1_120_000, true), '2 分钟前')
     assert.equal(formatLastSeen(1_000_000, 1_000_000 + 2 * 3_600_000, false), '2h ago')

@@ -344,7 +344,8 @@ function loadSection(hooks = {}) {
 
   function render() {
     cursor = 0
-    return registered.Component()
+    const injected = typeof registered.spec.inject === 'function' ? registered.spec.inject() : {}
+    return registered.Component(injected)
   }
   async function flush() {
     for (let index = 0; index < effects.length; index += 1) {
@@ -1951,6 +1952,69 @@ describe('settings section', () => {
     assert.equal(posts.length, 1)
     assert.deepEqual(JSON.parse(posts[0].options.body), { at: 21, section: 'orb-mesh' })
     page.setSettingsOpen(null)
+  })
+
+  it('navigates from orb settings to interconnect settings and opens the mesh window when paired', async () => {
+    let ballDisabled = false
+    const page = loadSection({
+      answer(path, options) {
+        if (path === '/.dsh-orb/mesh/open' && options.method === 'POST') {
+          if (ballDisabled) {
+            return {
+              ok: false,
+              status: 409,
+              text: () => Promise.resolve(JSON.stringify({ error: 'ball_disabled', message: '请先开启悬浮球后再打开互联窗口' })),
+            }
+          }
+          return { ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ ok: true })) }
+        }
+        return undefined
+      },
+    })
+    const opened = []
+    const instance = { actions: { openSection(id) { opened.push(id) } } }
+    page.setShell({ create: () => instance })
+    let orbView = page.render()
+    await page.flush()
+    orbView = page.render()
+    const toMesh = find(orbView, (node) => node.type === 'button' && node.children?.includes('进入互联设置'))[0]
+    assert.ok(toMesh)
+    toMesh.props.onClick()
+    assert.deepEqual(opened, ['orb-mesh'])
+
+    // Unpaired: open-window button is hidden.
+    page.reset()
+    let meshView = page.renderMesh()
+    await page.flush()
+    meshView = page.renderMesh()
+    assert.equal(find(meshView, (node) => node.type === 'button' && node.children?.includes('打开互联窗口')).length, 0)
+
+    // Paired: open-window button opens the window or surfaces the ball-disabled hint.
+    const local = { nodeId: 'node-local', name: '书房 Mac', platform: 'darwin', online: true, hostDeviceId: 'h', clientDeviceId: 'c' }
+    page.setMeshStatus({
+      paired: true,
+      server: { url: 'https://YOUR_SERVER_IP:443', fp: MESH_FP },
+      node: local,
+      connection: 'connected',
+      peersOnline: 1,
+      peersTotal: 2,
+    })
+    page.setMeshNodes([local, ...peerNodes])
+    page.reset()
+    meshView = page.renderMesh()
+    await page.flush()
+    meshView = page.renderMesh()
+    const openWindow = find(meshView, (node) => node.type === 'button' && node.children?.includes('打开互联窗口'))[0]
+    assert.ok(openWindow)
+    openWindow.props.onClick()
+    await settle()
+    assert.equal(page.calls.some((call) => call.path === '/.dsh-orb/mesh/open' && call.options.method === 'POST'), true)
+
+    ballDisabled = true
+    openWindow.props.onClick()
+    await settle()
+    meshView = page.renderMesh()
+    assert.equal(find(meshView, (node) => node.children?.some((child) => typeof child === 'string' && child.includes('请先开启悬浮球后再打开互联窗口'))).length > 0, true)
   })
 })
 

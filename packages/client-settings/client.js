@@ -262,9 +262,12 @@ window.__ModuleLoader__.load({
       voiceSource: '来源',
       voiceSize: '约 {size} MB',
       voiceProgress: '已下载 {percent}%',
+      meshCardTitle: '互联',
+      meshCardDescription: '管理多设备互联、连接状态与本机名称，点击直接进入互联设置。',
+      meshCardOpen: '进入互联设置',
       mesh: {
         nav: '互联',
-        intro: '连接其他设备，查看它们的会话；只有任务会话可以从这里输入指令。',
+        intro: '连接其他设备，查看并继续它们的会话。',
         mock: '静态假数据',
         loading: '正在读取互联状态…',
         loadError: '无法读取互联状态。',
@@ -310,6 +313,7 @@ window.__ModuleLoader__.load({
         online: '在线',
         offline: '离线',
         thisDevice: '本机',
+        openWindow: '打开互联窗口',
         unpair: '退出互联',
         unpairConfirm: '退出互联会撤销本机在这台服务器上的身份。确定退出吗？',
         pairWarning: '配对完成，但有一个提醒：{message}',
@@ -326,6 +330,7 @@ window.__ModuleLoader__.load({
           register_failed: '服务器拒绝了本机的注册（{reason}），请重新生成配对码再试',
           connect_failed: '已配对，但暂时连不上中继，会自动重试',
           name_taken: '名称「{name}」已被占用，暂用 {defaultName}，可在设置里再改',
+          ball_disabled: '请先开启悬浮球后再打开互联窗口。',
           generic: '{message}',
         },
       },
@@ -586,9 +591,12 @@ window.__ModuleLoader__.load({
       voiceSource: 'Source',
       voiceSize: 'about {size} MB',
       voiceProgress: '{percent}% downloaded',
+      meshCardTitle: 'Interconnect',
+      meshCardDescription: 'Manage device interconnect, pairing status, and device name.',
+      meshCardOpen: 'Open interconnect settings',
       mesh: {
         nav: 'Interconnect',
-        intro: 'Connect other devices and read their sessions; only task sessions accept commands here.',
+        intro: 'Connect other devices to view and continue their sessions.',
         mock: 'Static mock',
         loading: 'Reading the interconnect status…',
         loadError: 'Could not read the interconnect status.',
@@ -634,6 +642,7 @@ window.__ModuleLoader__.load({
         online: 'Online',
         offline: 'Offline',
         thisDevice: 'This device',
+        openWindow: 'Open interconnect window',
         unpair: 'Leave interconnect',
         unpairConfirm: 'Leaving revokes this computer’s identity on the server. Continue?',
         pairWarning: 'Connected, with a warning: {message}',
@@ -650,6 +659,7 @@ window.__ModuleLoader__.load({
           register_failed: 'The server rejected this computer’s registration ({reason}). Generate a new pairing code and retry.',
           connect_failed: 'Paired, but the relay is temporarily unreachable. The connection retries automatically.',
           name_taken: 'The name “{name}” is taken; using {defaultName} for now. You can change it here later.',
+          ball_disabled: 'Enable the floating ball before opening the interconnect window.',
           generic: '{message}',
         },
       },
@@ -1275,6 +1285,20 @@ window.__ModuleLoader__.load({
         }
       }
 
+      async function openMeshWindow() {
+        if (busy) return
+        setBusy(true)
+        setActionError('')
+        setNotice('')
+        try {
+          await meshCall('/open', { method: 'POST' })
+        } catch (error) {
+          setActionError(meshErrorMessage(error.code, error.body, text, pairing))
+        } finally {
+          setBusy(false)
+        }
+      }
+
       async function unpair() {
         if (busy) return
         if (typeof window.confirm === 'function' && !window.confirm(text.mesh.unpairConfirm)) return
@@ -1461,6 +1485,12 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dsh-orb-set-actions' },
             h('button', {
               type: 'button',
+              className: 'dsh-orb-set-button dsh-orb-set-primary',
+              disabled: busy,
+              onClick: () => { void openMeshWindow() },
+            }, text.mesh.openWindow),
+            h('button', {
+              type: 'button',
               className: 'dsh-orb-set-button',
               disabled: busy,
               onClick: () => { void unpair() },
@@ -1501,7 +1531,8 @@ window.__ModuleLoader__.load({
         snap === null ? null : paired ? pairedCard : pairCard)
     }
 
-    function OrbSettingsSection() {
+    function OrbSettingsSection(props) {
+      const openMeshSettings = props && typeof props.openMeshSettings === 'function' ? props.openMeshSettings : undefined
       const text = copy()
       // Re-render when the app's locale changes (<html lang>), so every copy()
       // call in this section re-evaluates against the new language.
@@ -1790,7 +1821,17 @@ window.__ModuleLoader__.load({
           h(IdleCard, { text, snap, mutate }),
           snap.tcc && snap.tcc.applicable ? tccCard(text, snap, disabled, mutate) : null),
         h(WorkspaceCard, { text, snap, refreshSettings }),
-        h(HistoryCard, { text, snap, mutate, refreshHistory }))
+        h(HistoryCard, { text, snap, mutate, refreshHistory }),
+        card({
+          icon: 'mesh',
+          title: text.meshCardTitle,
+          description: text.meshCardDescription,
+          control: h('button', {
+            type: 'button',
+            className: 'dsh-orb-set-button',
+            onClick: () => { openMeshSettings?.() },
+          }, text.meshCardOpen),
+        }))
     }
 
     /** The shared card header: a tinted icon, a title with one line of explanation, an optional control. */
@@ -3895,7 +3936,7 @@ window.__ModuleLoader__.load({
         id: SECTION_ID,
         order: 25,
         label: () => copy().nav,
-        inject: () => ({}),
+        inject: () => ({ openMeshSettings: () => showSettingsSection(MESH_SECTION_ID) }),
       }, OrbSettingsSection))
       ctx.slots.inject('settings.section', () => ctx.slots.register({
         name: 'settings.section',

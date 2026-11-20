@@ -45,7 +45,9 @@ export interface MeshSession {
   workspaceId: string
   title: string
   status: MeshSessionStatus
-  /** Only `device_agent` task sessions accept prompt/cancel; everything else is read-only. */
+  /** Present when this session was created as a remote `device_agent` task. */
+  taskId?: string
+  /** True for sessions on online remote peers that accept prompt/cancel. */
   controllable: boolean
   updatedAt: number
 }
@@ -269,12 +271,14 @@ function sessions(at: number): MeshSession[] {
     title: string,
     status: MeshSessionStatus,
     controllable = false,
+    taskId?: string,
   ): MeshSession => ({
     nodeId,
     sessionId,
     workspaceId,
     title,
     status,
+    ...(taskId === undefined ? {} : { taskId }),
     controllable,
     updatedAt: at - 3 * MINUTE,
   })
@@ -283,10 +287,10 @@ function sessions(at: number): MeshSession[] {
     row(LOCAL_NODE_ID, 'ws-brand', 'session-copy', '文案校对', 'running'),
     row(LOCAL_NODE_ID, 'ws-weekly', 'session-weekly', '第 45 周周报', 'idle'),
     row(LOCAL_NODE_ID, 'ws-weekly', 'session-weekly-review', '周报评审', 'idle'),
-    row('node-company', 'ws-quote', TASK_SESSION.sessionId, '改报价单', 'waiting-approval', true),
-    row('node-company', 'ws-quote', 'session-quote-history', '报价历史', 'idle'),
-    row('node-company', 'ws-clients', 'session-contract', '合同模板', 'waiting-question'),
-    row('node-company', 'ws-clients', 'session-list', '客户名单', 'idle'),
+    row('node-company', 'ws-quote', TASK_SESSION.sessionId, '改报价单', 'waiting-approval', true, 'task-quote-1'),
+    row('node-company', 'ws-quote', 'session-quote-history', '报价历史', 'idle', true),
+    row('node-company', 'ws-clients', 'session-contract', '合同模板', 'waiting-question', true),
+    row('node-company', 'ws-clients', 'session-list', '客户名单', 'idle', true),
     row('node-test', 'ws-compat', 'session-compat-1', '启动检查', 'unknown'),
     row('node-test', 'ws-compat', 'session-compat-2', '截图对比', 'unknown'),
     row('node-test', 'ws-regress', 'session-regress-1', '旧版回归', 'unknown'),
@@ -782,6 +786,7 @@ class PluginMeshService implements MeshService {
             sessionId: session.sessionId,
             title: typeof session.title === 'string' ? session.title : session.sessionId,
             status: normalizeSessionStatus(session.status),
+            ...(typeof session.taskId === 'string' && session.taskId !== '' ? { taskId: session.taskId } : {}),
             controllable: session.controllable === true,
             updatedAt: typeof session.updatedAt === 'number' ? session.updatedAt : 0,
           })

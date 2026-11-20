@@ -29,8 +29,8 @@ export function sessionStatusLabel(status, zh) {
 
 export function sessionHint(zh) {
   return zh
-    ? '只能在设备上操作；要让它干活，说一句派任务给它。'
-    : 'This session can only be operated on its own device; ask the agent to dispatch a task instead.'
+    ? '当前设备离线或暂不支持远端输入。'
+    : 'This device is offline or remote input is unavailable.'
 }
 
 export function formatLastSeen(at, now, zh) {

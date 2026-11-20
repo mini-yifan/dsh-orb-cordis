@@ -55,8 +55,15 @@ describe('mesh bridge routes', () => {
     const mesh = new MockMeshService(() => 1_700_000_000_000)
     let settingsTarget: { at: number; section: string } | null = null
     let confirmedAt = 0
+    let ballActive = true
+    let meshOpened = 0
     const control = {
       helperAuthorized: (token: string) => tokensMatch(token, 'helper-secret'),
+      openMeshWindow() {
+        if (!ballActive) return false
+        meshOpened += 1
+        return true
+      },
       takeJump: () => null,
       confirmJump() {},
       takeSettingsOpen: () => settingsTarget,
@@ -127,7 +134,8 @@ describe('mesh bridge routes', () => {
     assert.equal(tree.body.nodes.filter((node: { online: boolean }) => !node.online).length, 1)
     assert.equal(tree.body.workspaces.length, 6)
     assert.equal(tree.body.sessions.length, 12)
-    assert.equal(tree.body.sessions.filter((session: { controllable: boolean }) => session.controllable).length, 1)
+    assert.equal(tree.body.sessions.filter((session: { controllable: boolean }) => session.controllable).length, 4)
+    assert.equal(tree.body.sessions.filter((session: { taskId?: string }) => typeof session.taskId === 'string').length, 1)
     for (const node of tree.body.nodes) {
       assert.equal(tree.body.workspaces.filter((workspace: { nodeId: string }) => workspace.nodeId === node.nodeId).length, 2)
     }
@@ -167,12 +175,24 @@ describe('mesh bridge routes', () => {
     assert.equal(tasks.body[0].files[0].direction, 'in')
     assert.match(tasks.body[0].files[0].localPath, /^\/Users\/you\/Downloads\/dsh-mesh\//)
 
-    // Only the task session accepts prompt/cancel.
+    // Local and offline sessions refuse prompt/cancel; online remote normal and task sessions accept both.
     const refused = await call('POST', '/.dsh-orb/mesh/sessions/node-local/session-design-v3/prompt', JSON.stringify({ text: 'hello' }))
     assert.equal(refused.status, 403)
     assert.equal(refused.body.error, 'session_not_remote_controllable')
     assert.equal(typeof refused.body.message, 'string')
     assert.equal((await call('POST', '/.dsh-orb/mesh/sessions/node-local/session-design-v3/cancel')).status, 403)
+
+    const normalPrompted = await call('POST', '/.dsh-orb/mesh/sessions/node-company/session-quote-history/prompt', JSON.stringify({ text: '继续聊普通会话' }))
+    assert.equal(normalPrompted.status, 200)
+    assert.equal((await call('POST', '/.dsh-orb/mesh/sessions/node-company/session-quote-history/cancel')).status, 200)
+
+    const openedMesh = await call('POST', '/.dsh-orb/mesh/open', undefined, { 'x-dsh-user': 'ok' })
+    assert.equal(openedMesh.status, 200)
+    assert.equal(meshOpened, 1)
+    ballActive = false
+    const blockedMesh = await call('POST', '/.dsh-orb/mesh/open', undefined, { 'x-dsh-user': 'ok' })
+    assert.equal(blockedMesh.status, 409)
+    assert.equal(blockedMesh.body.error, 'ball_disabled')
 
     const prompted = await call('POST', '/.dsh-orb/mesh/sessions/node-company/session-quote-edit/prompt', JSON.stringify({ text: '继续修改' }))
     assert.equal(prompted.status, 200)
