@@ -114,4 +114,42 @@ describe('real mesh service adapter', () => {
       updatedAt: 99,
     })
   })
+
+  it('forwards deviceName, deviceNameSaved, and optional pair name through the plugin adapter', async () => {
+    const pairInputs: unknown[] = []
+    const plugin = {
+      status: () => ({
+        paired: false,
+        connection: 'unpaired',
+        peersOnline: 0,
+        peersTotal: 0,
+        deviceName: '书房主机',
+        deviceNameSaved: true,
+      }),
+      nodes: () => [],
+      tree: async () => ({ nodes: [], cursor: 0 }),
+      page: async () => ({ records: [], cursor: 0 }),
+      prompt: async () => undefined,
+      cancel: async () => undefined,
+      interactions: () => [],
+      tasks: () => [],
+      prefs: () => ({}),
+      updatePrefs: () => ({}),
+      pair: async (input: unknown) => { pairInputs.push(input) },
+      unpair: async () => undefined,
+      rename: async () => ({ name: '书房主机' }),
+      createTaskSession: async () => ({}),
+      waitTask: async () => ({}),
+    }
+    const mesh = resolveMeshService({ get: () => plugin })
+    assert.equal(mesh.status().deviceName, '书房主机')
+    assert.equal(mesh.status().deviceNameSaved, true)
+    await mesh.pair('dshmesh://mesh.example.com/pair?v=1&code=TESTPAIR', '书房主机')
+    assert.deepEqual(pairInputs, [{
+      serverUrl: 'https://mesh.example.com:443',
+      code: 'TESTPAIR',
+      fingerprint: '',
+      name: '书房主机',
+    }])
+  })
 })

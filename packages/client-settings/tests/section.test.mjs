@@ -1930,7 +1930,7 @@ describe('settings section', () => {
       name: 'Mac1',
     })
     view = page.renderMesh()
-    const nameInput = find(view, (node) => node.type === 'input' && node.props?.placeholder === '留空则使用默认名称')[0]
+    const nameInput = find(view, (node) => node.type === 'input' && node.props?.placeholder === '请输入设备名称')[0]
     nameInput.props.onChange({ target: { value: '新名字' } })
     view = page.renderMesh()
     const connect = find(view, (node) => node.type === 'button' && node.children?.includes('连接'))[0]
@@ -1938,6 +1938,88 @@ describe('settings section', () => {
     await settle()
     view = page.renderMesh()
     assert.equal(find(view, (node) => textOf(node).includes('名称「新名字」已被占用，暂用 Mac1')).length > 0, true)
+  })
+
+  it('prefills device name before joining, rejects empty name, and restores saved name after unpair', async () => {
+    let savedName = 'MacBook-Pro'
+    let paired = false
+    const page = loadSection({
+      answer(path, options) {
+        if (path === '/.dsh-orb/mesh/status') {
+          return json({
+            paired,
+            server: { url: paired ? 'https://mesh.example.com' : '', fp: '' },
+            node: paired ? { nodeId: 'node-local', name: savedName, platform: 'darwin', online: true, hostDeviceId: 'h' } : null,
+            connection: paired ? 'connected' : 'unpaired',
+            peersOnline: 0,
+            peersTotal: 0,
+            deviceName: savedName,
+            deviceNameSaved: false,
+            defaultServer: 'https://mesh.example.com',
+          })
+        }
+        if (path === '/.dsh-orb/mesh/link') {
+          savedName = JSON.parse(options.body).name
+          return json({ approvalUrl: 'https://mesh.example.com/link?t=abc' })
+        }
+        if (path === '/.dsh-orb/mesh/open-external') return json({ ok: true })
+        if (path === '/.dsh-orb/mesh/link/finish') {
+          paired = true
+          savedName = `${savedName} (2)`
+          return json({ ok: true })
+        }
+        if (path === '/.dsh-orb/mesh/name') {
+          savedName = JSON.parse(options.body).name
+          return json({ ok: true, name: savedName })
+        }
+        if (path === '/.dsh-orb/mesh/unpair') {
+          paired = false
+          return json({ ok: true })
+        }
+        return undefined
+      },
+    })
+    let view = page.renderMesh()
+    await page.flush()
+    view = page.renderMesh()
+
+    // Prefilled with default deviceName from /status.
+    let nameInput = find(view, (node) => node.type === 'input' && node.props?.placeholder === '请输入设备名称')[0]
+    assert.equal(nameInput.props.value, 'MacBook-Pro')
+
+    // Clearing it blocks joining with an empty-name error.
+    nameInput.props.onChange({ target: { value: '   ' } })
+    view = page.renderMesh()
+    find(view, (node) => node.props?.role === 'switch')[0].props.onClick()
+    await settle()
+    view = page.renderMesh()
+    assert.equal(find(view, (node) => node.children?.includes('设备名称不能为空。')).length, 1)
+    assert.equal(page.calls.some((call) => call.path === '/.dsh-orb/mesh/link'), false)
+
+    // Joining with a custom name sends it, adopts server-suffixed name, and preserves after unpair.
+    nameInput = find(view, (node) => node.type === 'input' && node.props?.placeholder === '请输入设备名称')[0]
+    nameInput.props.onChange({ target: { value: '书房主机' } })
+    view = page.renderMesh()
+    find(view, (node) => node.props?.role === 'switch')[0].props.onClick()
+    await settle()
+    view = page.renderMesh()
+    const linkCall = page.calls.find((call) => call.path === '/.dsh-orb/mesh/link')
+    assert.equal(JSON.parse(linkCall.options.body).name, '书房主机')
+    assert.equal(find(view, (node) => node.type === 'input' && node.props?.value === '书房主机 (2)').length, 1)
+
+    // Rename after pairing, then unpair -> unpaired input prefills the renamed name.
+    const editInput = find(view, (node) => node.type === 'input' && node.props?.value === '书房主机 (2)')[0]
+    editInput.props.onChange({ target: { value: '工作室 Mac' } })
+    view = page.renderMesh()
+    find(view, (node) => node.type === 'button' && node.children?.includes('保存名称'))[0].props.onClick()
+    await settle()
+    page.setConfirm(true)
+    view = page.renderMesh()
+    find(view, (node) => node.type === 'button' && node.children?.includes('退出互联'))[0].props.onClick()
+    await settle()
+    view = page.renderMesh()
+    nameInput = find(view, (node) => node.type === 'input' && node.props?.placeholder === '请输入设备名称')[0]
+    assert.equal(nameInput.props.value, '工作室 Mac')
   })
 
   it('opens the interconnect section from the ball deep link', async () => {

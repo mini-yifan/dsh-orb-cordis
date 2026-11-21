@@ -288,8 +288,9 @@ window.__ModuleLoader__.load({
         pairing: '配对串',
         pairingPlaceholder: 'dshmesh://…',
         pairingRequired: '请先粘贴配对串，或展开「手动填写」。',
-        name: '本机名称（可选）',
-        namePlaceholder: '留空则使用默认名称',
+        name: '本机名称',
+        namePlaceholder: '请输入设备名称',
+        nameEmpty: '设备名称不能为空。',
         connect: '连接',
         connecting: '正在连接…',
         manual: '手动配对',
@@ -617,8 +618,9 @@ window.__ModuleLoader__.load({
         pairing: 'Pairing string',
         pairingPlaceholder: 'dshmesh://…',
         pairingRequired: 'Paste a pairing string first, or open the manual fields.',
-        name: 'This device name (optional)',
-        namePlaceholder: 'Leave empty for the default name',
+        name: 'This device name',
+        namePlaceholder: 'Enter a name for this device',
+        nameEmpty: 'Device name cannot be empty.',
         connect: 'Connect',
         connecting: 'Connecting…',
         manual: 'Pair manually',
@@ -1101,6 +1103,7 @@ window.__ModuleLoader__.load({
       const [linkStage, setLinkStage] = React.useState('idle')
       const [approveUrl, setApproveUrl] = React.useState('')
       const requestSeq = React.useRef(0)
+      const nameTouched = React.useRef(false)
 
       async function load() {
         const seq = requestSeq.current + 1
@@ -1109,7 +1112,14 @@ window.__ModuleLoader__.load({
           const [snapshot, nodes] = await Promise.all([meshCall('/status'), meshCall('/nodes')])
           if (seq !== requestSeq.current) return
           setState({ status: 'ready', error: '', snapshot, nodes: Array.isArray(nodes) ? nodes : [] })
-          setEditName(snapshot && snapshot.node && typeof snapshot.node.name === 'string' ? snapshot.node.name : '')
+          const nodeName = snapshot && snapshot.node && typeof snapshot.node.name === 'string' ? snapshot.node.name : ''
+          const resolvedName = snapshot && typeof snapshot.deviceName === 'string' && snapshot.deviceName.trim() !== ''
+            ? snapshot.deviceName
+            : nodeName
+          setEditName(nodeName || resolvedName)
+          if (!nameTouched.current && resolvedName !== '') {
+            setName(resolvedName)
+          }
         } catch (error) {
           if (seq !== requestSeq.current) return
           setState((prev) => ({
@@ -1142,12 +1152,23 @@ window.__ModuleLoader__.load({
 
       async function connect() {
         if (busy) return
+        const deviceName = name.trim()
+        if (deviceName === '') {
+          setNotice('')
+          setActionError(text.mesh.nameEmpty)
+          window.setTimeout?.(() => {
+            const input = document.querySelector?.('.dsh-orb-mesh-name-input')
+            if (input && typeof input.focus === 'function') input.focus()
+          }, 40)
+          return
+        }
         const value = composedPairing()
         if (value === '') {
           setNotice('')
           setActionError(text.mesh.pairingRequired)
           return
-        }        setBusy(true)
+        }
+        setBusy(true)
         setActionError('')
         setNotice('')
         try {
@@ -1156,14 +1177,15 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               pairing: value,
-              ...(name.trim() === '' ? {} : { name: name.trim() }),
+              name: deviceName,
             }),
           })
           setPairing('')
+          nameTouched.current = false
           if (body && body.warning === 'name_taken') {
             setNotice(text.mesh.pairWarning.replace('{message}', meshErrorMessage('name_taken', {
               ...body,
-              requestedName: name.trim(),
+              requestedName: deviceName,
             }, text, value)))
           }
           await load()
@@ -1185,6 +1207,16 @@ window.__ModuleLoader__.load({
        */
       async function toggleLink() {
         if (busy) return
+        const deviceName = name.trim()
+        if (deviceName === '') {
+          setActionError(text.mesh.nameEmpty)
+          setNotice('')
+          window.setTimeout?.(() => {
+            const input = document.querySelector?.('.dsh-orb-mesh-name-input')
+            if (input && typeof input.focus === 'function') input.focus()
+          }, 40)
+          return
+        }
         setBusy(true)
         setActionError('')
         setNotice('')
@@ -1216,7 +1248,7 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               serverUrl: target,
-              ...(name.trim() === '' ? {} : { name: name.trim() }),
+              name: deviceName,
             }),
           })
           const url = started && typeof started.approvalUrl === 'string' ? started.approvalUrl : ''
@@ -1253,6 +1285,7 @@ window.__ModuleLoader__.load({
           await meshCall('/link/finish', { method: 'POST' })
           setLinkStage('idle')
           setApproveUrl('')
+          nameTouched.current = false
           await load()
           setNotice(text.mesh.linked)
         } catch (error) {
@@ -1266,7 +1299,12 @@ window.__ModuleLoader__.load({
 
       async function saveName() {
         const value = editName.trim()
-        if (busy || value === '') return
+        if (busy) return
+        if (value === '') {
+          setNotice('')
+          setActionError(text.mesh.nameEmpty)
+          return
+        }
         setBusy(true)
         setActionError('')
         setNotice('')
@@ -1276,6 +1314,7 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ name: value }),
           })
+          nameTouched.current = false
           setNotice(text.mesh.nameSaved)
           await load()
         } catch (error) {
@@ -1307,6 +1346,7 @@ window.__ModuleLoader__.load({
         setNotice('')
         try {
           await meshCall('/unpair', { method: 'POST' })
+          nameTouched.current = false
           await load()
         } catch (error) {
           setActionError(meshErrorMessage(error.code, error.body, text, pairing))
@@ -1388,11 +1428,14 @@ window.__ModuleLoader__.load({
           h('label', { className: 'dsh-orb-set-field' },
             h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.name),
             h('input', {
-              className: 'dsh-orb-set-input',
+              className: 'dsh-orb-set-input dsh-orb-mesh-name-input',
               value: name,
               placeholder: text.mesh.namePlaceholder,
               disabled: busy,
-              onChange: (event) => { setName(event.target.value) },
+              onChange: (event) => {
+                nameTouched.current = true
+                setName(event.target.value)
+              },
             })),
           h('div', { className: 'dsh-orb-set-actions' },
             h('button', {

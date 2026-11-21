@@ -116,6 +116,8 @@ export interface MeshStatus {
   peersOnline: number
   peersTotal: number
   error?: string
+  deviceName?: string
+  deviceNameSaved?: boolean
 }
 
 /** One frame of a session page/stream: the raw DSH event, addressed by node and session. */
@@ -386,6 +388,7 @@ export class MockMeshService implements MeshService {
   private paired = true
   private server = { ...MOCK_SERVER }
   private name = '书房 Mac'
+  private nameSaved = false
   private prefsState: MeshPrefs = {
     allowIncoming: true,
     allowedCallers: [],
@@ -411,6 +414,8 @@ export class MockMeshService implements MeshService {
         connection: 'unpaired',
         peersOnline: 0,
         peersTotal: 0,
+        deviceName: this.name,
+        deviceNameSaved: this.nameSaved,
       }
     }
     const peers = this.peerRows()
@@ -421,6 +426,8 @@ export class MockMeshService implements MeshService {
       connection: 'connected',
       peersOnline: peers.filter((peer) => peer.online).length,
       peersTotal: peers.length,
+      deviceName: this.name,
+      deviceNameSaved: this.nameSaved,
     }
   }
 
@@ -628,6 +635,7 @@ export class MockMeshService implements MeshService {
     this.paired = true
     this.server = { url: parsed.address, fp: parsed.fp }
     this.name = appliedName
+    this.nameSaved = true
     this.rebuildPages()
     return {
       ok: true,
@@ -653,6 +661,7 @@ export class MockMeshService implements MeshService {
       })
     }
     this.name = trimmed
+    this.nameSaved = true
     return { ok: true, name: trimmed }
   }
 
@@ -783,6 +792,8 @@ class PluginMeshService implements MeshService {
       peersOnline: typeof value?.peersOnline === 'number' ? value.peersOnline : 0,
       peersTotal: typeof value?.peersTotal === 'number' ? value.peersTotal : 0,
       ...(typeof value?.error === 'string' ? { error: value.error } : {}),
+      ...(typeof value?.deviceName === 'string' ? { deviceName: value.deviceName } : {}),
+      ...(typeof value?.deviceNameSaved === 'boolean' ? { deviceNameSaved: value.deviceNameSaved } : {}),
     }
   }
 
@@ -918,7 +929,13 @@ class PluginMeshService implements MeshService {
     if (parsed === undefined) {
       throw new MeshRequestError(400, 'bad_pairing', '配对串格式不对，请从管理页重新复制', 1)
     }
-    await this.plugin.pair({ serverUrl: parsed.address, code: parsed.code, fingerprint: parsed.fp })
+    const trimmedName = name?.trim()
+    await this.plugin.pair({
+      serverUrl: parsed.address,
+      code: parsed.code,
+      fingerprint: parsed.fp,
+      ...(trimmedName === undefined || trimmedName === '' ? {} : { name: trimmedName }),
+    })
     const status = this.status()
     const node = status.node ?? {
       nodeId: 'local',
