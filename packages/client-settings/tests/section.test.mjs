@@ -1965,7 +1965,7 @@ describe('settings section', () => {
         if (path === '/.dsh-orb/mesh/open-external') return json({ ok: true })
         if (path === '/.dsh-orb/mesh/link/finish') {
           paired = true
-          savedName = `${savedName} (2)`
+          savedName = `${savedName}2`
           return json({ ok: true })
         }
         if (path === '/.dsh-orb/mesh/name') {
@@ -2005,10 +2005,10 @@ describe('settings section', () => {
     view = page.renderMesh()
     const linkCall = page.calls.find((call) => call.path === '/.dsh-orb/mesh/link')
     assert.equal(JSON.parse(linkCall.options.body).name, '书房主机')
-    assert.equal(find(view, (node) => node.type === 'input' && node.props?.value === '书房主机 (2)').length, 1)
+    assert.equal(find(view, (node) => node.type === 'input' && node.props?.value === '书房主机2').length, 1)
 
     // Rename after pairing, then unpair -> unpaired input prefills the renamed name.
-    const editInput = find(view, (node) => node.type === 'input' && node.props?.value === '书房主机 (2)')[0]
+    const editInput = find(view, (node) => node.type === 'input' && node.props?.value === '书房主机2')[0]
     editInput.props.onChange({ target: { value: '工作室 Mac' } })
     view = page.renderMesh()
     find(view, (node) => node.type === 'button' && node.children?.includes('保存名称'))[0].props.onClick()
