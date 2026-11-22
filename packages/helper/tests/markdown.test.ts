@@ -45,10 +45,10 @@ describe('transcript markdown', () => {
   })
 
   it('renders image syntax as a readable card instead of a bare path', () => {
-    const html = renderMarkdown(String.raw`![记事本中的《静夜思》](<C:\Users\ASUS\.dsh\dsh_orb\li-bai.png>)`)
+    const html = renderMarkdown(String.raw`![记事本中的《静夜思》](<C:\Users\me\.dsh\dsh_orb\li-bai.png>)`)
     assert.match(html, /<span class="md-image">/)
     assert.match(html, /class="md-image-alt">记事本中的《静夜思》<\/span>/)
-    assert.match(html, /class="md-image-path">C:\\Users\\ASUS\\\.dsh\\dsh_orb\\li-bai\.png<\/code>/)
+    assert.match(html, /class="md-image-path">C:\\Users\\me\\\.dsh\\dsh_orb\\li-bai\.png<\/code>/)
     assert.equal(html.includes('!['), false)
   })
 
