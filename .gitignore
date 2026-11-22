@@ -13,6 +13,7 @@ out/
 # Compiled from packages/*/src by `pnpm build` — never hand-edited
 packages/*/lib/
 packages/helper/assets/vendor/
+packages/bundle/vendor/
 
 # Package artifacts
 *.tgz
@@ -65,3 +66,6 @@ packages/bundle/client.js
 
 # Local-only release manual (handbook, never publish)
 RELEASE.md
+
+# agent-desktop FFI libraries (fetched by packages/desktop/scripts/fetch-native.mjs)
+packages/desktop/native/

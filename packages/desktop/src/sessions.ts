@@ -1,0 +1,354 @@
+/**
+ * One child process per chat session, plus the ref book that keeps the model
+ * honest.
+ *
+ * Refs are snapshot-qualified (`@<snapshotId>:eN`), but they are only meaningful
+ * to a model that has seen them. The book records exactly what each snapshot
+ * rendered, so a ref the model never received is refused instead of being sent
+ * to the library on a guess.
+ * @module @dsh-orb/desktop/src/sessions
+ */
+
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { activateApp } from './activate.ts'
+import { DesktopClient } from './client.ts'
+import type { ResolvedConfig } from './config.ts'
+import { clearRaised, raisedApp, type RaisedApp } from './guard.ts'
+import { nativeKey, packagedNativeDir, stageNative } from './native-paths.ts'
+import type { SnapshotData } from './protocol.ts'
+
+/** Snapshots remembered per session. Older refs are refused. */
+const REMEMBERED_SNAPSHOTS = 8
+
+/** How often the maintenance tick runs. */
+const TICK_MS = 5000
+
+export interface RememberedElement {
+  readonly role: string
+  readonly name: string
+  readonly states?: readonly string[]
+}
+
+interface Remembered {
+  readonly app: string
+  readonly refs: Set<string>
+  readonly elements: Map<string, RememberedElement>
+  at: number
+  windowId?: string
+  windowTitle?: string
+  depth?: number
+  interactive?: boolean
+}
+
+export interface RememberOptions {
+  readonly depth?: number
+  readonly interactive?: boolean
+  /** Merge refs into an existing snapshot entry instead of replacing it (used for `--root` drills and `find`). */
+  readonly merge?: boolean
+}
+
+/** What one session may address, and which app each ref belongs to. */
+export class RefBook {
+  private readonly bySnapshot = new Map<string, Remembered>()
+
+  /**
+   * Remember the refs one snapshot put in front of the model.
+   * @param snapshot - the observation.
+   * @param refs - refs the renderer emitted.
+   * @param elements - per-ref metadata for guidance and repeat detection.
+   * @param options - read parameters and merge flag for subtree drills.
+   */
+  remember(
+    snapshot: SnapshotData,
+    refs: readonly string[],
+    elements: ReadonlyMap<string, RememberedElement> = new Map(),
+    options: RememberOptions = {},
+  ): void {
+    if (snapshot.snapshotId === '' || refs.length === 0) return
+    const existing = options.merge === true ? this.bySnapshot.get(snapshot.snapshotId) : undefined
+    if (existing !== undefined) {
+      for (const ref of refs) existing.refs.add(ref)
+      for (const [ref, meta] of elements) existing.elements.set(ref, meta)
+      existing.at = Date.now()
+      if (snapshot.windowId !== undefined) existing.windowId = snapshot.windowId
+      if (snapshot.windowTitle !== undefined) existing.windowTitle = snapshot.windowTitle
+      if (options.depth !== undefined) existing.depth = options.depth
+      if (options.interactive !== undefined) existing.interactive = options.interactive
+      return
+    }
+    this.bySnapshot.set(snapshot.snapshotId, {
+      app: snapshot.app,
+      refs: new Set(refs),
+      elements: new Map(elements),
+      at: Date.now(),
+      ...snapshot.windowId !== undefined ? { windowId: snapshot.windowId } : {},
+      ...snapshot.windowTitle !== undefined ? { windowTitle: snapshot.windowTitle } : {},
+      ...options.depth !== undefined ? { depth: options.depth } : {},
+      ...options.interactive !== undefined ? { interactive: options.interactive } : {},
+    })
+    while (this.bySnapshot.size > REMEMBERED_SNAPSHOTS) {
+      const oldest = this.bySnapshot.keys().next().value
+      if (oldest === undefined) break
+      this.bySnapshot.delete(oldest)
+    }
+  }
+
+  /**
+   * Remember refs returned by `desktop_find` so they can be acted on immediately.
+   */
+  rememberFind(
+    meta: { readonly app: string; readonly snapshotId: string; readonly windowId?: string; readonly windowTitle?: string },
+    matches: readonly { readonly ref?: string; readonly role: string; readonly name?: string; readonly states?: readonly string[] }[],
+  ): void {
+    if (meta.snapshotId === '') return
+    const refs: string[] = []
+    const elements = new Map<string, RememberedElement>()
+    for (const match of matches) {
+      if (match.ref === undefined || match.ref === '') continue
+      refs.push(match.ref)
+      elements.set(match.ref, {
+        role: match.role,
+        name: match.name ?? '',
+        ...match.states !== undefined && match.states.length > 0 ? { states: match.states } : {},
+      })
+    }
+    if (refs.length === 0) return
+    this.remember(
+      {
+        app: meta.app,
+        snapshotId: meta.snapshotId,
+        refCount: refs.length,
+        complete: true,
+        ...meta.windowId !== undefined ? { windowId: meta.windowId } : {},
+        ...meta.windowTitle !== undefined ? { windowTitle: meta.windowTitle } : {},
+        tree: { role: 'window' },
+      },
+      refs,
+      elements,
+      { merge: true },
+    )
+  }
+
+  /**
+   * The newest snapshot this session remembered.
+   *
+   * A model that wrote a malformed ref cannot be helped by "call inspect again";
+   * what it needs is the exact prefix it should have used.
+   * @returns the snapshot id and app, or undefined when nothing was remembered.
+   */
+  latest(): { snapshotId: string, app: string } | undefined {
+    let found: { snapshotId: string, app: string } | undefined
+    let newest = -1
+    for (const [snapshotId, entry] of this.bySnapshot) {
+      if (entry.at < newest) continue
+      newest = entry.at
+      found = { snapshotId, app: entry.app }
+    }
+    return found
+  }
+
+  /**
+   * Resolve one ref to its app.
+   * @param ref - qualified ref.
+   * @returns the app and whether the model was shown this exact ref.
+   */
+  lookup(ref: string): {
+    app: string
+    known: boolean
+    role?: string
+    name?: string
+    states?: readonly string[]
+    windowId?: string
+    windowTitle?: string
+    depth?: number
+    interactive?: boolean
+  } | undefined {
+    const match = /^@([^:]+):/.exec(ref)
+    if (match === null) return undefined
+    const snapshotId = match[1]
+    if (snapshotId === undefined) return undefined
+    const entry = this.bySnapshot.get(snapshotId)
+    if (entry === undefined) return undefined
+    const element = entry.elements.get(ref)
+    return {
+      app: entry.app,
+      known: entry.refs.has(ref),
+      ...element !== undefined ? { role: element.role, name: element.name } : {},
+      ...element?.states !== undefined ? { states: element.states } : {},
+      ...entry.windowId !== undefined ? { windowId: entry.windowId } : {},
+      ...entry.windowTitle !== undefined ? { windowTitle: entry.windowTitle } : {},
+      ...entry.depth !== undefined ? { depth: entry.depth } : {},
+      ...entry.interactive !== undefined ? { interactive: entry.interactive } : {},
+    }
+  }
+
+  /** Drop every remembered snapshot. */
+  clear(): void {
+    this.bySnapshot.clear()
+  }
+}
+
+/** One live session. */
+export interface SessionEntry {
+  readonly client: DesktopClient
+  readonly refs: RefBook
+  lastUsed: number
+}
+
+export interface SessionOptions {
+  /** Entry script of the child host. Defaults to the sibling `host.js`. */
+  readonly hostEntry?: string
+  /** Node/Electron binary for the child. */
+  readonly execPath?: string
+  /** Extra child environment. */
+  readonly env?: Readonly<Record<string, string>>
+}
+
+/**
+ * Owns every live child process.
+ */
+export class DesktopSessions {
+  private readonly entries = new Map<string, SessionEntry>()
+  private readonly config: ResolvedConfig
+  private readonly options: SessionOptions
+  private readonly timer: NodeJS.Timeout
+  private disposed = false
+  private libraryDir: string | undefined
+  private libraryError: Error | undefined
+
+  constructor(config: ResolvedConfig, options: SessionOptions = {}) {
+    this.config = config
+    this.options = options
+    this.timer = setInterval(() => void this.tick(), TICK_MS)
+    this.timer.unref()
+  }
+
+  /**
+   * The child for one chat session, started on first use.
+   * @param sessionId - DSH session id.
+   * @returns the live entry.
+   * @throws when the platform has no bundled library, or the child cannot start.
+   */
+  async entry(sessionId: string): Promise<SessionEntry> {
+    const existing = this.entries.get(sessionId)
+    if (existing !== undefined && existing.client.alive) {
+      existing.lastUsed = Date.now()
+      return existing
+    }
+    if (existing !== undefined) this.entries.delete(sessionId)
+    const libraryDir = this.library()
+    const client = new DesktopClient({
+      libraryDir,
+      session: agentSessionId(sessionId),
+      hostEntry: this.options.hostEntry ?? defaultHostEntry(),
+      ...this.options.execPath !== undefined ? { execPath: this.options.execPath } : {},
+      ...this.options.env !== undefined ? { env: this.options.env } : {},
+      timeoutMs: 45_000,
+    })
+    const entry: SessionEntry = { client, refs: new RefBook(), lastUsed: Date.now() }
+    this.entries.set(sessionId, entry)
+    return entry
+  }
+
+  /** Live sessions, for the maintenance tick. */
+  list(): readonly [string, SessionEntry][] {
+    return [...this.entries.entries()]
+  }
+
+  /**
+   * Give the foreground back if this session borrowed it.
+   * @param sessionId - DSH session id.
+   */
+  async releaseForeground(sessionId: string): Promise<void> {
+    const raised = raisedApp()
+    if (raised === undefined || raised.owner !== sessionId) return
+    clearRaised()
+    await restore(raised)
+  }
+
+  /** Stop every child. */
+  async dispose(): Promise<void> {
+    this.disposed = true
+    clearInterval(this.timer)
+    const raised = raisedApp()
+    if (raised !== undefined) {
+      clearRaised()
+      await restore(raised).catch(() => {})
+    }
+    await Promise.all([...this.entries.values()].map(entry => entry.client.close()))
+    this.entries.clear()
+  }
+
+  /**
+   * Stop children that have been idle too long, and return a borrowed
+   * foreground after its deadline or the moment the user touches anything.
+   */
+  private async tick(): Promise<void> {
+    if (this.disposed) return
+    const now = Date.now()
+    for (const [sessionId, entry] of this.entries) {
+      if (now - entry.lastUsed > this.config.idleCloseMs) {
+        this.entries.delete(sessionId)
+        await entry.client.close().catch(() => {})
+        entry.refs.clear()
+      }
+    }
+    const raised = raisedApp()
+    if (raised === undefined) return
+    if (now > raised.deadline) {
+      clearRaised()
+      await restore(raised)
+      return
+    }
+    const entry = this.entries.get(raised.owner)
+    if (entry === undefined) {
+      clearRaised()
+      await restore(raised)
+    }
+  }
+
+  private library(): string {
+    if (this.libraryDir !== undefined) return this.libraryDir
+    if (this.libraryError !== undefined) throw this.libraryError
+    const key = nativeKey(process.platform, process.arch)
+    if (key === undefined) {
+      this.libraryError = new Error(
+        `background desktop control is not available on ${process.platform}-${process.arch}`,
+      )
+      throw this.libraryError
+    }
+    const packaged = packagedNativeDir(key)
+    if (packaged === undefined) {
+      this.libraryError = new Error(
+        'the bundled desktop library is missing. Run `pnpm --filter @dsh-orb/desktop fetch-native` and rebuild.',
+      )
+      throw this.libraryError
+    }
+    this.libraryDir = stageNative(packaged, key)
+    return this.libraryDir
+  }
+}
+
+/** agent-desktop accepts 1–64 alphanumerics, `-`, and `_`. */
+export function agentSessionId(sessionId: string): string {
+  const safe = sessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60)
+  return `dsh_${safe === '' ? 'session' : safe}`
+}
+
+function defaultHostEntry(): string {
+  const url = new URL('./host.js', import.meta.url)
+  if (!existsSync(fileURLToPath(url))) {
+    throw new Error('desktop host entry is missing; run `pnpm build` for @dsh-orb/desktop')
+  }
+  return fileURLToPath(url)
+}
+
+async function restore(raised: RaisedApp): Promise<void> {
+  if (raised.previous === undefined || raised.previous === '') return
+  try {
+    await activateApp(raised.previous)
+  } catch {
+    // The previous app is gone or refuses the foreground: nothing left to do.
+  }
+}

@@ -80,6 +80,8 @@ function boot(extra: {
   millifraction?: boolean
   /** The code-agent plugin's bookmark registry, as `ctx.get('codeAgentRegistry')` returns it. */
   agentRegistry?: unknown
+  /** The app-level mesh service, as `ctx.get('mesh')` returns it. */
+  mesh?: unknown
   /**
    * The `llm` service a selection translation calls. Absent means the host has no model
    * service, which is what the other tests want: they never translate.
@@ -215,6 +217,7 @@ function boot(extra: {
       if (name === 'sessions') return ctx.sessions
       if (name === 'llm') return extra.llm
       if (name === 'codeAgentRegistry') return extra.agentRegistry
+      if (name === 'mesh') return extra.mesh
       if (name === 'permissionPresets') {
         return {
           set(session: { header?: { cwd?: string } }, preset: string) {
@@ -1068,6 +1071,77 @@ describe('ball control socket', { concurrency: 1 }, () => {
       assert.equal(harness.runtime.takeJump()?.sessionId, 'session-agent-done')
       harness.runtime.confirmJump('session-agent-done')
       assert.equal(harness.runtime.takeJump(), null)
+    } finally {
+      client.socket.destroy()
+      harness.runtime.halt()
+    }
+  })
+
+  it('shows a remote task bookmark and opens the Mesh window at its session', async () => {
+    const task: {
+      taskId: string
+      targetNodeId: string
+      sessionId: string
+      status: string
+      prompt: string
+      callerSessionId: string
+      createdAt: number
+      updatedAt: number
+    } = {
+      taskId: 'task-remote',
+      targetNodeId: 'node-b',
+      sessionId: 'session-remote',
+      status: 'running',
+      prompt: '整理文件',
+      callerSessionId: 'session-caller',
+      createdAt: Date.now() - 5_000,
+      updatedAt: Date.now() - 5_000,
+    }
+    const harness = boot({
+      mesh: {
+        tasks: () => [task, {
+          taskId: 'task-old',
+          targetNodeId: 'node-b',
+          sessionId: 'session-old',
+          status: 'done',
+          prompt: '很早以前的任务',
+          createdAt: Date.now() - 60 * 60_000,
+          updatedAt: Date.now() - 60 * 60_000,
+        }],
+        nodes: () => [{ nodeId: 'node-b', name: 'Windows' }],
+      },
+    })
+    const client = await connect(harness.runtime)
+    const latest = (): { sessionId: string; remote?: boolean; deviceName?: string; unread?: boolean; state?: string }[] => {
+      const messages = client.messages.filter((message) => message.type === 'agents')
+      return (messages.at(-1) as { items?: { sessionId: string; remote?: boolean; deviceName?: string; unread?: boolean; state?: string }[] } | undefined)?.items ?? []
+    }
+    try {
+      await waitFor(() => latest().length === 1)
+      const item = latest()[0]!
+      assert.equal(item.sessionId, 'remote:node-b:session-remote')
+      assert.equal(item.remote, true)
+      assert.equal(item.deviceName, 'Windows')
+      assert.equal(item.state, 'running')
+      assert.equal(item.unread, false)
+
+      client.send({ type: 'agent-open', sessionId: 'remote:node-b:session-remote' })
+      await waitFor(() => client.messages.some((message) => message.type === 'open-mesh'))
+      const opened = client.messages.find((message) => message.type === 'open-mesh') as {
+        nodeId?: string
+        sessionId?: string
+      }
+      assert.equal(opened.nodeId, 'node-b')
+      assert.equal(opened.sessionId, 'session-remote')
+      // A remote bookmark never arms the main-window jump.
+      assert.equal(harness.runtime.takeJump(), null)
+
+      task.status = 'done'
+      task.updatedAt = Date.now()
+      await waitFor(() => latest().some((entry) => entry.unread === true))
+
+      client.send({ type: 'agent-dismiss', sessionId: 'remote:node-b:session-remote' })
+      await waitFor(() => latest().length === 0)
     } finally {
       client.socket.destroy()
       harness.runtime.halt()

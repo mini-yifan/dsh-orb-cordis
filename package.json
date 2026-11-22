@@ -8,8 +8,8 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build",
-    "typecheck": "tsc --noEmit -p packages/computer-use/tsconfig.json && tsc --noEmit -p packages/host/tsconfig.json && tsc --noEmit -p packages/helper/tsconfig.json && tsc --noEmit -p packages/client-settings/tsconfig.json && tsc --noEmit -p packages/voice/tsconfig.json",
-    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --test --test-isolation=process packages/host/tests/*.test.ts packages/helper/tests/*.test.ts packages/voice/tests/*.test.ts packages/client-settings/tests/*.test.mjs packages/bundle/tests/*.test.mjs && pnpm --filter @dsh-orb/computer-use test"
+    "typecheck": "tsc --noEmit -p packages/computer-use/tsconfig.json && tsc --noEmit -p packages/desktop/tsconfig.json && tsc --noEmit -p packages/host/tsconfig.json && tsc --noEmit -p packages/helper/tsconfig.json && tsc --noEmit -p packages/client-settings/tsconfig.json && tsc --noEmit -p packages/voice/tsconfig.json",
+    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --test --test-isolation=process packages/host/tests/*.test.ts packages/desktop/tests/*.test.ts packages/helper/tests/*.test.ts packages/voice/tests/*.test.ts packages/client-settings/tests/*.test.mjs packages/bundle/tests/*.test.mjs && pnpm --filter @dsh-orb/computer-use test"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

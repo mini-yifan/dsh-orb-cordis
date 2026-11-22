@@ -26,12 +26,20 @@ export interface ObservedImage {
   }
 }
 
+/**
+ * Cap observation rasters to 1280 px on the longer edge so VLM vision encoders
+ * receive 1:1 pixels without silent secondary downscaling (e.g. 2698 px -> 1666 px).
+ */
+export const OBSERVATION_MAX_LONG_EDGE = 1280
+
 /** One captured display plus its durable attachment. */
 export interface ObservedScreen {
   screenIndex: number
   logicalWidth: number
   logicalHeight: number
   scale: number
+  /** Captured logical screen rectangle at observation time, for pre-click viewport validation. */
+  bounds?: ScreenInfo['bounds']
   /** Owner window of this surface; Windows hands focus back to it for a hotkey. HWND/CGWindowID. */
   windowId?: number
   /** Extra window ids the surface included (menus and other family windows). */
@@ -192,6 +200,11 @@ export interface ObserveDesktopOptions {
   /** Session click encoding for screen envelopes. Default: millifraction. */
   readonly coordinateMode?: CoordinateMode
   /**
+   * Maximum longer-edge pixels for the observation capture.
+   * Defaults to {@link OBSERVATION_MAX_LONG_EDGE} (1280). Pass `null` to keep full native pixels.
+   */
+  readonly maxLongEdge?: number | null
+  /**
    * Whether to persist one capture to the attachment store.
    * Default persists every capture. Returning false keeps bytes on {@link DesktopObservation.captures} only.
    * @param captured - encoded screen bytes from {@link DesktopBackend.capture}.
@@ -229,9 +242,14 @@ export async function observeDesktop(
   const screens: ObservedScreen[] = []
   const captures: CapturedScreen[] = []
   const persistCapture = options.persistCapture
+  const maxLongEdge = options.maxLongEdge === null ? undefined : (options.maxLongEdge ?? OBSERVATION_MAX_LONG_EDGE)
   for (const screen of selected) {
     signal.throwIfAborted()
-    const captured = await backend.capture(screen, signal)
+    const captured = await backend.capture(
+      screen,
+      signal,
+      maxLongEdge === undefined ? undefined : { maxLongEdge },
+    )
     captures.push(captured)
     if (persistCapture !== undefined && !persistCapture(captured)) continue
     const saved = await ctx.attachments.saveImage({
@@ -244,6 +262,7 @@ export async function observeDesktop(
       logicalWidth: screen.bounds.width,
       logicalHeight: screen.bounds.height,
       scale: screen.scale,
+      bounds: { ...screen.bounds },
       // The window the surface belongs to rides along so a later hotkey can focus it.
       ...screen.windowId === undefined ? {} : { windowId: screen.windowId },
       ...screen.transientWindowIds === undefined ? {} : { transientWindowIds: [...screen.transientWindowIds] },

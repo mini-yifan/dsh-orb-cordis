@@ -29,6 +29,15 @@ export const BALL_PRESET = 'computer-use'
 interface ScreenOwnerState {
   /** Session id of the conversation the ball currently shows, or empty when unrestricted. */
   ownerId: string
+  /**
+   * Sessions the ball has adopted, i.e. the conversations that are actually the ball's own.
+   *
+   * The preset alone cannot answer that question: a main-window chat may deliberately run the
+   * computer-use preset to drive the GUI, and gating it because the ball owns the desktop locks the
+   * shell out of a window the user is watching. The host records membership here when it adopts a
+   * conversation; absent (an older host) keeps the preset-only rule.
+   */
+  ballSessions?: Set<string>
 }
 
 /**
@@ -103,6 +112,9 @@ export function isDesktopTool(name: string): boolean {
  * - a call with no agent (internal dispatch),
  * - a session that is not a ball conversation (the main window, a delegated Code session),
  * - the owner's own calls.
+ *
+ * "Is a ball conversation" is read from the host-published membership set, not from the preset: a
+ * main-window chat running the computer-use preset is not the ball's, and must keep its shell.
  * @param agentId - calling agent id, or undefined when the call carries no agent.
  * @param toolName - tool name as registered.
  * @param preset - the calling session's agent preset, or undefined when it cannot be read.
@@ -116,6 +128,9 @@ export function desktopToolDenial(
   const owner = screenOwnerId()
   if (owner === undefined) return undefined
   if (agentId === undefined || agentId === owner) return undefined
+  // Membership is the identity test; when the host publishes none, fall back to the preset.
+  const ballSessions = screenOwnerState().ballSessions
+  if (ballSessions !== undefined && !ballSessions.has(agentId)) return undefined
   if (preset !== BALL_PRESET) return undefined
   if (!DESKTOP_TOOLS.has(toolName)) return undefined
   return NOT_SCREEN_OWNER_MESSAGE

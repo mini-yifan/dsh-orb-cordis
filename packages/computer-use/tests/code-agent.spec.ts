@@ -444,11 +444,11 @@ describe('code_agent plugin', () => {
     expect(ctx.tools.schemas().map(schema => schema.name)).toEqual([])
   })
 
-  it('creates a standard session without subagent origin and queues the task', async () => {
+  it('creates a desktop session without subagent origin and queues the task', async () => {
     const { ctx, created, prompted, selected } = await setup()
     const result = await execute(ctx, { task: 'Write a Word document' })
     expect(result.isError).toBe(false)
-    expect(created).toEqual([{ agentPreset: 'standard', cwd: autoCwd('Write a Word document') }])
+    expect(created).toEqual([{ agentPreset: 'desktop', cwd: autoCwd('Write a Word document') }])
     expect(selected).toEqual([])
     expect(created[0]).not.toHaveProperty('origin')
     expect(created[0]).not.toHaveProperty('parentAgent')
@@ -511,26 +511,26 @@ describe('code_agent plugin', () => {
     const { ctx, created } = await setup({ workspaceId: 'ws-orb' })
     const result = await execute(ctx, { task: 'Write a Word document', cwd: '/workspace' })
     expect(result.isError).toBe(false)
-    expect(created).toEqual([{ agentPreset: 'standard', workspaceId: 'ws-orb' }])
+    expect(created).toEqual([{ agentPreset: 'desktop', workspaceId: 'ws-orb' }])
   })
 
   it('omits workspaceId when minting a subdirectory even if the parent workspace resolves', async () => {
     const { ctx, created } = await setup({ workspaceId: 'ws-orb' })
     const result = await execute(ctx, { task: 'Write a Word document' })
     expect(result.isError).toBe(false)
-    expect(created).toEqual([{ agentPreset: 'standard', cwd: autoCwd('Write a Word document') }])
+    expect(created).toEqual([{ agentPreset: 'desktop', cwd: autoCwd('Write a Word document') }])
   })
 
   it('falls back to cwd when workspace lookup misses, throws, or is not a resolver', async () => {
     const miss = await setup({ workspace: 'miss' })
     await execute(miss.ctx, { task: 'Write a Word document', cwd: '/docs' })
-    expect(miss.created).toEqual([{ agentPreset: 'standard', cwd: '/docs' }])
+    expect(miss.created).toEqual([{ agentPreset: 'desktop', cwd: '/docs' }])
     const boom = await setup({ workspace: 'throw' })
     await execute(boom.ctx, { task: 'Write a Word document', cwd: '/docs' })
-    expect(boom.created).toEqual([{ agentPreset: 'standard', cwd: '/docs' }])
+    expect(boom.created).toEqual([{ agentPreset: 'desktop', cwd: '/docs' }])
     const invalid = await setup({ workspace: 'invalid' })
     await execute(invalid.ctx, { task: 'Write a Word document', cwd: '/docs' })
-    expect(invalid.created).toEqual([{ agentPreset: 'standard', cwd: '/docs' }])
+    expect(invalid.created).toEqual([{ agentPreset: 'desktop', cwd: '/docs' }])
   })
 
   it('continues the same session when session_id is supplied', async () => {
@@ -591,13 +591,13 @@ describe('code_agent plugin', () => {
     ctx.provide('sessionController', {
       async create(request: CreateRequest) {
         expect(request).toEqual({
-          agentPreset: 'standard',
+          agentPreset: 'desktop',
           cwd: created === 0 ? autoCwd('Write a Word document') : autoCwd('Make a gobang game'),
         })
         const id = created === 0 ? STANDARD : STANDARD_B
         created += 1
         sessions.set(id, Session.create(id))
-        return { sessionId: id, agentPreset: 'standard' }
+        return { sessionId: id, agentPreset: 'desktop' }
       },
       async prompt(request: PromptRequest) {
         const session = sessions.get(request.sessionId)
@@ -611,7 +611,7 @@ describe('code_agent plugin', () => {
       async inspect(sessionId: SessionId) {
         const session = sessions.get(sessionId)
         if (session === undefined) throw new Error(`session "${sessionId}" not found`)
-        return { meta: { ...session.header, agentPreset: 'standard' } }
+        return { meta: { ...session.header, agentPreset: 'desktop' } }
       },
     })
     apply(ctx)
@@ -633,7 +633,7 @@ describe('code_agent plugin', () => {
       id: CALLER,
       session: { header: { id: CALLER, agentPreset: 'computer-use' } },
     })
-    expect(omitted.created).toEqual([{ agentPreset: 'standard' }])
+    expect(omitted.created).toEqual([{ agentPreset: 'desktop' }])
   })
 
   it('pins GUI versus code_agent routing in policy and the tool description', async () => {
@@ -739,7 +739,7 @@ describe('code_agent plugin', () => {
     expect(notice).toContain('do not perform any GUI actions')
   })
 
-  it('keeps the plain notice when only a standard-preset session is running', async () => {
+  it('keeps the plain notice when only a non-Computer-Use session is running', async () => {
     const caller = createFakeAgent(CALLER, { status: 'idle' })
     const code = createFakeAgent(STANDARD, { status: 'running', assistant: 'Wrote the Word document.' })
     const other = createFakeAgent(SessionId('session-other'), { status: 'running', preset: 'standard' })

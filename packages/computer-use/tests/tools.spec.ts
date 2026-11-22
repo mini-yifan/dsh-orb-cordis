@@ -89,6 +89,7 @@ afterEach(async () => {
   // The desktop owner is a process-global record shared with the host; a test that published one
   // must not decide the next test's policy text.
   screenOwnerState().ownerId = ''
+  screenOwnerState().ballSessions = undefined
 })
 
 beforeEach(() => {
@@ -1092,5 +1093,48 @@ describe('cross-session screen lock', () => {
     const result = await executeAs(ctx, agentWithId('session-a'), 'list_apps', {})
     expect(result.isError).toBe(false)
     expect(text(result)).toContain('Running apps: Pages, Safari')
+  })
+
+  it('aborts a pointer click and returns VIEWPORT_CHANGED with a fresh screenshot when window bounds shifted', async () => {
+    let currentBounds = { x: 0, y: 0, width: 1000, height: 700 }
+    const { ctx, backend } = await setup({
+      screens: [{ index: 0, bounds: currentBounds, scale: 2, windowId: 11, appName: 'Pages' }],
+    })
+    ;(backend as { listScreens: typeof backend.listScreens }).listScreens = async () => [
+      { index: 0, bounds: currentBounds, scale: 2, windowId: 11, appName: 'Pages' },
+    ]
+    const session = Session.create(SessionId('cu-viewport-guard'))
+    session.append('computer-use/coordinate-mode', { mode: 'pixel' })
+    const { rememberObservation } = await import('../src/coordinate-mode.ts')
+    rememberObservation(session, [{
+      image: { width: 1000, height: 700 },
+      bounds: { x: 0, y: 0, width: 1000, height: 700 },
+      windowId: 11,
+      appName: 'Pages',
+    }])
+
+    // Window resizes before the click is dispatched.
+    currentBounds = { x: 0, y: 0, width: 1400, height: 700 }
+    const res = await execute(ctx, 'click', { screen_index: 0, position: [500, 350] }, 'vision-model', session)
+    expect(res.isError).toBe(false)
+    expect(backend.actions).toHaveLength(0)
+    expect(text(res)).toContain('VIEWPORT_CHANGED')
+    expect(res.content.some(block => block.type === 'image')).toBe(true)
+  })
+
+  it('survives system-prompt/assemble without tools array on DSH 0.2.x in pixel mode', async () => {
+    const { ctx } = await setup()
+    const session = Session.create(SessionId('cu-dsh-02-assemble'))
+    session.append('computer-use/coordinate-mode', { mode: 'pixel' })
+    const agent = promptAgent(session)
+    const input = { sections: [], contexts: [], variables: {} }
+    const out = await ctx.waterfall(
+      ctx.systemPrompt as never,
+      'system-prompt/assemble' as never,
+      input as never,
+      { agent } as never,
+      () => Promise.resolve(input as never),
+    )
+    expect(out).toEqual(input)
   })
 })

@@ -82,7 +82,7 @@ export function clipboardRestoreIncomplete(snapshot: ClipboardSnapshot, restored
 export interface WindowsDesktopOps {
   /** Z-order snapshot in physical pixels, including the foreground hwnd. */
   listWindows(): WindowsDesktopSnapshot
-  capturePng(bounds: WindowsRect, options?: { readonly cursor?: boolean }): Uint8Array
+  capturePng(bounds: WindowsRect, options?: { readonly cursor?: boolean; readonly maxLongEdge?: number }): Uint8Array
   /**
    * True when the window `hwnd` is elevated above this process (UIPI), so posted input
    * would be dropped. `0` and windows that are no longer on screen are never blocked;

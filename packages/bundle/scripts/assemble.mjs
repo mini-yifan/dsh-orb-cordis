@@ -10,6 +10,7 @@
  *   client.js                      settings page, browser half (from client-settings)
  *   dist/host/                     @dsh-orb/host
  *   dist/computer-use/             @dsh-orb/computer-use, including the ScreenCaptureKit helper
+ *   dist/desktop/                  @dsh-orb/desktop, including the per-platform FFI libraries
  *   dist/helper/                   Electron entry, preload scripts, assets
  *   dist/native-selection/         selection monitor sources and prebuilt library
  */
@@ -67,9 +68,37 @@ await copyFrom('host', 'lib', join(dist, 'host'))
 await copyFrom('computer-use', 'lib', join(dist, 'computer-use'))
 await chmod(join(dist, 'computer-use', 'macos-sck-capture'), 0o755)
 
+// Background desktop control: the plugin row and the platform libraries travel
+// together, so a user never downloads anything beyond the plugin itself.
+const desktopNative = join(packages, 'desktop', 'native')
+if (!existsSync(desktopNative)) {
+  throw new Error(
+    'assemble: packages/desktop/native is missing. '
+    + 'Run `pnpm --filter @dsh-orb/desktop fetch-native` before packing.',
+  )
+}
+await copyFrom('desktop', 'lib', join(dist, 'desktop'))
+await copyFrom('desktop', 'native', join(dist, 'desktop', 'native'))
+for (const platform of ['darwin-arm64', 'darwin-x64']) {
+  const helper = join(dist, 'desktop', 'native', platform, 'agent-desktop-macos-helper')
+  if (existsSync(helper)) await chmod(helper, 0o755)
+}
+
+// Orb Mesh is built in the separate dsh-mesh repository and vendored as a
+// self-contained bundle. Refuse to assemble an install that silently lacks it.
+const meshVendor = join(bundleRoot, 'vendor', 'mesh')
+if (!existsSync(meshVendor)) {
+  throw new Error('assemble: packages/bundle/vendor/mesh is missing. Run `node scripts/sync-mesh.mjs` first.')
+}
+// `fs.cp` nests the source inside an existing destination directory, which
+// produced `dist/mesh/mesh` on a rebuild and left the stale bundle in place.
+await rm(join(dist, 'mesh'), { recursive: true, force: true })
+await cp(meshVendor, join(dist, 'mesh'), { recursive: true })
+
 // The host reaches the helper at ../helper/lib/main.js and the selection monitor at ../native-selection/src.
 await copyFrom('helper', 'lib', join(dist, 'helper', 'lib'))
 await copyFrom('helper', 'preload.cjs', join(dist, 'helper', 'preload.cjs'))
+await copyFrom('helper', 'mesh-preload.cjs', join(dist, 'helper', 'mesh-preload.cjs'))
 await copyFrom('helper', 'selection-preload.cjs', join(dist, 'helper', 'selection-preload.cjs'))
 await copyFrom('helper', 'lasso-preload.cjs', join(dist, 'helper', 'lasso-preload.cjs'))
 await copyFrom('helper', 'assets', join(dist, 'helper', 'assets'))

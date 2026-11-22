@@ -52,6 +52,13 @@ export const STATUS_TOOL_NAME = 'code_agent_status'
 /** Model-visible tool that stops one of this Computer Use caller's Code sessions. */
 export const STOP_TOOL_NAME = 'code_agent_stop'
 
+/**
+ * Agent preset every delegated session runs. It still presents itself as a
+ * standard coding worker to the Computer Use agent; the desktop ability is not
+ * advertised, so the caller keeps doing visible GUI itself.
+ */
+export const DESKTOP_PRESET = 'desktop'
+
 const DESCRIPTION = 'Delegate one stretch of file search or file production to a standard-mode Code agent that appears in the desktop sidebar like a user-created session. '
   + 'Do the stretch in this chat when it is visible GUI or when one search or one command will answer or feed the next click. A second search that you expect will hit the point stays here. '
   + 'Do not call this tool for visible GUI work such as opening WeChat or clicking a button in Pages — use the GUI tools instead. '
@@ -72,9 +79,10 @@ const DESCRIPTION = 'Delegate one stretch of file search or file production to a
  * Role text appended to every queued `code_agent` task.
  * The completion notice keeps the model task only.
  */
-export const BACKGROUND_ROLE = 'You are the background worker for a Computer Use session. You do not see the screen and you do not talk to the user. '
+export const BACKGROUND_ROLE = 'You are the background worker for a Computer Use session. You do not talk to the user. '
+  + 'You can operate applications on this computer when the task needs it. '
   + 'If this task asks for a file, document, spreadsheet, or site, produce it, reply with its path, and stop. '
-  + 'Otherwise search or run commands only until you can answer, including a second search when the first missed the point. '
+  + 'Otherwise search, run commands, or operate the app until you can answer, including a second search when the first missed the point. '
   + 'Reply in a few sentences with the paths or results that matter, then stop. Do not write a report or create extra files.'
 
 const RUNNING_RESULT = 'Tell the user the background Code agent is running. Continue with a GUI action in this turn only when it does not need this result; otherwise end the turn.'
@@ -342,7 +350,7 @@ export function apply(ctx: Context): void {
           ? { cwd: directory }
           : await locationForCreate(ctx, directory)
         const createdSession = await ctx.sessionController.create({
-          agentPreset: 'standard',
+          agentPreset: DESKTOP_PRESET,
           ...location,
         })
         sessionId = createdSession.sessionId
@@ -376,8 +384,8 @@ export function apply(ctx: Context): void {
         if (header.origin === 'subagent' || ownedBySubagent(ctx, header)) {
           throw new Error(`code_agent cannot continue subagent session "${sessionId}"`)
         }
-        if (header.agentPreset !== 'standard') {
-          throw new Error(`code_agent can continue only a standard session, not "${header.agentPreset ?? 'unknown'}"`)
+        if (header.agentPreset !== DESKTOP_PRESET && header.agentPreset !== 'standard') {
+          throw new Error(`code_agent can continue only a background session, not "${header.agentPreset ?? 'unknown'}"`)
         }
         if (args.cwd !== undefined && header.cwd !== undefined && args.cwd !== header.cwd) {
           throw new Error(`code_agent cwd "${args.cwd}" does not match session "${sessionId}" cwd "${header.cwd}"`)

@@ -13,6 +13,7 @@ import {
 afterEach(() => {
   // The record is process-global; a test must not decide the next one's owner.
   screenOwnerState().ownerId = ''
+  screenOwnerState().ballSessions = undefined
 })
 
 describe('desktop tool gate', () => {
@@ -77,6 +78,24 @@ describe('desktop tool gate', () => {
     expect(desktopToolDenial('session-b', 'click', BALL_PRESET)).toBe(NOT_SCREEN_OWNER_MESSAGE)
     setScreenOwner(undefined)
     expect(desktopToolDenial('session-b', 'click', BALL_PRESET)).toBeUndefined()
+  })
+
+  /**
+   * The preset is a capability declaration, not an identity. A main-window chat may run the
+   * computer-use preset on purpose, and it used to lose its shell the moment the ball owned the
+   * desktop — the failure that made the shell look model-specific. Membership is what the host
+   * knows, so it decides.
+   */
+  it('gates only sessions the host published as the ball’s own', () => {
+    setScreenOwner('session-a')
+    screenOwnerState().ballSessions = new Set(['session-a', 'session-b'])
+
+    // A ball conversation that is not the displayed one stays gated.
+    expect(desktopToolDenial('session-b', 'click', BALL_PRESET)).toBe(NOT_SCREEN_OWNER_MESSAGE)
+    expect(desktopToolDenial('session-b', 'bash', BALL_PRESET)).toBe(NOT_SCREEN_OWNER_MESSAGE)
+    // A main-window chat running the same preset is not the ball's and keeps everything.
+    expect(desktopToolDenial('main-window-chat', 'bash', BALL_PRESET)).toBeUndefined()
+    expect(desktopToolDenial('main-window-chat', 'click', BALL_PRESET)).toBeUndefined()
   })
 })
 

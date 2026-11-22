@@ -14,6 +14,7 @@ declare module 'electron' {
 
   interface WebContents {
     send(channel: string, ...args: unknown[]): void
+    isLoading(): boolean
     setWindowOpenHandler(handler: () => { action: 'deny' }): void
     on(event: 'will-navigate' | 'did-finish-load' | 'context-menu', listener: (event: { preventDefault(): void }, params?: { isEditable?: boolean; hasSelection?: boolean }) => void): void
     executeJavaScript(code: string): Promise<unknown>
@@ -29,6 +30,7 @@ declare module 'electron' {
     setVisibleOnAllWorkspaces(flag: boolean, options?: { visibleOnFullScreen?: boolean; skipTransformProcessType?: boolean }): void
     setBounds(bounds: Rectangle): void
     getBounds(): Rectangle
+    setTitle(title: string): void
     getNativeWindowHandle(): Buffer
     isVisible(): boolean
     isDestroyed(): boolean
@@ -50,6 +52,8 @@ declare module 'electron' {
     y?: number
     width?: number
     height?: number
+    minWidth?: number
+    minHeight?: number
     frame?: boolean
     transparent?: boolean
     alwaysOnTop?: boolean

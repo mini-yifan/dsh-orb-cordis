@@ -20,6 +20,7 @@ const contexts: Context[] = []
 afterEach(async () => {
   for (const ctx of contexts.splice(0)) await ctx.fiber.dispose()
   screenOwnerState().ownerId = ''
+  screenOwnerState().ballSessions = undefined
 })
 
 function trivial(name: string) {

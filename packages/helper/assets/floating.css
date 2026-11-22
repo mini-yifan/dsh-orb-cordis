@@ -33,6 +33,8 @@
   --agent-c1: #0f9b8e;
   --agent-c2: #d9730d;
   --agent-c3: #7a5af5;
+  /* Cross-device tasks: a hue no local conversation uses. */
+  --agent-remote: #d43f8d;
 }
 
 body[data-ds-dark-theme] {
@@ -49,6 +51,7 @@ body[data-ds-dark-theme] {
   --agent-c1: #45d0c2;
   --agent-c2: #ffb066;
   --agent-c3: #b39cff;
+  --agent-remote: #ff7ac6;
 }
 
 html,

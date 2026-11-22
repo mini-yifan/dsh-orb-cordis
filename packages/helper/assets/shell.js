@@ -81,8 +81,11 @@ const zh = {
   agentEnded: '已结束',
   agentFrom: '来自对话',
   agentDir: '工作目录',
+  agentDevice: '目标设备',
   agentOpen: '点击在主窗口打开',
+  agentOpenRemote: '点击在互联窗口打开',
   agentDismiss: '移除这张书签（不打开主窗口）',
+  agentDismissRemote: '移除这张书签（不打开互联窗口）',
   noticeTitle: '后台任务报告',
   localBadge: '未计入对话',
   localBadgeTitle: '这段内容只在屏幕上，不进入对话历史，模型也看不到',
@@ -144,8 +147,11 @@ const en = {
   agentEnded: 'Ended',
   agentFrom: 'From chat',
   agentDir: 'Folder',
+  agentDevice: 'Device',
   agentOpen: 'Click to open in the main window',
+  agentOpenRemote: 'Click to open in the interconnect window',
   agentDismiss: 'Remove this bookmark without opening the main window',
+  agentDismissRemote: 'Remove this bookmark without opening the interconnect window',
   noticeTitle: 'Background task report',
   localBadge: 'Not in the conversation',
   localBadgeTitle: 'This stays on screen only. It never enters the chat history, and the model cannot see it.',
@@ -2108,11 +2114,12 @@ function main() {
   function agentTip(item) {
     const parts = [`${agentStateText(item.state)} · ${agentElapsedText(item)}`]
     if (typeof item.task === 'string' && item.task !== '') parts.push(item.task)
+    if (typeof item.deviceName === 'string' && item.deviceName !== '') parts.push(`${messages.agentDevice}: ${item.deviceName}`)
     if (typeof item.callerTitle === 'string' && item.callerTitle !== '') parts.push(`${messages.agentFrom}: ${item.callerTitle}`)
     if (typeof item.cwd === 'string' && item.cwd !== '') parts.push(`${messages.agentDir}: ${item.cwd}`)
     if (typeof item.outcome === 'string' && item.outcome !== '') parts.push(item.outcome)
-    parts.push(messages.agentOpen)
-    if (item.unread === true) parts.push(messages.agentDismiss)
+    parts.push(item.remote === true ? messages.agentOpenRemote : messages.agentOpen)
+    if (item.unread === true) parts.push(item.remote === true ? messages.agentDismissRemote : messages.agentDismiss)
     return parts.join('\n')
   }
 
@@ -2123,8 +2130,11 @@ function main() {
     const chip = document.createElement('div')
     chip.className = 'agent-chip'
     chip.dataset.state = typeof item.state === 'string' ? item.state : 'running'
+    chip.dataset.remote = item.remote === true ? 'true' : 'false'
     const color = Number(item.colorIndex)
-    chip.style.setProperty('--agent-color', `var(--agent-c${Number.isFinite(color) ? Math.abs(color) % 4 : 0})`)
+    chip.style.setProperty('--agent-color', item.remote === true
+      ? 'var(--agent-remote)'
+      : `var(--agent-c${Number.isFinite(color) ? Math.abs(color) % 4 : 0})`)
     chip.setAttribute('role', 'listitem')
     const status = document.createElement('span')
     status.className = 'agent-chip-status'
@@ -2165,8 +2175,9 @@ function main() {
       const dismiss = document.createElement('button')
       dismiss.type = 'button'
       dismiss.className = 'agent-chip-dismiss'
-      dismiss.title = messages.agentDismiss
-      dismiss.setAttribute('aria-label', messages.agentDismiss)
+      const dismissLabel = item.remote === true ? messages.agentDismissRemote : messages.agentDismiss
+      dismiss.title = dismissLabel
+      dismiss.setAttribute('aria-label', dismissLabel)
       dismiss.append(icon(CLOSE, 12))
       dismiss.addEventListener('click', () => {
         if (typeof item.sessionId === 'string') api.dismissAgent?.(item.sessionId)

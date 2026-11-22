@@ -38,12 +38,16 @@ private struct CursorSnapshot {
 private struct Arguments {
   var target: CaptureTarget
   var excludeWindowIds: [UInt32]
+  var maxLongEdge: Int?
+  var includeCursor: Bool
   var output: URL
 
   static func parse(_ argv: [String]) throws -> Arguments {
     var windowId: UInt32?
     var region: CGRect?
     var exclude: [UInt32] = []
+    var maxLongEdge: Int?
+    var includeCursor = true
     var output: URL?
     for argument in argv.dropFirst() {
       if argument.hasPrefix("--window=") {
@@ -51,7 +55,16 @@ private struct Arguments {
       } else if argument.hasPrefix("--region=") {
         region = try parseRegion(String(argument.dropFirst("--region=".count)))
       } else if argument.hasPrefix("--exclude=") {
-        exclude = try parseExclude(String(argument.dropFirst("--exclude=".count)))
+        let raw = String(argument.dropFirst("--exclude=".count))
+        if !raw.isEmpty {
+          exclude = try parseExclude(raw)
+        }
+      } else if argument.hasPrefix("--max-long-edge=") {
+        let raw = String(argument.dropFirst("--max-long-edge=".count))
+        guard let parsed = Int(raw), parsed >= 1 else { throw CaptureError.usage }
+        maxLongEdge = parsed
+      } else if argument == "--no-cursor" {
+        includeCursor = false
       } else if argument.hasPrefix("--out=") {
         output = URL(fileURLWithPath: String(argument.dropFirst("--out=".count)))
       } else {
@@ -59,12 +72,23 @@ private struct Arguments {
       }
     }
     guard let output else { throw CaptureError.usage }
-    if exclude.isEmpty { throw CaptureError.usage }
     switch (windowId, region) {
     case (let windowId?, nil):
-      return Arguments(target: .window(windowId), excludeWindowIds: exclude, output: output)
+      return Arguments(
+        target: .window(windowId),
+        excludeWindowIds: exclude,
+        maxLongEdge: maxLongEdge,
+        includeCursor: includeCursor,
+        output: output
+      )
     case (nil, let region?):
-      return Arguments(target: .region(region), excludeWindowIds: exclude, output: output)
+      return Arguments(
+        target: .region(region),
+        excludeWindowIds: exclude,
+        maxLongEdge: maxLongEdge,
+        includeCursor: includeCursor,
+        output: output
+      )
     default:
       throw CaptureError.usage
     }
@@ -81,7 +105,7 @@ private enum CaptureError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .usage:
-      return "usage: macos-sck-capture (--window=id | --region=x,y,w,h) --exclude=id[,id...] --out=path"
+      return "usage: macos-sck-capture (--window=id | --region=x,y,w,h) [--exclude=id[,id...]] [--max-long-edge=N] [--no-cursor] --out=path"
     case .missingWindow(let id):
       return "overlay window \(id) is not in ScreenCaptureKit shareable content"
     case .noDisplay:
@@ -123,6 +147,19 @@ private func parseExclude(_ value: String) throws -> [UInt32] {
   return ids
 }
 
+private func clampedPixelSize(width: Int, height: Int, maxLongEdge: Int?) -> (width: Int, height: Int) {
+  let safeW = max(1, width)
+  let safeH = max(1, height)
+  guard let cap = maxLongEdge, cap >= 1 else { return (safeW, safeH) }
+  let longer = max(safeW, safeH)
+  guard longer > cap else { return (safeW, safeH) }
+  let ratio = Double(cap) / Double(longer)
+  return (
+    max(1, Int((Double(safeW) * ratio).rounded())),
+    max(1, Int((Double(safeH) * ratio).rounded())),
+  )
+}
+
 /// Window capture uses CGS; a CLI `@main` task is not a GUI process until AppKit starts on the main actor.
 /// Desktop loads this as a dylib inside Electron and must not change the host activation policy.
 @MainActor
@@ -147,14 +184,20 @@ private func capture(_ args: Arguments, startCliApplication: Bool) async throws 
     }
     let filter = SCContentFilter(desktopIndependentWindow: window)
     let scale = backingScale(for: window.frame, displays: content.displays)
+    let size = clampedPixelSize(
+      width: Int((window.frame.width * scale).rounded()),
+      height: Int((window.frame.height * scale).rounded()),
+      maxLongEdge: args.maxLongEdge,
+    )
     let configuration = SCStreamConfiguration()
     // SCScreenshotManager cursor rendering is unreliable across macOS versions (and window
     // filters exclude the cursor layer entirely), so we composite the cursor ourselves.
     configuration.showsCursor = false
-    configuration.width = max(1, Int((window.frame.width * scale).rounded()))
-    configuration.height = max(1, Int((window.frame.height * scale).rounded()))
+    configuration.width = size.width
+    configuration.height = size.height
     let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-    try writeJPEG(compositeCursor(image, bounds: window.frame), to: args.output)
+    let out = args.includeCursor ? compositeCursor(image, bounds: window.frame) : image
+    try writeJPEG(out, to: args.output)
   case .region(let region):
     guard let display = displayOverlapping(region, displays: content.displays) else {
       throw CaptureError.noDisplay
@@ -165,13 +208,19 @@ private func capture(_ args: Arguments, startCliApplication: Bool) async throws 
     }
     let filter = SCContentFilter(display: display, excludingWindows: excludeWindows)
     let scale = CGFloat(display.width) / max(display.frame.width, 1)
+    let size = clampedPixelSize(
+      width: Int((clipped.width * scale).rounded()),
+      height: Int((clipped.height * scale).rounded()),
+      maxLongEdge: args.maxLongEdge,
+    )
     let configuration = SCStreamConfiguration()
     configuration.showsCursor = false
     configuration.sourceRect = clipped.offsetBy(dx: -display.frame.minX, dy: -display.frame.minY)
-    configuration.width = max(1, Int((clipped.width * scale).rounded()))
-    configuration.height = max(1, Int((clipped.height * scale).rounded()))
+    configuration.width = size.width
+    configuration.height = size.height
     let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-    try writeJPEG(compositeCursor(image, bounds: clipped), to: args.output)
+    let out = args.includeCursor ? compositeCursor(image, bounds: clipped) : image
+    try writeJPEG(out, to: args.output)
   }
 }
 

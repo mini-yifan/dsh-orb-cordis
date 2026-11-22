@@ -17,6 +17,7 @@ export interface ContextMenuState {
 export interface ContextMenuActions {
   openMain(): void
   openSettings(): void
+  openMesh(): void
   setOverlay(selection: MenuSelection): void
   setBackground(selection: MenuSelection): void
   setSelection(enabled: boolean): void
@@ -44,6 +45,11 @@ export function contextMenuTemplate(state: ContextMenuState, zh: boolean, action
       label: zh ? '打开悬浮球设置' : 'Open floating-ball settings',
       enabled: state.openMain,
       click: () => { actions.openSettings() },
+    },
+    {
+      // The Mesh window is its own helper window, so it does not need the main window.
+      label: zh ? '打开互联' : 'Open interconnect',
+      click: () => { actions.openMesh() },
     },
     {
       label: zh ? '悬浮球 Agent 模型' : 'Floating-ball Agent model',

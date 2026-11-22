@@ -294,6 +294,48 @@ describe('computer-use coordinate copy and schema rewrite', () => {
     })
   })
 
+  it('validates viewport bounds match within rounding tolerance', async () => {
+    const { boundsStillMatch, lastObservedBounds, rememberObservation } = await import('../src/coordinate-mode.ts')
+    expect(boundsStillMatch(undefined, { x: 0, y: 0, width: 100, height: 80 })).toBe(true)
+    expect(boundsStillMatch(
+      { x: 10, y: 20, width: 500, height: 400 },
+      { x: 12, y: 20, width: 501, height: 400 },
+    )).toBe(true)
+    expect(boundsStillMatch(
+      { x: 10, y: 20, width: 500, height: 400 },
+      { x: 10, y: 20, width: 650, height: 400 },
+    )).toBe(false)
+    const session = Session.create(SessionId('cu-coord-bounds'))
+    rememberObservation(session, [{
+      image: { width: 1280, height: 720 },
+      bounds: { x: 10, y: 20, width: 1000, height: 600 },
+    }])
+    expect(lastObservedBounds(session)).toEqual({ x: 10, y: 20, width: 1000, height: 600 })
+  })
+
+  it('guards toolsForCoordinateMode when DSH 0.2.x omits tools in system-prompt/assemble and rewrites pixel tools at registration', async () => {
+    const { registerModeTool, toolsForCoordinateMode } = await import('../src/coordinate-mode.ts')
+    expect(toolsForCoordinateMode(undefined, 'pixel')).toEqual([])
+
+    const ctx = new Context()
+    contexts.push(ctx)
+    ctx.provide('orbCoordinateMode', { currentMode: () => 'pixel' as const })
+    const def = {
+      name: 'click',
+      description: 'millifraction click',
+      parameters: {
+        type: 'object',
+        properties: {
+          screen_index: { type: 'integer', description: 'screen' },
+          position: { type: 'array', description: '0–1000' },
+        },
+      },
+    }
+    const rewritten = registerModeTool(ctx, def)
+    expect(rewritten.description).toContain('pixel position')
+    expect((rewritten.parameters.properties.position as { description: string }).description).toContain('pixel columns and rows')
+  })
+
   it('rewrites pixel position tools and leaves millifraction schemas copied', () => {
     const click: ToolSchema = {
       name: 'click',

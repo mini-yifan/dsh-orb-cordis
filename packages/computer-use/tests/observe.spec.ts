@@ -10,6 +10,7 @@ import {
   compactForeground,
   formatForegroundEnvelope,
   imageRefFromObserved,
+  OBSERVATION_MAX_LONG_EDGE,
   observeDesktop,
   requireScreen,
 } from '../src/observe.ts'
@@ -45,6 +46,7 @@ describe('observeDesktop', () => {
     expect(observation.captures).toHaveLength(1)
     expect(observation.captures[0]?.mediaType).toBe('image/png')
     expect(observation.screens[0]?.screenIndex).toBe(0)
+    expect(observation.screens[0]?.bounds).toEqual({ x: 12, y: 34, width: 100, height: 80 })
     expect(observation.blocks.some(block => block.type === 'image')).toBe(true)
     expect(observation.blocks.some(block =>
       block.type === 'text' && 'text' in block && block.text.includes('<frontmost_app>Pages</frontmost_app>'),
@@ -109,14 +111,14 @@ describe('observeDesktop', () => {
         order.push('inspect')
         return fake.inspectForeground()
       },
-      capture: async (screen, signal) => {
-        order.push('capture')
-        return fake.capture(screen, signal)
+      capture: async (screen, signal, options) => {
+        order.push(`capture:${String(options?.maxLongEdge)}`)
+        return fake.capture(screen, signal, options)
       },
     }, SIGNAL, { settleMs: 600 })
     expect(observation.screens).toHaveLength(1)
     expect(delay).toHaveBeenCalledWith(600, SIGNAL)
-    expect(order).toEqual(['delay', 'listScreens', 'inspect', 'capture'])
+    expect(order).toEqual(['delay', 'listScreens', 'inspect', `capture:${String(OBSERVATION_MAX_LONG_EDGE)}`])
   })
 
   it('keeps captures when persistCapture returns false and does not saveImage', async () => {

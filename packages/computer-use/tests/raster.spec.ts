@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { FAKE_DESKTOP_PNG, FAKE_WINDOW_PNG } from '../src/fake.ts'
 import {
+  clampedLongEdgeSize,
   isUsableObservationRaster,
   MIN_USABLE_OBSERVATION_EDGE,
   observationRasterSize,
@@ -111,5 +112,13 @@ describe('observation raster headers', () => {
     expect(observationRasterSize(Uint8Array.of(0xff, 0x00, 0xff, 0xc0))).toBeUndefined()
     expect(observationRasterSize(Uint8Array.of(0xff, 0xd8))).toBeUndefined()
     expect(observationRasterSize(Uint8Array.of(0xff, 0xd8, 0xff, 0x02, 0x00, 0x04, 0x00, 0x00))).toBeUndefined()
+  })
+
+  it('clamps long edges proportionally without upsampling small images', () => {
+    expect(clampedLongEdgeSize(2940, 1692, 1280)).toEqual({ width: 1280, height: 737 })
+    expect(clampedLongEdgeSize(1670, 1916, 1280)).toEqual({ width: 1116, height: 1280 })
+    expect(clampedLongEdgeSize(1280, 720, 1280)).toEqual({ width: 1280, height: 720 })
+    expect(clampedLongEdgeSize(800, 600, 1280)).toEqual({ width: 800, height: 600 })
+    expect(clampedLongEdgeSize(2940, 1692, undefined)).toEqual({ width: 2940, height: 1692 })
   })
 })

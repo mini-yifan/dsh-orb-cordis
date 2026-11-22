@@ -28,12 +28,30 @@ import { absentVoiceModels, type VoiceModelKind, type VoiceModels } from '@dsh-o
 import { qwenVoiceViews, type QwenVoiceView } from '@dsh-orb/voice/qwen'
 import { type VoiceSettings } from '@dsh-orb/voice/settings'
 import { defaultAvatarPath } from './helper-path.ts'
+import { meshErrorBody, MeshRequestError, resolveMeshService, type MeshService } from './mesh.ts'
 import { isTccRight, openMicrophoneSettings, type TccMonitor, type TccStatus } from './tcc.ts'
 import type { UpdateState } from './update.ts'
 import { visibleWhatsNew, WHATS_NEW_VERSION, type WhatsNewNotice } from './whats-new.ts'
 
 const PREFIX = '/.dsh-orb'
+const MESH_PREFIX = `${PREFIX}/mesh`
 const HELPER_HEADER = 'x-dsh-orb-helper'
+
+const DEFAULT_MESH_SERVER = 'https://dshorb.top'
+
+/**
+ * The default interconnect server for DSH Orb.
+ *
+ * Precedence: explicit plugin config (`defaultServer`), then
+ * `DSH_ORB_DEFAULT_MESH_SERVER`, then `DEFAULT_MESH_SERVER`.
+ */
+function defaultMeshServer(deps?: { defaultServer?: string }): string {
+  const fromConfig = (deps?.defaultServer ?? '').trim()
+  if (fromConfig !== '') return fromConfig
+  const fromEnv = (process.env.DSH_ORB_DEFAULT_MESH_SERVER ?? '').trim()
+  if (fromEnv !== '') return fromEnv
+  return DEFAULT_MESH_SERVER
+}
 
 interface RouteContext {
   readonly webServer: {
@@ -57,6 +75,16 @@ interface RouteContext {
 /** Side effects that have to reach the live ball. */
 export interface OrbControl {
   helperAuthorized(token: string): boolean
+  /**
+   * Open an http(s) URL in the user's default browser.
+   *
+   * The settings page runs inside Electron, where `window.open` is blocked for
+   * remote URLs. The host process can open a real browser tab, which is what the
+   * interconnect approval flow needs.
+   */
+  openExternal?(url: string): void
+  /** Ask the helper process to focus or open the interconnect window; false when the ball is off or unreachable. */
+  openMeshWindow?(): boolean
   publishChrome(): Promise<void>
   setOverlayModel(selection: AgentModelSelection): Promise<void>
   setBackgroundModel(selection: AgentModelSelection): Promise<void>
@@ -82,7 +110,7 @@ export interface OrbControl {
   /** Consumes the jump target armed by a matching bookmark click. */
   confirmJump(sessionId: string): void
   /** The pending ball-initiated floating-ball-settings target, or null once confirmed or expired. */
-  takeSettingsOpen(): { at: number } | null
+  takeSettingsOpen(): { at: number; section: string } | null
   /** Consumes the settings target armed by the ball's menu row. */
   confirmSettingsOpen(at: number): void
   updateState(): UpdateState
@@ -118,16 +146,25 @@ interface RouteDeps {
   readonly store: ProfileStore
   readonly tcc: TccMonitor
   readonly control: OrbControl
+  /** Tests inject a fresh service; production resolves `mesh` from the plugin or the mock. */
+  readonly mesh?: MeshService
+  /**
+   * Server offered when the interconnect switch is turned on without an address.
+   * Comes from the patch config so a distribution can set its own endpoint
+   * without the published source tree naming one.
+   */
+  readonly defaultServer?: string
 }
 
 /** Mount `/.dsh-orb` and return the disposer. */
 export function registerOrbRoutes(deps: RouteDeps): () => void {
+  const mesh = deps.mesh ?? resolveMeshService(deps.ctx)
   return deps.ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX,
     // A rejected handler used to hang the request (the official server does not answer it):
     // a bad body must come back as 400, not as an unhandled rejection.
-    handler: (req, res) => handle(deps, req, res).catch((error: unknown) => {
+    handler: (req, res) => handle(deps, mesh, req, res).catch((error: unknown) => {
       if (res.headersSent) {
         res.end()
         return
@@ -174,13 +211,16 @@ export function orbSupported(platform: NodeJS.Platform = process.platform): bool
   return platform === 'darwin' || platform === 'win32'
 }
 
-async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handle(deps: RouteDeps, mesh: MeshService, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = url.pathname
   const helperAsset = req.method === 'GET'
     && (path === `${PREFIX}/avatar` || path === `${PREFIX}/attachment`)
     && helperTokenOk(deps, req)
-  if (!helperAsset) {
+  // The helper token opens the Mesh bridge and nothing else. Keep this an explicit
+  // allowlist: widening the avatar/attachment gate would expose settings mutations.
+  const helperMesh = path.startsWith(`${MESH_PREFIX}/`) && helperTokenOk(deps, req)
+  if (!helperAsset && !helperMesh) {
     const rejection = rejectionStatus(deps.ctx, req)
     if (rejection !== undefined) {
       res.writeHead(rejection)
@@ -328,10 +368,11 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
     return
   }
   // The ball's settings row rides the same bridge as jumps: the ball arms the request
-  // and focuses the main window, whose client plugin opens the floating-ball section.
+  // and focuses the main window, whose client plugin opens the requested section. An
+  // absent `section` keeps the old payload working; the client falls back to `orb`.
   if (method === 'GET' && path === `${PREFIX}/settings-open`) {
     const target = deps.control.takeSettingsOpen()
-    sendJson(res, 200, { at: target?.at ?? null })
+    sendJson(res, 200, { at: target?.at ?? null, section: target?.section ?? null })
     return
   }
   if (method === 'POST' && path === `${PREFIX}/settings-open`) {
@@ -342,6 +383,16 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
     }
     deps.control.confirmSettingsOpen(at)
     sendJson(res, 200, { ok: true })
+    return
+  }
+  // The helper's Mesh window talks to this bridge with its socket token. The routes are
+  // not platform-gated: settings can read Mesh status on a host without a ball.
+  if (path === MESH_PREFIX || path.startsWith(`${MESH_PREFIX}/`)) {
+    await handleMesh(mesh, method, path.slice(MESH_PREFIX.length), url, req, res, {
+      defaultServer: deps.defaultServer,
+      openExternal: deps.control.openExternal?.bind(deps.control),
+      openMeshWindow: deps.control.openMeshWindow?.bind(deps.control),
+    })
     return
   }
   if ((method === 'GET' || method === 'HEAD') && path === `${PREFIX}/avatar`) {
@@ -524,6 +575,191 @@ async function handle(deps: RouteDeps, req: IncomingMessage, res: ServerResponse
   }
   res.writeHead(404)
   res.end()
+}
+
+/**
+ * `/.dsh-orb/mesh/*`: a one-to-one adapter over the plugin's `/.dsh-mesh/v1/*` contract
+ * (docs/18 §4.3). Responses are passed through unchanged so the helper and the settings
+ * section can later point at the plugin's own routes without a UI change.
+ */
+async function handleMesh(
+  mesh: MeshService,
+  method: string,
+  rest: string,
+  url: URL,
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: { defaultServer?: string; openExternal?: (url: string) => void; openMeshWindow?: () => boolean } = {},
+): Promise<void> {
+  try {
+    if (method === 'GET' && rest === '/status') {
+      // `defaultServer` lets the UI offer "use the default server" without
+      // hardcoding a domain in the renderer.
+      sendJson(res, 200, { ...mesh.status(), defaultServer: defaultMeshServer(options) })
+      return
+    }
+    if (method === 'GET' && rest === '/nodes') {
+      sendJson(res, 200, mesh.nodes())
+      return
+    }
+    if (method === 'GET' && rest === '/tree') {
+      sendJson(res, 200, await mesh.tree())
+      return
+    }
+    if (method === 'GET' && rest === '/events') {
+      // Long polling belongs to the plugin. The static seam answers at once with an
+      // empty batch, which is valid for `{ items, cursor }` consumers.
+      sendJson(res, 200, { items: [], cursor: integerParam(url, 'since') ?? 0 })
+      return
+    }
+    if (method === 'GET' && rest === '/interactions') {
+      sendJson(res, 200, mesh.interactions())
+      return
+    }
+    if (method === 'GET' && rest === '/tasks') {
+      sendJson(res, 200, mesh.tasks())
+      return
+    }
+    if (method === 'GET' && rest === '/prefs') {
+      sendJson(res, 200, mesh.prefs())
+      return
+    }
+    if (method === 'PUT' && rest === '/prefs') {
+      sendJson(res, 200, mesh.setPrefs(await readJson(req)))
+      return
+    }
+    if (method === 'POST' && rest === '/pair') {
+      const body = asRecord(await readJson(req))
+      if (typeof body?.pairing !== 'string') {
+        throw new MeshRequestError(400, 'bad_pairing', '配对串格式不对，请从管理页重新复制', 1)
+      }
+      const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name : undefined
+      sendJson(res, 200, await mesh.pair(body.pairing, name))
+      return
+    }
+    if (method === 'POST' && rest === '/unpair') {
+      sendJson(res, 200, await mesh.unpair())
+      return
+    }
+    if (method === 'POST' && rest === '/link') {
+      // Hosted mode: create the approval link and wait for the browser. The
+      // default server is resolved host-side so no domain is baked into the UI.
+      const body = asRecord(await readJson(req))
+      const requested = typeof body?.serverUrl === 'string' ? body.serverUrl.trim() : ''
+      const serverUrl = requested !== '' ? requested : defaultMeshServer(options)
+      if (serverUrl === '') {
+        throw new MeshRequestError(400, 'server_required', '没有配置默认互联服务器，请填写服务器地址')
+      }
+      if (typeof mesh.link !== 'function') {
+        throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持网页授权')
+      }
+      const name = typeof body?.name === 'string' ? body.name.trim() : ''
+      sendJson(res, 200, await mesh.link(serverUrl, name === '' ? undefined : name))
+      return
+    }
+    if (method === 'POST' && rest === '/open-external') {
+      const body = asRecord(await readJson(req))
+      const raw = typeof body?.url === 'string' ? body.url.trim() : ''
+      let parsed: URL
+      try { parsed = new URL(raw) } catch {
+        throw new MeshRequestError(400, 'invalid_url', '链接格式不正确')
+      }
+      // Only http(s): this route must never launch a local file or app scheme.
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        throw new MeshRequestError(400, 'invalid_url', '只允许打开 http 或 https 链接')
+      }
+      if (typeof options.openExternal !== 'function') {
+        throw new MeshRequestError(501, 'not_supported', '当前环境无法打开浏览器')
+      }
+      options.openExternal(parsed.toString())
+      sendJson(res, 200, { ok: true })
+      return
+    }
+    if (method === 'POST' && rest === '/link/finish') {
+      // Step 2: the UI opened the browser, now wait for the approval and adopt
+      // the credentials. This call is the long one the spinner covers.
+      if (typeof mesh.finishLink !== 'function') {
+        throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持网页授权')
+      }
+      sendJson(res, 200, await mesh.finishLink())
+      return
+    }
+    if (method === 'POST' && rest === '/open') {
+      if (options.openMeshWindow?.() !== true) {
+        throw new MeshRequestError(409, 'ball_disabled', '请先开启悬浮球后再打开互联窗口')
+      }
+      sendJson(res, 200, { ok: true })
+      return
+    }
+    if (method === 'POST' && rest === '/name') {
+      const name = asRecord(await readJson(req))?.name
+      if (typeof name !== 'string') throw new MeshRequestError(400, 'invalid-name', '本机名称不能为空')
+      sendJson(res, 200, await mesh.rename(name))
+      return
+    }
+    const create = /^\/sessions\/([^/]+)\/create$/.exec(rest)
+    if (method === 'POST' && create !== null) {
+      const nodeId = decodeURIComponent(create[1] ?? '')
+      const workspaceId = asRecord(await readJson(req))?.workspaceId
+      if (typeof workspaceId !== 'string' || workspaceId.trim() === '') {
+        throw new MeshRequestError(400, 'invalid_workspace', '工作区不能为空')
+      }
+      if (typeof mesh.createSession !== 'function') {
+        throw new MeshRequestError(501, 'not_supported', '当前互联后端不支持远端新建会话')
+      }
+      sendJson(res, 200, await mesh.createSession(nodeId, workspaceId.trim()))
+      return
+    }
+    const session = /^\/sessions\/([^/]+)\/([^/]+)\/(page|stream|prompt|cancel)$/.exec(rest)
+    if (session !== null) {
+      const nodeId = decodeURIComponent(session[1] ?? '')
+      const sessionId = decodeURIComponent(session[2] ?? '')
+      const action = session[3]
+      if (method === 'GET' && (action === 'page' || action === 'stream')) {
+        const since = integerParam(url, 'since') ?? 0
+        sendJson(res, 200, action === 'page' ? await mesh.page(nodeId, sessionId, since) : await mesh.stream(nodeId, sessionId, since))
+        return
+      }
+      if (method === 'POST' && action === 'prompt') {
+        const text = asRecord(await readJson(req))?.text
+        if (typeof text !== 'string') throw new MeshRequestError(400, 'invalid-prompt', '指令不能为空')
+        sendJson(res, 200, await mesh.prompt(nodeId, sessionId, text))
+        return
+      }
+      if (method === 'POST' && action === 'cancel') {
+        sendJson(res, 200, await mesh.cancel(nodeId, sessionId))
+        return
+      }
+    }
+    const answer = /^\/interactions\/([^/]+)\/answer$/.exec(rest)
+    if (method === 'POST' && answer !== null) {
+      const body = asRecord(await readJson(req))
+      const outcome = body?.outcome
+      if (outcome !== undefined && outcome !== 'allowed-once' && outcome !== 'rejected') {
+        throw new MeshRequestError(400, 'invalid_answer', '审批结果无效')
+      }
+      sendJson(res, 200, mesh.answer({
+        eventId: decodeURIComponent(answer[1] ?? ''),
+        ...(outcome === undefined ? {} : { outcome }),
+        ...(body?.answers === undefined ? {} : { answers: body.answers }),
+      }))
+      return
+    }
+    sendJson(res, 404, { error: 'not-found', message: 'unknown mesh route' })
+  } catch (error) {
+    const { status, body } = meshErrorBody(error)
+    if (status === 500) {
+      console.error(`dsh-orb: mesh route failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    sendJson(res, status, body)
+  }
+}
+
+function integerParam(url: URL, name: string): number | undefined {
+  const raw = url.searchParams.get(name)
+  if (raw === null || raw === '') return undefined
+  const value = Number(raw)
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 async function snapshot(deps: RouteDeps, voice: VoiceSettings = deps.store.voice()): Promise<{

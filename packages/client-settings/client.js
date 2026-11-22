@@ -262,6 +262,79 @@ window.__ModuleLoader__.load({
       voiceSource: '来源',
       voiceSize: '约 {size} MB',
       voiceProgress: '已下载 {percent}%',
+      meshCardTitle: '互联',
+      meshCardDescription: '管理多设备互联、连接状态与本机名称，点击直接进入互联设置。',
+      meshCardOpen: '进入互联设置',
+      mesh: {
+        nav: '互联',
+        intro: '连接其他设备，查看并继续它们的会话。',
+        mock: '静态假数据',
+        loading: '正在读取互联状态…',
+        loadError: '无法读取互联状态。',
+        retry: '重试',
+        unpaired: '尚未加入互联',
+        unpairedHint: '打开开关，浏览器会打开登录页；用邮箱验证码登录并授权后，这台设备就加入你的账号。',
+        connectToggle: '加入互联',
+        connectToggleHint: '打开后在浏览器里用邮箱验证码登录，授权这台设备。',
+        waitingApproval: '已打开浏览器，等你在网页里完成授权…',
+        approvalFallback: '浏览器没有自动打开？复制这个地址：',
+        linked: '这台设备已加入互联。',
+        server: '服务器',
+        defaultServerLabel: '默认服务器',
+        customServerLabel: '其他服务器',
+        serverAddress: '服务器地址',
+        serverAddressPlaceholder: 'https://mesh.example.com',
+        serverRequired: '请填写服务器地址。',
+        pairing: '配对串',
+        pairingPlaceholder: 'dshmesh://…',
+        pairingRequired: '请先粘贴配对串，或展开「手动填写」。',
+        name: '本机名称',
+        namePlaceholder: '请输入设备名称',
+        nameEmpty: '设备名称不能为空。',
+        connect: '连接',
+        connecting: '正在连接…',
+        manual: '手动配对',
+        manualHint: '没有网页门户时，用管理页给的配对串。',
+        address: '地址',
+        addressPlaceholder: 'YOUR_SERVER_IP:443',
+        code: '配对码',
+        codePlaceholder: '8 位配对码',
+        fingerprint: '指纹',
+        fingerprintPlaceholder: '43 位服务器指纹（自签证书才需要）',
+        paired: '已连接',
+        connectingState: '正在连接',
+        offlineState: '离线',
+        unpairedState: '未连接',
+        fingerprintLabel: '证书指纹',
+        localName: '本机名称',
+        saveName: '保存名称',
+        nameSaved: '名称已保存。',
+        devices: '设备',
+        devicesHint: '设备列表只读，在线状态由互联服务维护。',
+        online: '在线',
+        offline: '离线',
+        thisDevice: '本机',
+        openWindow: '打开互联窗口',
+        unpair: '退出互联',
+        unpairConfirm: '退出互联会撤销本机在这台服务器上的身份。确定退出吗？',
+        pairWarning: '配对完成，但有一个提醒：{message}',
+        errors: {
+          already_paired: '本机已加入另一台服务器（{address}）的互联，请先退出',
+          bad_pairing: '配对串格式不对，请从管理页重新复制',
+          unreachable: '连不上服务器 {address}，请检查网络或服务器是否在运行',
+          fingerprint_mismatch: '服务器证书和配对串里的指纹不一致，可能连错了服务器，已停止连接',
+          server_incompatible: '服务器版本（meshApi {serverApi}）和本机互联插件（meshApi {pluginApi}）不兼容，请先升级',
+          code_invalid: '配对码无效，请在管理页重新生成',
+          code_used: '配对码已被使用，请在管理页重新生成',
+          code_expired: '配对码已过期，请在管理页重新生成',
+          rate_limited: '尝试次数过多，请 1 分钟后再试',
+          register_failed: '服务器拒绝了本机的注册（{reason}），请重新生成配对码再试',
+          connect_failed: '已配对，但暂时连不上中继，会自动重试',
+          name_taken: '名称「{name}」已被占用，暂用 {defaultName}，可在设置里再改',
+          ball_disabled: '请先开启悬浮球后再打开互联窗口。',
+          generic: '{message}',
+        },
+      },
     }
     const en = {
       nav: 'Floating ball',
@@ -519,6 +592,79 @@ window.__ModuleLoader__.load({
       voiceSource: 'Source',
       voiceSize: 'about {size} MB',
       voiceProgress: '{percent}% downloaded',
+      meshCardTitle: 'Interconnect',
+      meshCardDescription: 'Manage device interconnect, pairing status, and device name.',
+      meshCardOpen: 'Open interconnect settings',
+      mesh: {
+        nav: 'Interconnect',
+        intro: 'Connect other devices to view and continue their sessions.',
+        mock: 'Static mock',
+        loading: 'Reading the interconnect status…',
+        loadError: 'Could not read the interconnect status.',
+        retry: 'Retry',
+        unpaired: 'Not connected yet',
+        unpairedHint: 'Turn the switch on to open the sign-in page. After approving with an email code, this device joins your account.',
+        connectToggle: 'Join interconnect',
+        connectToggleHint: 'Opens the browser to sign in with an email code and approve this device.',
+        waitingApproval: 'Browser opened. Finish approving there…',
+        approvalFallback: 'Did the browser not open? Copy this address:',
+        linked: 'This device joined the interconnect.',
+        server: 'Server',
+        defaultServerLabel: 'Default server',
+        customServerLabel: 'Another server',
+        serverAddress: 'Server address',
+        serverAddressPlaceholder: 'https://mesh.example.com',
+        serverRequired: 'Enter a server address.',
+        pairing: 'Pairing string',
+        pairingPlaceholder: 'dshmesh://…',
+        pairingRequired: 'Paste a pairing string first, or open the manual fields.',
+        name: 'This device name',
+        namePlaceholder: 'Enter a name for this device',
+        nameEmpty: 'Device name cannot be empty.',
+        connect: 'Connect',
+        connecting: 'Connecting…',
+        manual: 'Pair manually',
+        manualHint: 'Use the pairing string from the management page when there is no web portal.',
+        address: 'Address',
+        addressPlaceholder: 'YOUR_SERVER_IP:443',
+        code: 'Pairing code',
+        codePlaceholder: '8-character code',
+        fingerprint: 'Fingerprint',
+        fingerprintPlaceholder: '43-character fingerprint (self-signed only)',
+        paired: 'Connected',
+        connectingState: 'Connecting',
+        offlineState: 'Offline',
+        unpairedState: 'Not connected',
+        fingerprintLabel: 'Certificate fingerprint',
+        localName: 'This device name',
+        saveName: 'Save name',
+        nameSaved: 'Name saved.',
+        devices: 'Devices',
+        devicesHint: 'The device list is read-only; the interconnect service maintains presence.',
+        online: 'Online',
+        offline: 'Offline',
+        thisDevice: 'This device',
+        openWindow: 'Open interconnect window',
+        unpair: 'Leave interconnect',
+        unpairConfirm: 'Leaving revokes this computer’s identity on the server. Continue?',
+        pairWarning: 'Connected, with a warning: {message}',
+        errors: {
+          already_paired: 'This computer already joined another server ({address}). Leave that interconnect first.',
+          bad_pairing: 'The pairing string is malformed. Copy it from the management page again.',
+          unreachable: 'Could not reach server {address}; check the network or whether the server is running.',
+          fingerprint_mismatch: 'The server certificate does not match the fingerprint in the pairing string; the connection was stopped.',
+          server_incompatible: 'Server meshApi {serverApi} is not compatible with this plugin’s meshApi {pluginApi}; upgrade first.',
+          code_invalid: 'The pairing code is invalid. Generate a new one on the management page.',
+          code_used: 'The pairing code was already used. Generate a new one on the management page.',
+          code_expired: 'The pairing code expired. Generate a new one on the management page.',
+          rate_limited: 'Too many attempts. Try again in a minute.',
+          register_failed: 'The server rejected this computer’s registration ({reason}). Generate a new pairing code and retry.',
+          connect_failed: 'Paired, but the relay is temporarily unreachable. The connection retries automatically.',
+          name_taken: 'The name “{name}” is taken; using {defaultName} for now. You can change it here later.',
+          ball_disabled: 'Enable the floating ball before opening the interconnect window.',
+          generic: '{message}',
+        },
+      },
     }
 
     // The community GIF gallery behind the "more animations" tile. It is a plain
@@ -844,7 +990,592 @@ window.__ModuleLoader__.load({
               h('span', { className: 'dsh-orb-set-lasso-preview-caption' }, text.lassoPreviewLabel)))) : null)
     }
 
-    function OrbSettingsSection() {
+    /**
+     * Mesh routes this page talks to. The plugin's own `/.dsh-mesh/v1/*` has exactly these
+     * paths; orb-host currently adapts them and serves static mock data. When R0 ships,
+     * changing this constant is the whole switch — the UI below does not move.
+     */
+    const MESH_API = '/.dsh-orb/mesh'
+
+    async function meshCall(path, options) {
+      const response = await fetch(`${MESH_API}${path}`, {
+        cache: 'no-store',
+        ...options,
+        headers: {
+          accept: 'application/json',
+          ...(options && options.headers ? options.headers : {}),
+        },
+      })
+      const text = await response.text()
+      let body = null
+      if (text) {
+        try {
+          body = JSON.parse(text)
+        } catch {
+          body = { error: 'invalid-response', message: text.slice(0, 200) }
+        }
+      }
+      if (!response.ok) {
+        const error = new Error(body && body.message ? body.message : body && body.error ? body.error : 'request failed')
+        error.status = response.status
+        error.code = body && typeof body.error === 'string' ? body.error : undefined
+        error.body = body
+        throw error
+      }
+      return body
+    }
+
+    /** The address a pairing string names, used by messages that must show it verbatim. */
+    function pairingAddress(pairing) {
+      try {
+        const url = new URL(String(pairing))
+        return `https://${url.hostname}:${url.port || '443'}`
+      } catch {
+        return ''
+      }
+    }
+
+    /**
+     * The docs/18 §3.2 table in one place. The plugin's `message` is authoritative when
+     * it is all we have; a known error code is rendered here so both locales read alike.
+     */
+    function meshErrorMessage(code, body, text, pairing) {
+      const errors = text.mesh.errors
+      const known = typeof code === 'string' && code !== 'generic' && Object.prototype.hasOwnProperty.call(errors, code)
+      const details = body && typeof body === 'object' ? body : {}
+      if (!known) {
+        if (typeof details.message === 'string' && details.message !== '') return details.message
+        return errors.generic.replaceAll('{message}', typeof code === 'string' ? code : 'request failed')
+      }
+      const address = typeof details.address === 'string' && details.address !== ''
+        ? details.address
+        : pairingAddress(pairing)
+      return errors[code]
+        .replaceAll('{address}', address || '—')
+        .replaceAll('{serverApi}', String(details.serverApi === undefined ? '?' : details.serverApi))
+        .replaceAll('{pluginApi}', String(details.pluginApi === undefined ? '?' : details.pluginApi))
+        .replaceAll('{reason}', String(details.reason === undefined ? details.message ?? '—' : details.reason))
+        .replaceAll('{name}', String(details.requestedName === undefined ? details.name ?? '—' : details.requestedName))
+        .replaceAll('{defaultName}', String(details.defaultName === undefined ? details.name ?? '—' : details.defaultName))
+    }
+
+    function meshFact(label, value, monospace) {
+      return h('div', { className: 'dsh-orb-mesh-fact' },
+        h('dt', null, label),
+        h('dd', { className: monospace ? 'dsh-orb-mesh-mono' : undefined }, value))
+    }
+
+    function meshDeviceRow(node, localNodeId, text) {
+      const online = node.online === true
+      return h('div', { key: node.nodeId, className: 'dsh-orb-mesh-device' },
+        h('span', { className: `dsh-orb-mesh-device-dot${online ? ' is-online' : ''}`, 'aria-hidden': 'true' }),
+        h('span', { className: 'dsh-orb-mesh-device-name' }, node.name || node.nodeId),
+        node.nodeId === localNodeId
+          ? h('span', { className: 'dsh-orb-mesh-tag' }, text.mesh.thisDevice)
+          : null,
+        h('span', { className: 'dsh-orb-mesh-device-platform' }, node.platform || ''),
+        h('span', { className: `dsh-orb-mesh-device-state${online ? ' is-online' : ''}` },
+          online ? text.mesh.online : text.mesh.offline))
+    }
+
+    /**
+     * The interconnect settings section. It deliberately owns no credentials: the
+     * pairing string goes out once, and every displayed address, fingerprint, and device
+     * comes back from the service on each read.
+     */
+    function OrbMeshSection() {
+      const text = copy()
+      const [state, setState] = React.useState({ status: 'loading', error: '', snapshot: null, nodes: [] })
+      const [busy, setBusy] = React.useState(false)
+      const [actionError, setActionError] = React.useState('')
+      const [notice, setNotice] = React.useState('')
+      const [pairing, setPairing] = React.useState('')
+      const [name, setName] = React.useState('')
+      const [manual, setManual] = React.useState(false)
+      const [address, setAddress] = React.useState('')
+      const [code, setCode] = React.useState('')
+      const [fingerprint, setFingerprint] = React.useState('')
+      const [editName, setEditName] = React.useState('')
+      // Hosted-mode switch: one toggle that opens the browser and waits for the
+      // approval, instead of pasting a pairing string.
+      const [serverChoice, setServerChoice] = React.useState('default')
+      const [customServer, setCustomServer] = React.useState('')
+      const [linkStage, setLinkStage] = React.useState('idle')
+      const [approveUrl, setApproveUrl] = React.useState('')
+      const requestSeq = React.useRef(0)
+      const nameTouched = React.useRef(false)
+
+      async function load() {
+        const seq = requestSeq.current + 1
+        requestSeq.current = seq
+        try {
+          const [snapshot, nodes] = await Promise.all([meshCall('/status'), meshCall('/nodes')])
+          if (seq !== requestSeq.current) return
+          setState({ status: 'ready', error: '', snapshot, nodes: Array.isArray(nodes) ? nodes : [] })
+          const nodeName = snapshot && snapshot.node && typeof snapshot.node.name === 'string' ? snapshot.node.name : ''
+          const resolvedName = snapshot && typeof snapshot.deviceName === 'string' && snapshot.deviceName.trim() !== ''
+            ? snapshot.deviceName
+            : nodeName
+          setEditName(nodeName || resolvedName)
+          if (!nameTouched.current && resolvedName !== '') {
+            setName(resolvedName)
+          }
+        } catch (error) {
+          if (seq !== requestSeq.current) return
+          setState((prev) => ({
+            ...prev,
+            status: prev.snapshot ? 'ready' : 'error',
+            error: error instanceof Error ? error.message : String(error),
+          }))
+        }
+      }
+
+      React.useEffect(() => {
+        void load()
+        const onFocus = () => { void load() }
+        window.addEventListener?.('focus', onFocus)
+        return () => { window.removeEventListener?.('focus', onFocus) }
+      }, [])
+
+      function composedPairing() {
+        // The address/code/fingerprint trio is optional: when the copied pairing
+        // string is present it is authoritative, and the trio only fills in when
+        // the user pasted nothing.
+        const direct = pairing.trim()
+        if (direct !== '') return direct
+        const host = address.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+        if (host === '' || code.trim() === '') return ''
+        const fp = fingerprint.trim()
+        // A public certificate needs no pin, so an empty fingerprint is valid.
+        return `dshmesh://${host}/pair?v=1&code=${encodeURIComponent(code.trim().toUpperCase())}${fp === '' ? '' : `&fp=${encodeURIComponent(fp)}`}`
+      }
+
+      async function connect() {
+        if (busy) return
+        const deviceName = name.trim()
+        if (deviceName === '') {
+          setNotice('')
+          setActionError(text.mesh.nameEmpty)
+          window.setTimeout?.(() => {
+            const input = document.querySelector?.('.dsh-orb-mesh-name-input')
+            if (input && typeof input.focus === 'function') input.focus()
+          }, 40)
+          return
+        }
+        const value = composedPairing()
+        if (value === '') {
+          setNotice('')
+          setActionError(text.mesh.pairingRequired)
+          return
+        }
+        setBusy(true)
+        setActionError('')
+        setNotice('')
+        try {
+          const body = await meshCall('/pair', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              pairing: value,
+              name: deviceName,
+            }),
+          })
+          setPairing('')
+          nameTouched.current = false
+          if (body && body.warning === 'name_taken') {
+            setNotice(text.mesh.pairWarning.replace('{message}', meshErrorMessage('name_taken', {
+              ...body,
+              requestedName: deviceName,
+            }, text, value)))
+          }
+          await load()
+        } catch (error) {
+          setActionError(meshErrorMessage(error.code, error.body, text, value))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      /**
+       * Hosted mode: open the browser to approve this device, then wait for the
+       * plugin to receive its credentials.
+       *
+       * The server call blocks until approval, so the browser is launched from
+       * the approval URL returned in the response — but we open the window
+       * immediately with a placeholder and swap the location once the URL
+       * exists, otherwise popup blockers reject a delayed `window.open`.
+       */
+      async function toggleLink() {
+        if (busy) return
+        const deviceName = name.trim()
+        if (deviceName === '') {
+          setActionError(text.mesh.nameEmpty)
+          setNotice('')
+          window.setTimeout?.(() => {
+            const input = document.querySelector?.('.dsh-orb-mesh-name-input')
+            if (input && typeof input.focus === 'function') input.focus()
+          }, 40)
+          return
+        }
+        setBusy(true)
+        setActionError('')
+        setNotice('')
+        setApproveUrl('')
+        setLinkStage('starting')
+
+        const target = effectiveChoice === 'custom' ? customServer.trim() : defaultServer()
+        if (target === '') {
+          setBusy(false)
+          setLinkStage('idle')
+          setActionError(text.mesh.serverRequired)
+          window.setTimeout?.(() => {
+            const input = document.querySelector?.('.dsh-orb-mesh-server-input')
+            if (input && typeof input.focus === 'function') input.focus()
+          }, 40)
+          return
+        }
+
+        // Open a placeholder window synchronously inside the click handler.
+        // A window opened after an await is treated as a popup and blocked.
+        let popup = null
+        try { popup = window.open?.('', '_blank') ?? null } catch { popup = null }
+
+        try {
+          // Step 1: create the link. Returns immediately with the approval URL;
+          // it must not wait for approval or we would never get the URL to open.
+          const started = await meshCall('/link', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              serverUrl: target,
+              name: deviceName,
+            }),
+          })
+          const url = started && typeof started.approvalUrl === 'string' ? started.approvalUrl : ''
+          if (url === '') throw new Error('服务器没有返回授权地址')
+          setApproveUrl(url)
+          setLinkStage('waiting')
+
+          // The settings page runs inside Electron, where window.open is blocked
+          // for remote URLs. Ask the host process to open a real browser tab; the
+          // URL is still rendered below so the user can copy it if that fails.
+          let opened = false
+          try {
+            await meshCall('/open-external', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ url }),
+            })
+            opened = true
+          } catch { opened = false }
+          if (!opened) {
+            if (popup && !popup.closed) {
+              try { popup.location.href = url } catch { popup = null }
+            }
+            if (!popup) {
+              try { window.open?.(url, '_blank', 'noopener') } catch { /* user can copy */ }
+            }
+          } else if (popup && !popup.closed) {
+            // The system browser has it; close the blank popup we reserved.
+            try { popup.close() } catch { /* ignore */ }
+          }
+
+          // Step 2: wait for the browser approval. This is the long call the
+          // spinner covers.
+          await meshCall('/link/finish', { method: 'POST' })
+          setLinkStage('idle')
+          setApproveUrl('')
+          nameTouched.current = false
+          await load()
+          setNotice(text.mesh.linked)
+        } catch (error) {
+          if (popup && !popup.closed) { try { popup.close() } catch { /* ignore */ } }
+          setLinkStage('idle')
+          setActionError(meshErrorMessage(error.code, error.body, text, target))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      async function saveName() {
+        const value = editName.trim()
+        if (busy) return
+        if (value === '') {
+          setNotice('')
+          setActionError(text.mesh.nameEmpty)
+          return
+        }
+        setBusy(true)
+        setActionError('')
+        setNotice('')
+        try {
+          await meshCall('/name', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: value }),
+          })
+          nameTouched.current = false
+          setNotice(text.mesh.nameSaved)
+          await load()
+        } catch (error) {
+          setActionError(meshErrorMessage(error.code, error.body, text, pairing))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      async function openMeshWindow() {
+        if (busy) return
+        setBusy(true)
+        setActionError('')
+        setNotice('')
+        try {
+          await meshCall('/open', { method: 'POST' })
+        } catch (error) {
+          setActionError(meshErrorMessage(error.code, error.body, text, pairing))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      async function unpair() {
+        if (busy) return
+        if (typeof window.confirm === 'function' && !window.confirm(text.mesh.unpairConfirm)) return
+        setBusy(true)
+        setActionError('')
+        setNotice('')
+        try {
+          await meshCall('/unpair', { method: 'POST' })
+          nameTouched.current = false
+          await load()
+        } catch (error) {
+          setActionError(meshErrorMessage(error.code, error.body, text, pairing))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const snap = state.snapshot
+      const paired = snap !== null && snap !== undefined && snap.paired === true
+      /** Operator-configured default server, empty when none is bundled. */
+      const defaultServer = () => (snap && typeof snap.defaultServer === 'string' ? snap.defaultServer : '')
+      // Without a bundled default there is nothing to select, so the address
+      // field is always visible.
+      const effectiveChoice = defaultServer() === '' ? 'custom' : serverChoice
+      const connection = snap && typeof snap.connection === 'string' ? snap.connection : 'unpaired'
+      const connectionLabel = connection === 'connected'
+        ? text.mesh.paired
+        : connection === 'connecting'
+          ? text.mesh.connectingState
+          : connection === 'offline' ? text.mesh.offlineState : text.mesh.unpairedState
+
+      const pairCard = h('section', { className: 'dsh-orb-set-card' },
+        cardHead('mesh', text.mesh.unpaired, text.mesh.unpairedHint),
+        h('div', { className: 'dsh-orb-set-card-body' },
+          // Primary path: one switch. Turning it on opens the browser to sign in
+          // with an email code and approve this device.
+          h('div', { className: 'dsh-orb-mesh-toggle-row' },
+            h('div', { className: 'dsh-orb-mesh-toggle-copy' },
+              h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.connectToggle),
+              h('p', { className: 'dsh-orb-set-field-hint' }, text.mesh.connectToggleHint)),
+            h('button', {
+              type: 'button',
+              className: `dsh-orb-mesh-toggle${busy ? ' is-busy' : ''}`,
+              role: 'switch',
+              'aria-checked': busy ? 'true' : 'false',
+              'aria-label': text.mesh.connectToggle,
+              disabled: busy,
+              onClick: () => { void toggleLink() },
+            }, h('span', { className: 'dsh-orb-mesh-toggle-knob' }))),
+          busy
+            ? h('p', { className: 'dsh-orb-set-field-hint' }, text.mesh.waitingApproval)
+            : null,
+          approveUrl === ''
+            ? null
+            : h('p', { className: 'dsh-orb-set-field-hint' },
+                text.mesh.approvalFallback,
+                h('br'),
+                h('code', { className: 'dsh-orb-mesh-approval-url' }, approveUrl)),
+          h('label', { className: 'dsh-orb-set-field' },
+            h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.server),
+            h('select', {
+              className: 'dsh-orb-set-input',
+              value: effectiveChoice,
+              disabled: busy,
+              onChange: (event) => { setServerChoice(event.target.value) },
+            },
+              defaultServer() === ''
+                // No bundled default: only a custom address makes sense, and the
+                // hint explains why so the field does not look broken.
+                ? h('option', { value: 'custom' }, text.mesh.customServerLabel)
+                : h('option', { value: 'default' }, `${text.mesh.defaultServerLabel} · ${defaultServer()}`),
+              defaultServer() === ''
+                ? null
+                : h('option', { value: 'custom' }, text.mesh.customServerLabel))),
+          effectiveChoice === 'custom'
+            ? h('label', { className: 'dsh-orb-set-field' },
+                h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.serverAddress),
+                h('input', {
+                  className: 'dsh-orb-set-input dsh-orb-mesh-server-input',
+                  value: customServer,
+                  placeholder: text.mesh.serverAddressPlaceholder,
+                  autoComplete: 'off',
+                  spellCheck: false,
+                  disabled: busy,
+                  onChange: (event) => { setCustomServer(event.target.value) },
+                }))
+            : null,
+          h('label', { className: 'dsh-orb-set-field' },
+            h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.name),
+            h('input', {
+              className: 'dsh-orb-set-input dsh-orb-mesh-name-input',
+              value: name,
+              placeholder: text.mesh.namePlaceholder,
+              disabled: busy,
+              onChange: (event) => {
+                nameTouched.current = true
+                setName(event.target.value)
+              },
+            })),
+          h('div', { className: 'dsh-orb-set-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dsh-orb-set-button dsh-orb-set-ghost',
+              'aria-expanded': manual ? 'true' : 'false',
+              onClick: () => { setManual(!manual) },
+            }, text.mesh.manual)),
+          manual
+            ? h('div', { className: 'dsh-orb-mesh-manual' },
+                h('p', { className: 'dsh-orb-set-field-hint' }, text.mesh.manualHint),
+                h('label', { className: 'dsh-orb-set-field' },
+                  h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.pairing),
+                  h('input', {
+                    className: 'dsh-orb-set-input',
+                    value: pairing,
+                    placeholder: text.mesh.pairingPlaceholder,
+                    autoComplete: 'off',
+                    spellCheck: false,
+                    disabled: busy,
+                    onChange: (event) => { setPairing(event.target.value) },
+                  })),
+                h('div', { className: 'dsh-orb-set-actions' },
+                  h('button', {
+                    type: 'button',
+                    className: 'dsh-orb-set-button dsh-orb-set-primary',
+                    disabled: busy,
+                    onClick: () => { void connect() },
+                  }, busy ? text.mesh.connecting : text.mesh.connect)),
+                h('details', { className: 'dsh-orb-mesh-manual-more' },
+                  h('summary', null, text.mesh.manual),
+                  h('div', { className: 'dsh-orb-mesh-manual-fields' },
+                    h('label', { className: 'dsh-orb-set-field' },
+                      h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.address),
+                      h('input', {
+                        className: 'dsh-orb-set-input',
+                        value: address,
+                        placeholder: text.mesh.addressPlaceholder,
+                        disabled: busy,
+                        onChange: (event) => { setAddress(event.target.value) },
+                      })),
+                    h('label', { className: 'dsh-orb-set-field' },
+                      h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.code),
+                      h('input', {
+                        className: 'dsh-orb-set-input',
+                        value: code,
+                        placeholder: text.mesh.codePlaceholder,
+                        disabled: busy,
+                        onChange: (event) => { setCode(event.target.value) },
+                      })),
+                    h('label', { className: 'dsh-orb-set-field' },
+                      h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.fingerprint),
+                      h('input', {
+                        className: 'dsh-orb-set-input',
+                        value: fingerprint,
+                        placeholder: text.mesh.fingerprintPlaceholder,
+                        disabled: busy,
+                        onChange: (event) => { setFingerprint(event.target.value) },
+                      })))))
+            : null))
+      const pairedCard = snap === null || snap === undefined ? null : h('section', { className: 'dsh-orb-set-card' },
+        cardHead('mesh', text.mesh.nav, null,
+          h('span', { className: `dsh-orb-mesh-state is-${connection}` }, connectionLabel)),
+        snap && snap.error
+          ? h('p', { className: 'dsh-orb-set-error' }, snap.error)
+          : null,
+        h('div', { className: 'dsh-orb-set-card-body' },
+          h('dl', { className: 'dsh-orb-mesh-facts' },
+            meshFact(text.mesh.server, snap.server && snap.server.url ? snap.server.url : '—', true),
+            meshFact(text.mesh.fingerprintLabel, snap.server && snap.server.fp ? snap.server.fp : '—', true)),
+          h('div', { className: 'dsh-orb-mesh-name-row' },
+            h('label', { className: 'dsh-orb-set-field' },
+              h('span', { className: 'dsh-orb-set-field-label' }, text.mesh.localName),
+              h('input', {
+                className: 'dsh-orb-set-input',
+                value: editName,
+                disabled: busy,
+                onChange: (event) => { setEditName(event.target.value) },
+              })),
+            h('button', {
+              type: 'button',
+              className: 'dsh-orb-set-button',
+              disabled: busy || editName.trim() === '',
+              onClick: () => { void saveName() },
+            }, text.mesh.saveName)),
+          h('div', { className: 'dsh-orb-mesh-devices' },
+            h('h4', null, text.mesh.devices),
+            h('p', { className: 'dsh-orb-set-field-hint' }, text.mesh.devicesHint),
+            ...state.nodes.map((node) => meshDeviceRow(node, snap.node ? snap.node.nodeId : '', text))),
+          h('div', { className: 'dsh-orb-set-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dsh-orb-set-button dsh-orb-set-primary',
+              disabled: busy,
+              onClick: () => { void openMeshWindow() },
+            }, text.mesh.openWindow),
+            h('button', {
+              type: 'button',
+              className: 'dsh-orb-set-button',
+              disabled: busy,
+              onClick: () => { void unpair() },
+            }, text.mesh.unpair))))
+
+      return h('div', { className: 'dsh-orb-set dsh-orb-mesh' },
+        h('header', { className: 'dsh-orb-set-hero' },
+          h('span', { className: 'dsh-orb-set-hero-icon', 'aria-hidden': 'true' }, orbIcon('mesh')),
+          h('div', { className: 'dsh-orb-set-hero-text' },
+            h('h2', { className: 'dsh-orb-set-title' }, text.mesh.nav),
+            h('p', { className: 'dsh-orb-set-intro' }, text.mesh.intro)),
+        ),
+        state.status === 'loading'
+          ? h('p', { className: 'dsh-orb-mesh-note', role: 'status' }, text.mesh.loading)
+          : null,
+        state.status === 'error' && snap === null
+          ? h('div', { className: 'dsh-orb-mesh-load-error' },
+              h('p', { className: 'dsh-orb-set-error', role: 'alert' }, `${text.mesh.loadError} ${state.error}`),
+              h('button', {
+                type: 'button',
+                className: 'dsh-orb-set-button',
+                disabled: busy,
+                onClick: () => {
+                  setState((prev) => ({ ...prev, status: 'loading', error: '' }))
+                  void load()
+                },
+              }, text.mesh.retry))
+          : null,
+        state.error && snap !== null
+          ? h('p', { className: 'dsh-orb-set-error', role: 'alert' }, state.error)
+          : null,
+        actionError
+          ? h('p', { className: 'dsh-orb-set-error', role: 'alert' }, actionError)
+          : null,
+        notice
+          ? h('p', { className: 'dsh-orb-set-banner', role: 'status' }, notice)
+          : null,
+        snap === null ? null : paired ? pairedCard : pairCard)
+    }
+
+    function OrbSettingsSection(props) {
+      const openMeshSettings = props && typeof props.openMeshSettings === 'function' ? props.openMeshSettings : undefined
       const text = copy()
       // Re-render when the app's locale changes (<html lang>), so every copy()
       // call in this section re-evaluates against the new language.
@@ -1133,7 +1864,17 @@ window.__ModuleLoader__.load({
           h(IdleCard, { text, snap, mutate }),
           snap.tcc && snap.tcc.applicable ? tccCard(text, snap, disabled, mutate) : null),
         h(WorkspaceCard, { text, snap, refreshSettings }),
-        h(HistoryCard, { text, snap, mutate, refreshHistory }))
+        h(HistoryCard, { text, snap, mutate, refreshHistory }),
+        card({
+          icon: 'mesh',
+          title: text.meshCardTitle,
+          description: text.meshCardDescription,
+          control: h('button', {
+            type: 'button',
+            className: 'dsh-orb-set-button',
+            onClick: () => { openMeshSettings?.() },
+          }, text.meshCardOpen),
+        }))
     }
 
     /** The shared card header: a tinted icon, a title with one line of explanation, an optional control. */
@@ -1974,6 +2715,13 @@ window.__ModuleLoader__.load({
           'M7 10.9v.5a5 5 0 0 0 7.4 4.5',
           'M12 16.4v2.1',
           'M9.9 19.7h4.2',
+        ],
+        mesh: [
+          'M7 3.4a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2Z',
+          'M17 15.4a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2Z',
+          'M9.2 9.1 15 14.6',
+          'M17 3.4v7.2',
+          'M13.4 7h7.2',
         ],
       }
       const lines = paths[name] || paths.orb
@@ -3078,6 +3826,68 @@ window.__ModuleLoader__.load({
 .dsh-orb-set-voice-mic-icon { flex: none; display: flex; color: var(--dsw-alias-state-warning-primary, #b45309); }
 .dsh-orb-set .dsh-orb-set-voice-mic-text { flex: 1; min-width: 0; margin: 0; font-size: 12px; line-height: 1.45; color: inherit; }
 
+/* Interconnect */
+.dsh-orb-mesh-note { margin: 0; font-size: 12.5px; color: color-mix(in srgb, currentColor 55%, transparent); }
+.dsh-orb-mesh-load-error { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.dsh-orb-mesh-load-error .dsh-orb-set-error { flex: 1; min-width: 220px; margin: 0; }
+.dsh-orb-mesh-manual { margin-top: 14px; padding-top: 14px; border-top: 1px dashed color-mix(in srgb, currentColor 13%, transparent); }
+.dsh-orb-mesh-manual-more { margin-top: 12px; }
+.dsh-orb-mesh-manual-more > summary { cursor: pointer; font-size: 12.5px; color: color-mix(in srgb, currentColor 60%, transparent); }
+.dsh-orb-mesh-manual-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 16px; margin-top: 8px; }
+
+/* Hosted-mode switch: one control instead of a pairing string. */
+.dsh-orb-mesh-toggle-row { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+.dsh-orb-mesh-toggle-copy { flex: 1; min-width: 0; }
+.dsh-orb-mesh-toggle-copy .dsh-orb-set-field-hint { margin: 4px 0 0; }
+.dsh-orb-mesh-toggle {
+  flex: none;
+  width: 48px;
+  height: 28px;
+  padding: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.dsh-orb-mesh-toggle .dsh-orb-mesh-toggle-knob {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 22%);
+  transform: translateX(0);
+  transition: transform 150ms cubic-bezier(.32, .72, 0, 1);
+}
+.dsh-orb-mesh-toggle.is-busy { background: var(--dsw-static-blue-500, #4d6bfe); cursor: progress; }
+.dsh-orb-mesh-toggle.is-busy .dsh-orb-mesh-toggle-knob { transform: translateX(20px); }
+.dsh-orb-mesh-toggle:focus-visible { outline: 2px solid var(--dsw-static-blue-500, #4d6bfe); outline-offset: 2px; }
+.dsh-orb-mesh-toggle:disabled { cursor: progress; }
+.dsh-orb-mesh-approval-url { display: inline-block; margin-top: 4px; padding: 4px 7px; border-radius: 6px; background: color-mix(in srgb, currentColor 7%, transparent); font-family: var(--ds-font-family-code, monospace); font-size: 11.5px; overflow-wrap: anywhere; user-select: all; }
+.dsh-orb-mesh-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 18px; margin: 0 0 14px; }
+.dsh-orb-mesh-fact { min-width: 0; }
+.dsh-orb-mesh-fact dt { font-size: 11.5px; color: color-mix(in srgb, currentColor 55%, transparent); }
+.dsh-orb-mesh-fact dd { margin: 3px 0 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.dsh-orb-mesh-mono { font-family: var(--ds-font-family-code, monospace); font-size: 11.5px; line-height: 1.5; }
+.dsh-orb-mesh-name-row { display: flex; align-items: end; gap: 10px; margin-bottom: 16px; }
+.dsh-orb-mesh-name-row .dsh-orb-set-field { flex: 1; min-width: 0; }
+.dsh-orb-mesh-devices { margin-bottom: 14px; }
+.dsh-orb-mesh-devices h4 { margin: 0; font-size: 12.5px; font-weight: 600; }
+.dsh-orb-mesh-devices > p { margin: 3px 0 8px; }
+.dsh-orb-mesh-device { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 9px; border-radius: 9px; border: 1px solid color-mix(in srgb, currentColor 9%, transparent); }
+.dsh-orb-mesh-device + .dsh-orb-mesh-device { margin-top: 6px; }
+.dsh-orb-mesh-device-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, currentColor 30%, transparent); }
+.dsh-orb-mesh-device-dot.is-online { background: #12b76a; }
+.dsh-orb-mesh-device-name { min-width: 0; font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-orb-mesh-tag { flex: none; padding: 0 7px; border-radius: 999px; font-size: 10px; line-height: 16px; color: var(--dsh-orb-accent); background: color-mix(in srgb, var(--dsh-orb-accent) 10%, transparent); }
+.dsh-orb-mesh-device-platform { margin-left: auto; flex: none; font-size: 10.5px; color: color-mix(in srgb, currentColor 45%, transparent); }
+.dsh-orb-mesh-device-state { flex: none; font-size: 11px; color: color-mix(in srgb, currentColor 55%, transparent); }
+.dsh-orb-mesh-device-state.is-online { color: #12b76a; }
+.dsh-orb-mesh-state { flex: none; padding: 2px 9px; border-radius: 999px; font-size: 10.5px; line-height: 18px; color: color-mix(in srgb, currentColor 60%, transparent); background: color-mix(in srgb, currentColor 7%, transparent); }
+.dsh-orb-mesh-state.is-connected { color: #12b76a; background: color-mix(in srgb, #12b76a 12%, transparent); }
+.dsh-orb-mesh-state.is-offline { color: #b42318; background: color-mix(in srgb, #b42318 10%, transparent); }
+
 @media (max-width: 620px) {
   .dsh-orb-set-head { flex-wrap: wrap; }
   .dsh-orb-set-head-control { margin-left: 0; padding-left: 50px; }
@@ -3096,8 +3906,10 @@ window.__ModuleLoader__.load({
 }
 `
 
-    /** Settings-section id of this page; the ball's menu row asks the shell to show exactly this one. */
+    /** Settings-section ids this page registers; the ball's menu rows name them. */
     const SECTION_ID = 'orb'
+    const MESH_SECTION_ID = 'orb-mesh'
+    const SECTION_IDS = [SECTION_ID, MESH_SECTION_ID]
 
     const inject = ['slots']
 
@@ -3113,14 +3925,16 @@ window.__ModuleLoader__.load({
       }
       styleNode.textContent = style
       /**
-       * Show the floating-ball section in the main window's settings modal, switching
+       * Show one of this page's sections in the main window's settings modal, switching
        * away from whichever section is up. The shell owns modal visibility: its store
        * handle is the ledger currency of the `sidebar.settings` entry, and its create()
        * hands back the mounted instance, whose openSection also opens the modal. Reports
-       * false when no shell can be reached yet, so the caller leaves the ball's request
-       * armed and retries instead of dropping the click.
+       * false when no shell can be reached yet, so the caller leaves the request armed
+       * and retries instead of dropping the click.
+       * @param {string} sectionId - `orb` or `orb-mesh`; anything else falls back to `orb`.
        */
-      function showOrbSettings() {
+      function showSettingsSection(sectionId) {
+        const targetId = SECTION_IDS.includes(sectionId) ? sectionId : SECTION_ID
         let entries
         let sections
         try {
@@ -3131,7 +3945,7 @@ window.__ModuleLoader__.load({
         }
         // openSection does not validate its id: opening one this page no longer occupies
         // would show the panel with no matching nav row and nothing in it.
-        const ours = (sections ?? []).some((entry) => entry && entry.options && entry.options.id === SECTION_ID)
+        const ours = (sections ?? []).some((entry) => entry && entry.options && entry.options.id === targetId)
         if (!ours) return false
         for (const entry of entries ?? []) {
           // The handle rides the entry itself: SlotCore keeps only id/order/label/priority
@@ -3152,7 +3966,7 @@ window.__ModuleLoader__.load({
           const openSection = instance && instance.actions ? instance.actions.openSection : undefined
           if (typeof openSection !== 'function') continue
           try {
-            openSection(SECTION_ID)
+            openSection(targetId)
           } catch {
             return false
           }
@@ -3165,8 +3979,15 @@ window.__ModuleLoader__.load({
         id: SECTION_ID,
         order: 25,
         label: () => copy().nav,
-        inject: () => ({}),
+        inject: () => ({ openMeshSettings: () => showSettingsSection(MESH_SECTION_ID) }),
       }, OrbSettingsSection))
+      ctx.slots.inject('settings.section', () => ctx.slots.register({
+        name: 'settings.section',
+        id: MESH_SECTION_ID,
+        order: 26,
+        label: () => copy().mesh.nav,
+        inject: () => ({}),
+      }, OrbMeshSection))
       // Main-window bridge. The ball cannot reach this window, so it arms targets on the
       // host and this page consumes them. Bookmark jumps open a session through the
       // workspace navigator: a bare sessions.retain would stack a second mainView
@@ -3232,10 +4053,12 @@ window.__ModuleLoader__.load({
             openedSettingsAt = 0
             return
           }
+          // Older hosts only send `at`; the floating-ball page is the old behaviour.
+          const section = target && typeof target.section === 'string' ? target.section : SECTION_ID
           // Same guard as jumps, keyed on the arm timestamp: a confirm that got lost
           // re-confirms on the next poll instead of re-opening the panel.
           if (at !== openedSettingsAt) {
-            if (!showOrbSettings()) {
+            if (!showSettingsSection(section)) {
               // The settings shell is not on the ledger yet (a cold launch composes
               // plugins after the first poll); the target stays armed and we retry.
               return
@@ -3246,7 +4069,7 @@ window.__ModuleLoader__.load({
             await request('/.dsh-orb/settings-open', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ at }),
+              body: JSON.stringify({ at, section }),
             })
           } catch {
             // Consuming is best-effort; the arm timestamp guard stops any reopen loop.

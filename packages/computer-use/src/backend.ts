@@ -52,6 +52,12 @@ export interface CaptureOptions {
    * Lasso screenshots pass false so the stroke does not leave a cursor on the still.
    */
   readonly cursor?: boolean
+  /**
+   * Optional maximum length in pixels for the longer edge of the captured raster.
+   * Observations pass `OBSERVATION_MAX_LONG_EDGE` (1280) so VLM vision encoders never
+   * silently downscale a Retina capture into a mismatched pixel space.
+   */
+  readonly maxLongEdge?: number
 }
 
 /**

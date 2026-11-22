@@ -15,8 +15,10 @@ import { compositeCursor, cursorDrawPlacement, flipRows, resolveCursorAlpha } fr
 import { appOwnerPid } from './windows-foreground.ts'
 import type { WindowsDesktopSnapshot, WindowsWindowFact } from './windows-foreground.ts'
 import { clipboardRestoreIncomplete, encodeBgraPng, type ClipboardSnapshot, type WindowsDesktopOps, type WindowsRect } from './windows.ts'
+import { clampedLongEdgeSize } from './raster.ts'
 
 const SRCCOPY = 0x00CC0020
+const HALFTONE = 4
 const MOUSEEVENTF_MOVE = 0x0001
 const MOUSEEVENTF_LEFTDOWN = 0x0002
 const MOUSEEVENTF_LEFTUP = 0x0004
@@ -232,6 +234,20 @@ function bind(libraries: NativeBindings): {
   CreateCompatibleBitmap: (hdc: unknown, width: number, height: number) => unknown
   SelectObject: (hdc: unknown, object: unknown) => unknown
   BitBlt: (dest: unknown, x: number, y: number, w: number, h: number, src: unknown, sx: number, sy: number, rop: number) => number
+  SetStretchBltMode: (hdc: unknown, mode: number) => number
+  StretchBlt: (
+    dest: unknown,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number,
+    src: unknown,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    rop: number,
+  ) => number
   GetDIBits: (
     hdc: unknown,
     bitmap: unknown,
@@ -322,6 +338,11 @@ function bind(libraries: NativeBindings): {
     SelectObject: gdi32.func('void * __stdcall SelectObject(void *hdc, void *h)'),
     BitBlt: gdi32.func(
       'int __stdcall BitBlt(void *hdc, int x, int y, int cx, int cy, void *hdcSrc, int x1, int y1, uint32 rop)',
+    ),
+    SetStretchBltMode: gdi32.func('int __stdcall SetStretchBltMode(void *hdc, int mode)'),
+    StretchBlt: gdi32.func(
+      'int __stdcall StretchBlt(void *hdcDest, int xDest, int yDest, int wDest, int hDest, '
+      + 'void *hdcSrc, int xSrc, int ySrc, int wSrc, int hSrc, uint32 rop)',
     ),
     GetDIBits: gdi32.func(
       'int __stdcall GetDIBits(void *hdc, void *hbm, uint32 start, uint32 cLines, '
@@ -665,14 +686,22 @@ function drawCursor(
   width: number,
   height: number,
   bounds: WindowsRect,
+  scaleX = 1,
+  scaleY = 1,
 ): void {
   const cursor = readCursor(api)
   if (cursor === undefined) return
   try {
     const size = bitmapSize(api, cursor.color)
     if (size === undefined) return
-    const placement = cursorDrawPlacement(cursor.pointer, cursor.hotspot, size, bounds)
-    if (placement === undefined) return
+    const rawPlacement = cursorDrawPlacement(cursor.pointer, cursor.hotspot, size, bounds)
+    if (rawPlacement === undefined) return
+    const placement = scaleX === 1 && scaleY === 1
+      ? rawPlacement
+      : {
+          x: Math.round((cursor.pointer.x - bounds.x) * scaleX - cursor.hotspot.x),
+          y: Math.round((cursor.pointer.y - bounds.y) * scaleY - cursor.hotspot.y),
+        }
     const color = bitmapPixels(api, dc, cursor.color, size)
     if (color === undefined) return
     const mask = isNull(cursor.mask) ? undefined : bitmapPixels(api, dc, cursor.mask, size)
@@ -849,36 +878,80 @@ export function createProductionWindowsOps(): WindowsDesktopOps {
         const originX = Math.round(bounds.x)
         const originY = Math.round(bounds.y)
         const region: WindowsRect = { x: originX, y: originY, width, height }
+        const target = clampedLongEdgeSize(width, height, options?.maxLongEdge)
         const screenDc = api.GetDC(null)
         if (isNull(screenDc)) throw new Error('computer-use: screen capture failed')
         const memory = api.CreateCompatibleDC(screenDc)
         const bitmap = api.CreateCompatibleBitmap(screenDc, width, height)
         const previous = api.SelectObject(memory, bitmap)
+        let scaledMemory: unknown
+        let scaledBitmap: unknown
+        let scaledPrevious: unknown
         try {
           if (api.BitBlt(memory, 0, 0, width, height, screenDc, originX, originY, SRCCOPY) === 0) {
             throw new Error('computer-use: screen capture failed')
           }
+          const needScale = target.width !== width || target.height !== height
+          let readDc = memory
+          let readBitmap = bitmap
+          if (needScale) {
+            scaledMemory = api.CreateCompatibleDC(screenDc)
+            scaledBitmap = api.CreateCompatibleBitmap(screenDc, target.width, target.height)
+            scaledPrevious = api.SelectObject(scaledMemory, scaledBitmap)
+            api.SetStretchBltMode(scaledMemory, HALFTONE)
+            if (api.StretchBlt(
+              scaledMemory,
+              0,
+              0,
+              target.width,
+              target.height,
+              memory,
+              0,
+              0,
+              width,
+              height,
+              SRCCOPY,
+            ) === 0) {
+              throw new Error('computer-use: screen capture failed')
+            }
+            readDc = scaledMemory
+            readBitmap = scaledBitmap
+          }
           const header = {
             biSize: 40,
-            biWidth: width,
-            biHeight: height,
+            biWidth: target.width,
+            biHeight: target.height,
             biPlanes: 1,
             biBitCount: 32,
             biCompression: 0,
-            biSizeImage: width * height * 4,
+            biSizeImage: target.width * target.height * 4,
             biXPelsPerMeter: 0,
             biYPelsPerMeter: 0,
             biClrUsed: 0,
             biClrImportant: 0,
           }
-          const pixels = Buffer.alloc(width * height * 4)
-          if (api.GetDIBits(memory, bitmap, 0, height, pixels, header, 0) === 0) {
+          const pixels = Buffer.alloc(target.width * target.height * 4)
+          if (api.GetDIBits(readDc, readBitmap, 0, target.height, pixels, header, 0) === 0) {
             throw new Error('computer-use: screen capture failed')
           }
-          flipRows(pixels, width * 4, height)
-          if (options?.cursor !== false) drawCursor(api, memory, pixels, width, height, region)
-          return encodeBgraPng(width, height, pixels, false)
+          flipRows(pixels, target.width * 4, target.height)
+          if (options?.cursor !== false) {
+            drawCursor(
+              api,
+              readDc,
+              pixels,
+              target.width,
+              target.height,
+              region,
+              target.width / width,
+              target.height / height,
+            )
+          }
+          return encodeBgraPng(target.width, target.height, pixels, false)
         } finally {
+          if (scaledMemory !== undefined && !isNull(scaledPrevious)) api.SelectObject(scaledMemory, scaledPrevious)
+          if (!isNull(scaledBitmap)) api.DeleteObject(scaledBitmap)
+          if (!isNull(scaledMemory)) api.DeleteDC(scaledMemory)
           api.SelectObject(memory, previous)
           api.DeleteObject(bitmap)
           api.DeleteDC(memory)

@@ -27,6 +27,13 @@ export type CoordinateMode = 'millifraction' | 'pixel'
 export interface ObservationRaster {
   readonly width: number
   readonly height: number
+  /** Captured logical screen rectangle, used to refuse clicks when the viewport shifted. */
+  readonly bounds?: {
+    readonly x: number
+    readonly y: number
+    readonly width: number
+    readonly height: number
+  }
   /** Owner window the observation captured; a hotkey hands keyboard focus back to it. */
   readonly windowId?: number
   /** Extra window ids the observation included (menus and other family windows). */
@@ -215,6 +222,7 @@ export function rememberObservation(
   session: Session | undefined,
   screens: readonly {
     readonly image: { readonly width: number; readonly height: number }
+    readonly bounds?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
     readonly windowId?: number
     readonly transientWindowIds?: readonly number[]
     readonly appName?: string
@@ -230,10 +238,37 @@ export function rememberObservation(
   observationCache.set(session, {
     width: image.width,
     height: image.height,
+    ...first.bounds === undefined ? {} : { bounds: { ...first.bounds } },
     ...first.windowId === undefined ? {} : { windowId: first.windowId },
     ...first.transientWindowIds === undefined ? {} : { transientWindowIds: first.transientWindowIds },
     ...first.appName === undefined ? {} : { appName: first.appName },
   })
+}
+
+/**
+ * Last observed logical bounds for this session, if recorded in live memory.
+ */
+export function lastObservedBounds(session: Session | undefined): ObservationRaster['bounds'] {
+  if (session === undefined) return undefined
+  const cached = observationCache.get(session)
+  if (cached === false || cached === undefined) return undefined
+  return cached.bounds
+}
+
+/**
+ * Whether the live window union rectangle still matches the last observed bounds
+ * within `tolerance` logical points on each edge (absorbs minor rounding).
+ */
+export function boundsStillMatch(
+  previous: ObservationRaster['bounds'] | undefined,
+  current: ObservationRaster['bounds'] | undefined,
+  tolerance = 4,
+): boolean {
+  if (previous === undefined || current === undefined) return true
+  return Math.abs(previous.x - current.x) <= tolerance
+    && Math.abs(previous.y - current.y) <= tolerance
+    && Math.abs(previous.width - current.width) <= tolerance
+    && Math.abs(previous.height - current.height) <= tolerance
 }
 
 /**
@@ -374,9 +409,24 @@ function rewritePixelTool(tool: ToolSchema): ToolSchema {
  * @param mode - session contract.
  * @returns tools with pixel `position` copy when `mode` is pixel.
  */
-export function toolsForCoordinateMode(tools: readonly ToolSchema[], mode: CoordinateMode): ToolSchema[] {
+export function toolsForCoordinateMode(tools: readonly ToolSchema[] | undefined, mode: CoordinateMode): ToolSchema[] {
+  if (tools === undefined) return []
   if (mode === 'millifraction') return [...tools]
   return tools.map(rewritePixelTool)
+}
+
+/**
+ * Rewrite a `defineTool` schema object at registration time when the host's
+ * standing coordinate mode is `pixel` (DSH 0.2.x no longer passes `tools` in
+ * `system-prompt/assemble`). Keeps all handlers, output schemas, and renderers intact.
+ */
+export function registerModeTool<T extends ToolSchema>(
+  ctx: Context,
+  definition: T,
+): T {
+  const service = ctx.get('orbCoordinateMode') as OrbCoordinateMode | undefined
+  if (service?.currentMode() !== 'pixel') return definition
+  return rewritePixelTool(definition) as T
 }
 
 function hasCoordinateModeEvent(session: Session): boolean {

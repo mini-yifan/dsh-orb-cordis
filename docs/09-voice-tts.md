@@ -160,7 +160,7 @@ Key 存在本机的语音配置里，和别的语音选项放在一起。不写�
 
 交互以本文为准。千问的连接方式、音色原文和语速上下限见：
 
-- `/Users/gaoyifan/Desktop/Project/tts_native/docs/Qwen3-TTS-Flash-Realtime-落地实现文档.md`
+- `~/Projects/tts_native/docs/Qwen3-TTS-Flash-Realtime-落地实现文档.md`
 
 本地模型的下载、文件和合成参数仍见 05 文末列出的 Matcha 文档。
 

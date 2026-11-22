@@ -633,8 +633,8 @@ export function sniffAvatarMime(bytes: Uint8Array): AvatarMime | undefined {
   return undefined
 }
 
-export function defaultMillifraction(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === 'win32'
+export function defaultMillifraction(_platform: NodeJS.Platform = process.platform): boolean {
+  return false
 }
 
 function readPermission(dir: string): { preset: PermissionPreset; fallback: boolean } {
