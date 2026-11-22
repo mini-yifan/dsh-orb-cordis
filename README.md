@@ -1,161 +1,161 @@
-<p align="center"><img src="docs/assets/ball.png" width="120" alt="The dsh-orb floating ball"></p>
+<p align="center"><img src="docs/assets/ball.png" width="120" alt="dsh-orb 悬浮球"></p>
 
 # dsh-orb
 
-English | [中文](README.zh-CN.md)
+[English](README.en.md) | 中文
 
-An unofficial personal plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). One installable bundle that adds a floating-ball agent with Computer Use to the official dsh desktop app and `dsh web` — the official repository stays untouched, and the main window remains the official dsh Web UI.
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的非官方个人开发者插件。一个可安装的 bundle，为官方 dsh 桌面版和 `dsh web` 加上带 Computer Use 的悬浮球 Agent——官方仓库一行不改，主窗口仍是官方 dsh Web UI。
 
-> **Disclaimer** — This is an unofficial project maintained by an individual developer. It is **not** affiliated with, endorsed by, or connected to DeepSeek AI in any way. DeepSeek, the DeepSeek logo, and the DeepSeek avatar artwork are the property of DeepSeek AI; they appear here only as the default ball avatar shipped by the upstream project.
+> **声明** — 本项目由个人开发者维护，**与 DeepSeek AI 无任何隶属、认可或合作关系**。DeepSeek 名称、Logo 与头像素材归 DeepSeek AI 所有，此处仅作为上游项目自带的默认球头像使用。
 
-A floating ball rests at the right edge of your screen. Tell it what you need: quick, visible actions are executed directly in the current app through Computer Use; long-running complex tasks are dispatched to a background coding session, and the result comes back to the ball when it finishes. The main window keeps the full dsh Web UI — session management, the plugin market, and model settings — so you can still write code, edit files, and run commands in it.
+悬浮球停靠在屏幕右沿。告诉它你要什么：看得见的操作当场通过 Computer Use 执行；耗时长的复杂任务派给后台代码会话，完成后结果回到球里。主窗口保留完整的 dsh Web UI——会话管理、插件市场、模型设置——你仍然可以在里面写代码、改文件、跑命令。
 
-There is no telemetry.
+不收集任何遥测数据。
 
-## The floating ball
+## 悬浮球
 
-On startup the plugin spawns its own helper (a pinned, verified Electron runtime in an isolated profile) and the ball appears at the right edge of the primary display, always on top.
+启动后插件拉起自己的 helper（锁定并校验过的 Electron 运行时，独立 profile），球出现在主屏右沿，置顶。
 
-- **Hover** expands the panel, **click** pins it, and it collapses when the pointer leaves. **Drag** moves the ball; dragging it beyond the left or right screen edge docks it into a thin sliver — hover again to slide it back.
-- **Right-click** opens the menu: open the main window, open the floating-ball settings page inside that window, floating-ball agent settings and background agent settings (each track picks its own model and thinking level; **a track you never picked follows the main window's default model**, so an account-only profile with no API key works as-is), the coordinate-encoding toggle, and "Disable floating ball". The ball follows the official dsh process — when the official app exits, the ball exits with it.
-- The panel carries the ball's conversation history with **History** and **New**, an **Access** chip (view-only / workspace edits / full access; full by default, applying to the ball's commands and the background sessions it dispatches), and a composer that wraps around the ball. When the agent asks you a question, the question card is answered right on the ball; if the helper disconnects, an unanswered question is handed back to the main window. History follows the main window's rules: of the blank conversations only the selected one is listed, **New inside a blank conversation does not add another one**, and the empty "untitled" conversations older versions left behind move to the system trash on the first launch after the update (recoverable).
-- The transcript is rendered natively in the ball: streaming thinking / text / tool calls interleaved in arrival order, collapsible tool cards with parameters and results (terminal, diff, read, search, web), Shiki dual-theme highlighting, KaTeX math (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`, the version the main window bundles, following the light/dark theme), copy buttons for user and assistant messages, and a per-turn token-usage pill.
-- Appearance follows the main window: dark / light theme and interface language (Chinese / English) mirror the official appearance and language settings, including live switching.
-- The ball avatar can be set to one of six built-in animated GIFs, or replaced with a custom GIF / PNG / WebP (4 MB cap), in main-window **Settings → Floating Ball**. The built-ins stay animated: the ball plays them whenever it is active, exactly like the shipped default. **More animations** at the end of that row opens the [dshgif.hicp.fun](https://dshgif.hicp.fun/) gallery — download a GIF there and load it with **Choose image**; a file over the cap now reports its own size.
+- **悬停**展开面板，**单击**钉住，指针离开后收起。**拖动**移动球；拖出左右屏幕边缘后收成细条——再悬停即可滑回。
+- **右键**打开菜单：打开主窗口、打开悬浮球设置（直接落到主窗口设置里的「悬浮球」页）、悬浮球 Agent 设置与后台 Agent 设置（两条轨各自选模型和思考强度；**没在球里选过的轨跟随主窗口的默认模型**，所以只登录账号、没配 API Key 也能直接用）、坐标编码开关、「停用悬浮球」。球跟着官方 dsh 进程走——官方应用退出，球随之退出。
+- 面板里有球自己的对话历史（**历史**/**新建**）、**Access** 权限芯片（只读 / 工作区内修改 / 完全访问，默认完全访问，作用于球的命令和它派出的后台会话）、绕球折行的输入框。Agent 向你提问时，提问卡就在球上回答；helper 断开时，未回答的问题交回主窗口。对话历史与主窗口同一套规则：空白对话只显示当前那一个，**在空白对话里再点「新建」不会多出一个会话**；旧版本留下的那些空白「未命名对话」会在升级后自动移入系统回收站（可恢复）。
+- 对话区是球内原生渲染：思考 / 正文 / 工具调用按到达顺序实时流式穿插，工具卡默认折叠、点开看参数与结果（终端、差异、读取、搜索、网页专属卡），Shiki 双主题高亮，KaTeX 公式排版（`$…$`、`$$…$$`、`\(…\)`、`\[…\]`，与主窗口同版本、随明暗主题），用户与回复消息各配复制按钮，旁边显示每轮 Token 用量。
+- 外观跟随主窗口：暗色 / 浅色主题与界面语言（中文 / English）镜像官方「外观」「语言」设置，支持即时切换。
+- 球头像可在主窗口**设置 → 悬浮球**里挑 6 张内置动图，或换成自定义 GIF / PNG / WebP（4 MB 以内）。内置动图保持动画：球处于活动状态时照常播放，与自带头像行为一致。内置动图末尾的**更多动图**直接打开 [dshgif.hicp.fun](https://dshgif.hicp.fun/) 图库，下载 GIF 后用「选择图片」换成自己的；文件超过上限时会直接说出它有多大。
 
-## Voice
+## 语音
 
-Speech is off until you turn it on: main-window **Settings → Floating Ball → Voice** (the master switch ships off). Everything runs locally except the optional Qwen voice.
+语音默认关着：主窗口**设置 → 悬浮球 → 语音**（总开关出厂关闭）。除可选的千问音色外，全部在本机跑。
 
-- **Wake word.** Say **你好大肥鱼** while the ball is collapsed. It pins the panel and answers **我在呢**. The phrase, the reply, sensitivity, judging granularity and the 1.5 s cooldown are editable.
-- **Voice input.** While the ball is pinned and idle, speak a command; it is transcribed when you stop and sent like a typed message. The microphone stays closed while the agent works, while a question card is waiting, and while the ball itself is talking — say **大肥鱼** to cut in, or **退下吧** to stop and unpin.
-- **Spoken replies.** Agent text, the wake reply and the dismiss reply are read aloud. The local Matcha voices (Chinese and English) are the default; **Qwen** (Alibaba Cloud Bailian, your own API key) is the alternative backend.
-- **Models.** The wake model (about 9 MB) is the npm package `dsh-orb-kws`: npmmirror first, then registry.npmjs.org, then the GitHub release. The local TTS weights (about 197 MB) come from the Hugging Face mirror. Speech recognition uses the SenseVoice model DeepSeek Harness already manages.
-- **Privacy.** Microphone audio is decoded in a local subprocess and never leaves the machine. The only network path is the optional Qwen TTS, which sends the sentence it is about to speak.
+- **唤醒词。** 球收起时喊 **你好大肥鱼**，面板展开并固定，本机回一句 **我在呢**。唤醒词、回复语、灵敏度、判定粒度和 1.5 秒冷却都能改。
+- **语音输入。** 球固定且空闲时直接说指令，停顿后整段转成文字，走和打字发送同一条路径。Agent 干活、提问卡等待、球自己在播报时麦克风是关的——说 **大肥鱼** 可以插话，说 **退下吧** 立刻停止并取消固定。
+- **播报。** Agent 正文、唤醒回复语、退下回复语都会念出来。默认用本地 Matcha 音色（中英各一），也可以切到 **千问**（阿里云百炼，填自己的 API Key）。
+- **模型。** 唤醒模型约 9 MB，是 npm 包 `dsh-orb-kws`：先取 npmmirror，再取 registry.npmjs.org，最后才回到 GitHub release。本地播报模型约 197 MB，走 Hugging Face 镜像。语音识别用 DeepSeek Harness 自己管理的那份 SenseVoice。
+- **隐私。** 麦克风音频在本机子进程里解码，不出机器；唯一的网络出口是可选千问播报，它只发要念的那句话。
 
-## Dual-track agent architecture
+## 双轨 Agent 架构
 
-The Computer Use agent inside the floating ball decides how every message is handled; there is no separate task classifier at runtime:
+由球内的 Computer Use Agent 决定每条消息怎么处理，运行时没有独立的任务分类器：
 
 ```mermaid
 flowchart TD
-    user["You speak to the floating ball"] --> orb["Computer Use Agent"]
-    orb -->|"Visible GUI actions"| gui["13 GUI tools<br>executed in the current window"]
-    orb -->|"Quick lookups: weather, news"| web["web_search / web_fetch<br>answered on the ball"]
-    orb -->|"Dig through files, produce documents or websites"| bg["code_agent background session<br>queued, returns immediately"]
-    bg -->|"Completion notice"| orb
+    user["你对悬浮球说话"] --> orb["Computer Use Agent"]
+    orb -->|"看得见的 GUI 操作"| gui["13 个 GUI 工具<br>在当前窗口当场执行"]
+    orb -->|"快问快答：天气、新闻"| web["web_search / web_fetch<br>球上直接回答"]
+    orb -->|"翻文件、产出文档或网站"| bg["code_agent 后台会话<br>派出即返回"]
+    bg -->|"完成通知"| orb
 ```
 
-- **Foreground track · Computer Use**: visible operations — opening apps, clicking buttons, filling forms, changing settings — are executed with GUI tools right in front of you, each step based on a live screenshot of the frontmost window. Quick lookups such as weather or news headlines stay on the ball too, answered directly with `web_search` / `web_fetch`.
-- **Background track · Code Agent**: complex tasks — digging through files, producing documents, building a website — are dispatched through `code_agent` to a background standard session. Dispatch returns immediately; the ball tells you the background is running and you can keep chatting. When the background session ends and the ball is idle, the completion summary returns to the ball automatically, and the Computer Use agent decides the next move — keep clicking, dispatch more background work, or wrap up.
+- **前台轨 · Computer Use**：看得见的操作——打开应用、点按钮、填表单、改设置——用 GUI 工具当着你的面执行，每一步都基于前台窗口的实时截图。天气、新闻这类快问快答也留在球上，用 `web_search` / `web_fetch` 直接回答。
+- **后台轨 · Code Agent**：复杂任务——翻文件、产出文档、搭网站——经 `code_agent` 派给后台标准会话。派出立即返回，球会告诉你后台在跑，你可以继续聊。后台会话结束且球空闲时，完成摘要自动回到球里，Computer Use Agent 决定下一步——继续点击、再派后台，还是收尾。
 
-A background session is the same kind of session you create manually in the main window; it appears in the `dsh_orb` folder in the main-window sidebar, where you can open, continue, or stop it. Follow-up changes to the same deliverable go back to the same background session; unrelated new work opens another one. The conversation history, permissions, and per-track model settings are shared with the official dsh process — the ball reads and writes the same sessions as the main window.
+后台会话和你在主窗口手动建的会话是同一种；它出现在主窗口侧栏的 `dsh_orb` 文件夹里，可以打开、继续或停止。同一产物的后续修改回到同一个后台会话，无关的新工作另开一个。对话历史、权限、两条轨的模型设置都与官方 dsh 进程共享——球读写的就是主窗口的那份会话。
 
 ## Computer Use
 
-Every conversation on the ball runs Computer Use: the first message automatically attaches a screenshot of the frontmost app's visible windows, and another screenshot follows every action, including your mouse cursor, so the model always sees the latest screen state.
+球上的每条对话都带 Computer Use：第一条消息自动附上前台应用可见窗口的截图，之后每个动作都跟一张新截图（含鼠标光标），模型始终看到最新屏幕状态。
 
-- While the agent operates, screenshots automatically omit the ball, the expanded panel, and the observation border, and clicks pass through the ball instead of landing on it; the observed window gets a glowing observation border marking what the agent is looking at. Outside of agent operations the ball is a normal window you can screenshot and record.
-- Tool list: `click` (single/double/right click, hold modifiers), `input_text`, `scroll`, `hotkey`, `long_press`, `drag`, `wait`, `long_wait`, `screenshot` (saved to the Desktop and copied to the clipboard), `open_in_browser`, `open_in_finder`, `list_apps`, `open_app`.
-- **macOS**: the first time you operate the screen, the system permission dialogs are attributed to **DeepSeek Harness** (desktop) or your terminal (`dsh web`) — authorize that process. The ball's onboarding layer walks you through Screen Recording and Accessibility.
-- **Windows**: no system-permission onboarding is needed; windows running as administrator refuse to be clicked or typed into.
-- Installing this plugin is the consent gate: the GUI tools never ask per click.
+- Agent 操作期间，截图自动排除球、展开面板和观察边框，点击穿透球而不是落在球上；被观察的窗口有一圈发光的观察边框，标出 Agent 正在看哪里。非操作期间球是普通窗口，截图录屏照常包含。
+- 工具列表：`click`（单击/双击/右键，支持修饰键）、`input_text`、`scroll`、`hotkey`、`long_press`、`drag`、`wait`、`long_wait`、`screenshot`（存到桌面并复制到剪贴板）、`open_in_browser`、`open_in_finder`、`list_apps`、`open_app`。
+- **macOS**：第一次操作屏幕时，系统权限弹窗的授权对象是 **DeepSeek Harness**（桌面版）或你的终端（`dsh web`）——请对那个进程授权。球内的引导层会带你完成「屏幕录制」和「辅助功能」两项授权。
+- **Windows**：无需系统权限引导；以管理员运行的窗口拒绝被点击和输入。
+- 安装本插件即授权：GUI 工具不会逐次点击询问。
 
-## How it works
+## 工作原理
 
 ```
-DeepSeek Harness (official, unmodified)
-└─ Electron shell (main window, dsh://open, single instance)
-     └─ Host, spawned as a plain Node process (ELECTRON_RUN_AS_NODE=1)
-          └─ dsh-orb plugin
-               ├─ host — sessions, permissions, models, web routes, helper lifecycle
-               ├─ computer-use — 13 GUI tools + code_agent (Computer Use preset)
-               └─ client-settings — the "Floating Ball" section in main-window settings
+DeepSeek Harness（官方，不改）
+└─ Electron 壳（主窗口、dsh://open、单实例）
+     └─ Host，以纯 Node 进程拉起（ELECTRON_RUN_AS_NODE=1）
+          └─ dsh-orb 插件
+               ├─ host — 会话、权限、模型、web 路由、helper 生命周期
+               ├─ computer-use — 13 个 GUI 工具 + code_agent（Computer Use preset）
+               └─ client-settings — 主窗口「悬浮球」设置节
 
-Helper (its own downloaded Electron, isolated userData)
-├─ ball window, observation border
-└─ data requests → authenticated loopback URL of the official Host
+Helper（自带的下载版 Electron，独立 userData）
+├─ 球窗口、观察边框
+└─ 数据请求 → 官方 Host 的鉴权 loopback URL
 ```
 
-- One package to install: the `dsh-orb` bundle assembles the host, the Computer Use plugin, the helper, and the settings page into itself at build time.
-- The helper runtime is a stock Electron release pinned by SHA-256 (darwin/win32, arm64/x64), downloaded on first use and verified against the pinned hashes; it runs in its own `userData`, separate from the official app.
-- The helper talks to the host over a loopback-only NDJSON socket authenticated with a random 32-byte token generated per launch, passed by environment variable — never argv, never written to disk. Authenticated URLs with official credentials never reach the helper.
-- Watchdog: the helper exits when it loses the socket; the host restarts it at most three times. Computer Use in the main window keeps working even if the ball cannot start.
+- 只装一个包：`dsh-orb` bundle 在构建时把 host、Computer Use 插件、helper 和设置页装配进自身。
+- helper 运行时是官方原版 Electron 发布物，以 SHA-256 钉死（darwin/win32，arm64/x64），首次使用时下载并与钉死的哈希比对；运行在独立的 `userData`，与官方应用分开。
+- helper 与 host 之间是只听 loopback 的 NDJSON socket，用每次启动随机生成的 32 字节 token 鉴权，只经环境变量传递——不进 argv、不落盘。带官方凭据的鉴权 URL 永远不交给 helper。
+- 看门狗：socket 断开 helper 自行退出；host 最多重试 3 次。球起不来时，主窗口里的 Computer Use 仍然可用。
 
-## Requirements
+## 环境要求
 
-- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): the desktop app, or `dsh web` from the CLI. Built against dsh `0.1.7-rc.2`; the declared compatibility range is `>=0.1.7-rc.2 <0.3.0-0`.
-- macOS (Apple Silicon / Intel) or Windows x64. Linux loads the plugin but does not create a ball — background code sessions still work.
-- Node.js `^22.19.0 || >=24.0.0` and pnpm `11.7.0` (only for building from source).
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：桌面版，或 CLI 的 `dsh web`。按 dsh `0.1.7-rc.2` 编译；声明的兼容范围是 `>=0.1.7-rc.2 <0.3.0-0`。
+- macOS（Apple Silicon / Intel）或 Windows x64。Linux 会加载插件但不建球——后台代码会话仍可用。
+- Node.js `^22.19.0 || >=24.0.0` 与 pnpm `11.7.0`（仅从源码构建时需要）。
 
-## Install
+## 安装
 
-### From a release
+### 从发布版安装
 
-Releases are published to the npm registry and served from npmmirror. The install unit is the release tarball — **not the repository itself**: pasting the repo URL into a plugin page installs the monorepo root package, which fails with "this package declares no bundle".
+插件发布到 npm registry，国内由 npmmirror 镜像分发。安装单位是 release 里的 tarball——**不是仓库本身**：把仓库链接填进插件页，装到的是 monorepo 根包，会报「这个包没有声明组合包」。
 
-- **By name** — add `dsh-orb` in the desktop app's plugin page, or:
+- **按名字装**——桌面版插件页里直接填 `dsh-orb`，或者：
 
   ```sh
   dsh plugin add dsh-orb
   ```
 
-- **By version** — `dsh-orb@<version>`. An explicit version skips the release-age gate, and pnpm records `integrity` from registry metadata. Do not paste a remote tarball URL such as `https://registry.npmmirror.com/dsh-orb/-/dsh-orb-<version>.tgz`: pnpm 11.7, which the official client bundles, rejects that URL because the lockfile entry has no `integrity`.
+- **按版本号装**——`dsh-orb@<版本>`。显式版本会跳过发布年龄闸门，pnpm 从 registry 元数据写入 `integrity`。不要把 `https://registry.npmmirror.com/dsh-orb/-/dsh-orb-<版本>.tgz` 这种直链贴进插件页：官方客户端自带的 pnpm 11.7 会因为 lockfile 没有 `integrity` 拒绝远程 tarball 直链。
 
-**A just-published version can resolve to the previous one for up to 24 hours.** The official client bundles pnpm 11, whose `minimumReleaseAge` default (1440 minutes) makes a named install settle for the newest version published more than 24 hours ago — a supply-chain guard, not a network problem. To get a fresh release immediately, install `dsh-orb@<version>`, or exempt the package in the profile's `pnpm-workspace.yaml`:
+**刚发布的版本在 24 小时内按名字装可能仍解析到上一个版本。** 官方客户端内置的 pnpm 11 默认开启 `minimumReleaseAge`（1440 分钟）：按名字解析时会退回到"发布满 24 小时的最新版本"——这是供应链保护，不是网络问题。想立即拿到新版本：装 `dsh-orb@<版本号>`，或在 profile 的 `pnpm-workspace.yaml` 里豁免该包：
 
 ```yaml
 minimumReleaseAgeExclude:
   - dsh-orb
 ```
 
-With an older version installed there is no need to reinstall: the floating-ball card in the main window's settings page checks for and installs updates, and records the exemption itself.
+已装旧版时无需重装：主窗口设置页的悬浮球卡片可检查并一键更新（更新流程会自己写入这条豁免）。
 
-**Does the in-app update fail with `operation-error`?** Releases through 0.1.4 handed pnpm 11.7 (the client bundles that version) an npmmirror tarball URL. That URL is stored without an `integrity` field, so pnpm rejects it before downloading (`ERR_PNPM_MISSING_TARBALL_INTEGRITY`) and the card only shows the generic `operation-error`. Install `dsh-orb@<version>` from the plugin page — not the tarball URL. After that, the update button installs by version and asks npmmirror first. The raw failure detail lives in the profile's `.plugin-manager/logs/operation-*/pnpm.log`.
+**插件内更新报 `operation-error` 怎么办？** 0.1.4 及更早的更新按钮把 npmmirror 的 tarball 直链交给官方客户端自带的 pnpm 11.7。这种直链在 lockfile 里没有 `integrity`，pnpm 会在下载前拒绝（`ERR_PNPM_MISSING_TARBALL_INTEGRITY`），界面只显示笼统的 `operation-error`。请在插件页按版本号安装 `dsh-orb@<版本>`（不要贴 tarball 直链）。装上之后，更新按钮改为按版本号安装，并先问 npmmirror。原始失败细节在 profile 的 `.plugin-manager/logs/operation-*/pnpm.log` 里。
 
-### From a local build
+### 从本地构建安装
 
 ```sh
 pnpm install
 pnpm build
-pnpm --filter dsh-orb run pack        # produces ./dsh-orb-<version>.tgz
+pnpm --filter dsh-orb run pack        # 生成 ./dsh-orb-<version>.tgz
 ```
 
-> `run` is not optional. A bare `pnpm pack` is pnpm's own command: it packs the workspace folder by its `files` list, so none of the bundled `node_modules` (`koffi`, `zod`, the platform prebuilds) end up in the tarball. The result installs, but the plugin cannot load `koffi` and Computer Use fails. `run pack` executes the bundle's `scripts/pack.mjs`, which assembles every part into the package.
+> `run` 不能省。不带 `run` 的 `pnpm pack` 是 pnpm 自带的打包命令，只按 `files` 字段打包工作区目录，捆绑的 `node_modules`（`koffi`、`zod` 与各平台预构建）一个都不会进 tarball。这样打出来的包装得上，但插件加载不了 `koffi`，Computer Use 会直接失败。`run pack` 才会执行 bundle 的 `scripts/pack.mjs`，把各部分组装进包里。
 
-Then either add the tarball in the desktop app's plugin page, or:
+然后在桌面版插件页添加这个 tarball，或者：
 
 ```sh
 dsh plugin add ./dsh-orb-<version>.tgz
 ```
 
-After the first installation the helper's Electron runtime is downloaded on first use of the ball, then cached. While it downloads — and if it fails or is interrupted — **Settings → Floating ball** in the main window shows a prominent notice whose **Download again** button picks the transfer up where it stopped: the bytes already fetched are never paid for twice, and no app restart is needed. Slow lines finish too — a transfer has no total time limit, only a stall guard — and whatever an interrupted transfer did fetch is kept for the next attempt to resume.
+首次使用悬浮球时会下载 helper 的 Electron 运行时，之后缓存复用。下载期间、下载失败或被中途打断时，主窗口 **设置 → 悬浮球** 顶部会显示醒目的提示卡片，点其中的「重新下载」立即接着下——已经下好的部分不会重来，也不用重启应用。慢速网络也能下完：单次传输没有总时长上限，只有"连接停止供数"的停滞检测，中断时已下载的字节留给下一次续传。
 
-## Development
+## 开发
 
 ```sh
-pnpm typecheck   # tsc over all packages
-pnpm test        # node:test suites + vitest suites (computer-use)
-pnpm build       # build every package and assemble the bundle
+pnpm typecheck   # 各包 tsc 检查
+pnpm test        # node:test 套件 + computer-use 的 vitest 套件
+pnpm build       # 构建全部包并装配 bundle
 ```
 
-The design documents this plugin was built from live in [docs/](docs/) — feasibility analysis, architecture, phased plan, and the running addendum of post-design revisions.
+本插件的设计文档在 [docs/](docs/)——可行性分析、架构、分阶段实施与持续追加的修订记录。
 
-## Status and known limitations
+## 状态与已知限制
 
-- The **selection toolbar**: select text in any app to get Search / Translate / Send to AI. **Translate stays out of the conversation history** — it renders in the ball under a "not in the conversation" badge, survives collapse and reopen, and the model never sees it. See [docs/11-selection.md](docs/11-selection.md).
-- Built and tested against dsh `0.1.7-rc.2`; newer dsh versions within the compatibility range may require re-verification. dsh `0.2.1-rc.1` no longer registers the `cwd` prompt variable, so the Computer Use persona must not reference it — the working directory arrives as runtime context instead.
-- No floating ball on Linux; headless environments can still run background code sessions.
-- The macOS permission dialogs name DeepSeek Harness or your terminal, not this plugin — that is how the OS attributes permissions to the process that hosts the agent.
+- **划词工具条**：在任意应用里选中文字后出现搜索 / 翻译 / 发给 AI 三个动作。**翻译不进对话历史**——它显示在悬浮球里、带「未计入对话」标记，收起再展开仍在，但模型看不到它。细节见 [docs/11-selection.md](docs/11-selection.md)。
+- 按 dsh `0.1.7-rc.2` 构建与测试；兼容范围内的新版 dsh 可能需要重新验证。dsh `0.2.1-rc.1` 不再注册 `cwd` 提示词变量，Computer Use 的 persona 因此不能再引用它——工作目录改由运行时上下文给出。
+- Linux 上没有悬浮球；无显示器的环境仍可跑后台代码会话。
+- macOS 权限弹窗写的是 DeepSeek Harness 或终端，不是本插件——权限归属承载 Agent 的进程，这是系统行为。
 
-## Relationship to DeepSeek Harness
+## 与 DeepSeek Harness 的关系
 
-This repository is an unofficial derivative work built on top of [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness), dsh's open-source everything-is-a-plugin agent harness; sessions, plugins, tools, and the Web UI are all driven by it. This project modifies no upstream code — it installs like any third-party dsh plugin. To go deeper:
+本仓库是在 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 之上构建的非官方衍生作品。dsh 是 DeepSeek 开源的 everything-is-a-plugin Agent 框架，会话、插件、工具与 Web UI 全部由它驱动。本项目不改任何上游代码——像普通第三方 dsh 插件一样安装。想深入了解：
 
-- [docs/01-analysis.md](docs/01-analysis.md) — feasibility and product decisions
-- [docs/02-architecture.md](docs/02-architecture.md) — processes, packages, communication, security
-- [packages/computer-use/README.md](packages/computer-use/README.md) — the GUI tools, coordinate encoding, and permission details
+- [docs/01-analysis.md](docs/01-analysis.md) — 可行性与产品决定
+- [docs/02-architecture.md](docs/02-architecture.md) — 进程、包、通信、安全
+- [packages/computer-use/README.md](packages/computer-use/README.md) — GUI 工具、坐标编码与权限细节
 
-## License
+## 许可证
 
-[MIT](LICENSE). Upstream-derived code and assets are disclosed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[MIT](LICENSE)。上游衍生的代码与素材在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 中披露。

@@ -2,7 +2,7 @@
 
 # dsh-orb
 
-[English](README.md) | 中文
+[English](README.en.md) | 中文
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的非官方个人开发者插件。一个可安装的 bundle，为官方 dsh 桌面版和 `dsh web` 加上带 Computer Use 的悬浮球 Agent——官方仓库一行不改，主窗口仍是官方 dsh Web UI。
 
