@@ -77,7 +77,6 @@ path on macOS and Windows and the spawn cost is a fifth of a model turn.
 | Only one session may operate one app | `guard.ts` leases |
 | The foreground agent's screen lock blocks background input | `screenLockOwner()` reads the orb's process-global lock |
 | A ref the model was never shown is refused | `RefBook` in `sessions.ts` |
-| Every operated window is framed by a warm dashed ribbon | `showRibbon` in `tools.ts` → `backgroundFrame` → helper |
 | The background agent cannot ask the user anything | the `desktop` preset has no `ask_user_question` row |
 
 ## Libraries
@@ -96,15 +95,6 @@ the same GitHub release, and keeps only the library and its macOS helper. Set
 At runtime the library is copied once into
 `$DSH_HOME/dsh-orb/desktop/native/1.2.0-<platform>/`, because a loaded image
 cannot be replaced on Windows while pnpm swaps the package folder.
-
-## The ribbon
-
-While an accessibility action runs, the window it touches is ringed by a warm
-amber→rose dashed band that drifts slowly and carries a small "后台操作中 ·
-<app>" chip. The foreground Computer Use frame is the opposite: a cool
-cyan→violet glow around the whole display, so the two never read alike. The
-ribbon is click-through, never takes focus, stays out of captures, and
-disappears about four seconds after the last action.
 
 ## Limits worth knowing
 

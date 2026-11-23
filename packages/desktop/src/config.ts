@@ -19,8 +19,6 @@ export interface Config {
    * not find the control it needed no matter how it re-snapshotted.
    */
   readonly maxChars?: number
-  /** Keep the operated window's ribbon on screen this long after the last action. Default: 4000. */
-  readonly frameHoldMs?: number
   /** Refuse an identical action repeated within this window. Default: 12000. */
   readonly repeatWindowMs?: number
   /**
@@ -53,7 +51,6 @@ export interface ResolvedConfig extends GuardConfig {
   readonly maxNodes: number
   readonly maxChars: number
   readonly idleCloseMs: number
-  readonly frameHoldMs: number
   readonly repeatWindowMs: number
   readonly postActionWaitMs: number
   readonly physicalFallback: boolean
@@ -76,7 +73,6 @@ export function resolveConfig(config: Config = {}): ResolvedConfig {
     maxNodes: positive(config.maxNodes, 140, 'maxNodes'),
     maxChars: positive(config.maxChars, 12_000, 'maxChars'),
     idleCloseMs: positive(config.idleCloseMs, 600_000, 'idleCloseMs'),
-    frameHoldMs: positive(config.frameHoldMs, 4_000, 'frameHoldMs'),
     repeatWindowMs: positive(config.repeatWindowMs, 12_000, 'repeatWindowMs'),
     postActionWaitMs: positive(config.postActionWaitMs, 400, 'postActionWaitMs'),
     physicalFallback: config.physicalFallback !== false,

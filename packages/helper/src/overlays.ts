@@ -51,7 +51,6 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
   const preload = fileURLToPath(new URL('../selection-preload.cjs', import.meta.url))
   const toolbar = openToolbar(preload)
   const frame = openFrame()
-  const agentFrame = openFrame()
   const lasso = await attachLasso({
     write: deps.write,
     sendToBall: (channel, payload) => {
@@ -97,7 +96,6 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
   await Promise.all([
     toolbar.loadFile(fileURLToPath(new URL('../assets/selection-toolbar.html', import.meta.url))),
     frame.loadFile(fileURLToPath(new URL('../assets/observation-frame.html', import.meta.url))),
-    agentFrame.loadFile(fileURLToPath(new URL('../assets/agent-frame.html', import.meta.url))),
   ])
 
   function ack(id: unknown): void {
@@ -119,7 +117,6 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
       { window: () => deps.ball(), resting: false },
       { window: () => toolbar, resting: false },
       { window: () => frame, resting: process.platform === 'win32' },
-      { window: () => agentFrame, resting: process.platform === 'win32' },
       ...lasso.cloakWindows().map((entry) => ({ window: entry.window, resting: false })),
     ],
     () => deps.ball(),
@@ -139,7 +136,7 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
       lasso.appearance(payload)
     },
     chromeWindows(): readonly (NativeHandleWindow | undefined)[] {
-      return [toolbar, frame, agentFrame, ...lasso.chromeWindows()]
+      return [toolbar, frame, ...lasso.chromeWindows()]
     },
     lassoStart(point, target) {
       lasso.start(point, target)
@@ -241,12 +238,6 @@ export async function attachOverlays(deps: OverlayDeps): Promise<{
         ack(record.id)
         return true
       }
-      if (record.type === 'agent-frame') {
-        showAgentFrame(agentFrame, record.bounds, record.label)
-        raiseChrome()
-        ack(record.id)
-        return true
-      }
       return false
     },
   }
@@ -267,46 +258,6 @@ function showFrame(frame: BrowserWindow, bounds: unknown): void {
     observationFrameCssScript(placement.glow, placement.stroke),
   ).catch(() => {
     // The next show replaces the padding.
-  })
-  frame.showInactive()
-}
-
-/**
- * Draw the background-agent ribbon around one window.
- *
- * The foreground frame wraps the whole display; this one hugs a single window so
- * the user can tell which window a background task is working in. It is a
- * different hue family on purpose (warm amber→rose, dashed, drifting).
- * @param frame - the ribbon window.
- * @param bounds - target window rectangle in logical pixels, or null to hide.
- * @param label - chip text, for example `后台操作中 · 微信`.
- */
-function showAgentFrame(frame: BrowserWindow, bounds: unknown, label: unknown): void {
-  if (frame.isDestroyed()) return
-  const region = readRect(bounds)
-  if (region === undefined) {
-    frame.hide()
-    return
-  }
-  const dip = toDip(region)
-  // A little room outside the window for the glow and the chip.
-  const pad = 30
-  frame.setBounds({
-    x: Math.round(dip.x - pad),
-    y: Math.round(dip.y - pad),
-    width: Math.max(1, Math.round(dip.width + pad * 2)),
-    height: Math.max(1, Math.round(dip.height + pad * 2)),
-  })
-  const text = typeof label === 'string' ? label : ''
-  void frame.webContents.executeJavaScript(
-    `(() => {
-      const chip = document.getElementById('chip')
-      const node = document.getElementById('label')
-      if (node) node.textContent = ${JSON.stringify(text)}
-      if (chip) chip.hidden = ${JSON.stringify(text === '')}
-    })()`,
-  ).catch(() => {
-    // The next frame replaces the chip text.
   })
   frame.showInactive()
 }

@@ -6,9 +6,9 @@
  * not show a stale note to its users. Each version keeps its own dismissal marker; adding a
  * note for a new release means bumping both this value and the client copy.
  */
-export const WHATS_NEW_VERSION = '0.2.0'
+export const WHATS_NEW_VERSION = '0.3.0'
 
-/** What the settings page needs to draw the 0.2.0 note; the copy itself lives in the client. */
+/** What the settings page needs to draw the 0.3.0 note; the copy itself lives in the client. */
 export interface WhatsNewNotice {
   readonly id: string
   readonly version: string

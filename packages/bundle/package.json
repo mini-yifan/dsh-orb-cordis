@@ -1,6 +1,6 @@
 {
   "name": "dsh-orb",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "Installable Orb bundle. Inserts the Computer Use preset and the floating-ball host.",
   "keywords": [
