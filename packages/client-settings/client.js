@@ -86,10 +86,11 @@ window.__ModuleLoader__.load({
       runtimePreparingTitle: '正在下载悬浮球运行时',
       runtimePreparing: '首次使用需要下载约 124–150 MB 的运行时，完成后悬浮球会自动出现。下载被中断或长时间不动时，点「重新下载」立即接着下。',
       whatsNew: {
-        id: '0.3.0',
-        title: '悬浮球 0.3.0 更新',
-        lead: '这次更新正式带来跨设备「互联」能力与升级后的后台桌面模式，让电脑与 Android 手机连成一张可彼此协同的设备网络。',
+        id: '0.3.1',
+        title: '悬浮球 0.3.1 更新',
+        lead: '0.3.1 全面适配 DeepSeek Harness 0.2.3+ 内核，并保留 0.3.0 带来的跨设备「互联」与升级后后台桌面模式：',
         items: [
+          'Harness 0.2.3+ 路由鉴权兼容（0.3.1）：适配新版 WebServer/Connection 鉴权模型，修复「设置 → 悬浮球 / 互联」报错 `internal-error` 及独立「互联窗口」无法连接本机互联服务的问题，并在首次加载失败时展示具体错误与重试按钮。',
           '多设备互联（Orb Mesh）：在「设置 → 互联」开启「加入互联」，通过邮箱验证码授权后即可把同一账号下的电脑与 Android 手机接入同一网络（默认走公网中转，跨网可用，服务端开源可自建）。',
           '跨端双轨 Agent 协作：悬浮球不仅能调度本机后台 Agent，还能直接查看在线设备并向其他设备的后台 Agent 派发任务（如让电脑控制手机、或在手机端远程触发电脑任务）。',
           '互联窗口与文件互传：点击「打开互联窗口」可按设备与工作区查看、发起或接续远程会话；后台任务生成的文件支持直接回传到发起设备。',
@@ -416,10 +417,11 @@ window.__ModuleLoader__.load({
       runtimePreparingTitle: 'Downloading the floating-ball runtime',
       runtimePreparing: 'The first launch downloads a ~124–150 MB runtime, then the ball appears on its own. If the download was interrupted or looks stuck, Download again picks it up from where it stopped.',
       whatsNew: {
-        id: '0.3.0',
-        title: 'Floating ball 0.3.0 update',
-        lead: 'This release introduces multi-device Interconnect and an upgraded background desktop mode, linking your computers and Android phones into one collaborative workspace.',
+        id: '0.3.1',
+        title: 'Floating ball 0.3.1 update',
+        lead: 'Version 0.3.1 adds full compatibility with DeepSeek Harness 0.2.3+ alongside the 0.3.0 multi-device Interconnect and upgraded background desktop mode:',
         items: [
+          'Harness 0.2.3+ route auth compatibility (0.3.1): adapts to the new WebServer/Connection auth model, fixing the internal-error on Floating ball / Interconnect settings and the Interconnect window failing to connect locally, while surfacing load errors with a Retry action.',
           'Multi-device Interconnect (Orb Mesh): turn on “Join interconnect” in Settings → Interconnect and approve with an email code to link computers and Android phones under your account (relayed over the internet by default; self-hostable open-source relay).',
           'Cross-device dual-track agents: the floating ball can inspect online peers and dispatch tasks directly to another device’s background agent, not just the local machine.',
           'Interconnect window & file return: open the Interconnect window to browse, start, or continue sessions grouped by device and workspace, and receive files produced by remote background tasks.',
