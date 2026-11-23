@@ -183,6 +183,12 @@ describe('mesh window markup and wiring', () => {
     assert.match(main, /record\.type === 'open-mesh'\) \{\n\s+openMeshWindow\(readMeshOpenTarget\(/)
     assert.match(source('../../host/src/orb.ts'), /record\.type === 'mesh-open'\) \{[\s\S]{0,220}this\.broadcast\(\{ type: 'open-mesh' \}\)/)
   })
+
+  it('surfaces initial load errors and a retry action instead of masking them as connecting', () => {
+    assert.match(mesh, /const failed = loading && !state\.busy && state\.error !== ''/)
+    assert.match(mesh, /无法连接本机互联服务/)
+    assert.match(mesh, /retry\.addEventListener\('click', \(\) => \{ void load\(\) \}\)/)
+  })
 })
 
 describe('mesh transcript model', () => {

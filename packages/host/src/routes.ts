@@ -53,12 +53,27 @@ function defaultMeshServer(deps?: { defaultServer?: string }): string {
   return DEFAULT_MESH_SERVER
 }
 
+type WebAuthPolicy = 'anonymous' | 'required' | 'deny'
+
+interface WebAuthRequestLike {
+  readonly headers: Headers | IncomingMessage['headers']
+  readonly method?: string | undefined
+  readonly url: URL
+}
+
+interface AdmittedPeerLike {
+  readonly principal?: {
+    readonly kind?: string
+  }
+}
+
 interface RouteContext {
   readonly webServer: {
     register(route: {
       kind: 'prefix'
       path: string
-      handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>
+      auth?: WebAuthPolicy | ((request: WebAuthRequestLike) => WebAuthPolicy)
+      handler: (req: IncomingMessage, res: ServerResponse, peer?: AdmittedPeerLike) => Promise<void>
     }): () => void
   }
   readonly connection: {
@@ -162,9 +177,14 @@ export function registerOrbRoutes(deps: RouteDeps): () => void {
   return deps.ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX,
+    // On Harness >=0.2.3-alpha.2, WebRoute defaults to `auth: 'required'`.
+    // The helper process carries its own `x-dsh-orb-helper` token rather than
+    // the desktop cookie, so admit allowlisted helper paths to reach `handle`
+    // while keeping Host/Origin enforcement and `required` on every other path.
+    auth: (request) => (helperAuthRequestOk(deps, request) ? 'anonymous' : 'required'),
     // A rejected handler used to hang the request (the official server does not answer it):
     // a bad body must come back as 400, not as an unhandled rejection.
-    handler: (req, res) => handle(deps, mesh, req, res).catch((error: unknown) => {
+    handler: (req, res, peer) => handle(deps, mesh, req, res, peer).catch((error: unknown) => {
       if (res.headersSent) {
         res.end()
         return
@@ -211,17 +231,21 @@ export function orbSupported(platform: NodeJS.Platform = process.platform): bool
   return platform === 'darwin' || platform === 'win32'
 }
 
-async function handle(deps: RouteDeps, mesh: MeshService, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handle(
+  deps: RouteDeps,
+  mesh: MeshService,
+  req: IncomingMessage,
+  res: ServerResponse,
+  peer?: AdmittedPeerLike,
+): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = url.pathname
-  const helperAsset = req.method === 'GET'
-    && (path === `${PREFIX}/avatar` || path === `${PREFIX}/attachment`)
-    && helperTokenOk(deps, req)
+  const helperAsset = isHelperAssetPath(req.method, path) && helperTokenOk(deps, req)
   // The helper token opens the Mesh bridge and nothing else. Keep this an explicit
   // allowlist: widening the avatar/attachment gate would expose settings mutations.
   const helperMesh = path.startsWith(`${MESH_PREFIX}/`) && helperTokenOk(deps, req)
   if (!helperAsset && !helperMesh) {
-    const rejection = rejectionStatus(deps.ctx, req)
+    const rejection = rejectionStatus(deps.ctx, req, peer)
     if (rejection !== undefined) {
       res.writeHead(rejection)
       res.end()
@@ -942,9 +966,30 @@ function sendImage(res: ServerResponse, method: string, body: Buffer, mime: stri
   res.end(method === 'HEAD' ? undefined : body)
 }
 
+function isHelperAssetPath(method: string | undefined, path: string): boolean {
+  return method === 'GET' && (path === `${PREFIX}/avatar` || path === `${PREFIX}/attachment`)
+}
+
+function readHelperToken(headers: Headers | IncomingMessage['headers']): string | undefined {
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+    return headers.get(HELPER_HEADER) ?? undefined
+  }
+  const value = (headers as IncomingMessage['headers'])[HELPER_HEADER]
+  return typeof value === 'string' ? value : undefined
+}
+
+function helperAuthRequestOk(deps: RouteDeps, request: WebAuthRequestLike): boolean {
+  const path = request.url.pathname
+  if (!isHelperAssetPath(request.method, path) && !path.startsWith(`${MESH_PREFIX}/`)) {
+    return false
+  }
+  const token = readHelperToken(request.headers)
+  return token !== undefined && deps.control.helperAuthorized(token)
+}
+
 function helperTokenOk(deps: RouteDeps, req: IncomingMessage): boolean {
-  const header = req.headers[HELPER_HEADER]
-  return typeof header === 'string' && deps.control.helperAuthorized(header)
+  const header = readHelperToken(req.headers)
+  return header !== undefined && deps.control.helperAuthorized(header)
 }
 
 export function tokensMatch(given: string, expected: string): boolean {
@@ -953,7 +998,14 @@ export function tokensMatch(given: string, expected: string): boolean {
   return left.length === right.length && left.length > 0 && timingSafeEqual(left, right)
 }
 
-function rejectionStatus(ctx: RouteContext, req: IncomingMessage): number | undefined {
+function rejectionStatus(ctx: RouteContext, req: IncomingMessage, peer?: AdmittedPeerLike): number | undefined {
+  // On Harness >=0.2.3-alpha.2, `webServer` enforces `webserver/authorize`
+  // before calling the route handler and passes the admitted `peer` here.
+  // Calling `ctx.connection.admit(req)` again would throw because Cordis
+  // redirects `connection.authentication` through `orb-host`'s inject list.
+  if (peer !== undefined) {
+    return peer.principal?.kind === 'owner' ? undefined : 403
+  }
   if (typeof ctx.connection.admit === 'function') {
     const admitted = ctx.connection.admit(req)
     if (typeof admitted === 'object' && admitted !== null && 'rejection' in admitted && typeof admitted.rejection === 'number') {

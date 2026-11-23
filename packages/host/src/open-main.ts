@@ -8,7 +8,7 @@ import { isDesktopHost } from './tcc.ts'
 
 interface OpenContext {
   readonly webServer: { readonly port: number }
-  readonly connection: { authenticatedUrl(baseUrl: string): string }
+  readonly connection: { authenticatedUrl?(baseUrl: string): string }
 }
 
 /**

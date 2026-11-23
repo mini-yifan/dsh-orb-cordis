@@ -560,8 +560,11 @@ function renderChrome() {
 function renderTop() {
   const status = state.status
   if (status === null) {
-    els.summary.textContent = t('正在连接本机互联服务…', 'Connecting to the local interconnect service…')
-    els.dot.className = 'mesh-dot'
+    const failed = !state.busy && state.error !== ''
+    els.summary.textContent = failed
+      ? t('无法连接本机互联服务', 'Could not connect to the local interconnect service')
+      : t('正在连接本机互联服务…', 'Connecting to the local interconnect service…')
+    els.dot.className = failed ? 'mesh-dot is-offline' : 'mesh-dot'
   } else if (status.paired !== true) {
     els.summary.textContent = t('未加入互联', 'Not paired')
     els.dot.className = 'mesh-dot is-unpaired'
@@ -745,19 +748,29 @@ function renderDetail() {
 function renderEmpty(session) {
   els.empty.replaceChildren()
   const loading = state.status === null
+  const failed = loading && !state.busy && state.error !== ''
   const unpaired = !loading && state.status.paired !== true
-  const title = loading
-    ? t('正在连接…', 'Connecting…')
-    : unpaired
-      ? t('尚未加入互联', 'Not connected yet')
-      : session === undefined ? t('选择一个会话', 'Pick a session') : ''
-  const detail = loading
-    ? t('正在读取本机互联状态。', 'Reading the local interconnect status.')
-    : unpaired
-      ? t('在 设置 → 互联 里粘贴配对串，连接后这里会出现其他设备与工作区。', 'Paste a pairing string under Settings → Interconnect; devices and workspaces appear here once connected.')
-      : t('左侧是设备、工作区和会话；点击任意设备展开后，可直接查看并继续其中的会话。', 'The left side lists devices, workspaces, and sessions. Click a device to expand it and continue any session.')
+  const title = failed
+    ? t('无法连接本机互联服务', 'Could not connect to the local interconnect service')
+    : loading
+      ? t('正在连接…', 'Connecting…')
+      : unpaired
+        ? t('尚未加入互联', 'Not connected yet')
+        : session === undefined ? t('选择一个会话', 'Pick a session') : ''
+  const detail = failed
+    ? state.error
+    : loading
+      ? t('正在读取本机互联状态。', 'Reading the local interconnect status.')
+      : unpaired
+        ? t('在 设置 → 互联 里粘贴配对串，连接后这里会出现其他设备与工作区。', 'Paste a pairing string under Settings → Interconnect; devices and workspaces appear here once connected.')
+        : t('左侧是设备、工作区和会话；点击任意设备展开后，可直接查看并继续其中的会话。', 'The left side lists devices, workspaces, and sessions. Click a device to expand it and continue any session.')
   els.empty.append(element('h2', undefined, title), element('p', undefined, detail))
-  if (unpaired) {
+  if (failed) {
+    const retry = element('button', undefined, t('重试', 'Retry'))
+    retry.type = 'button'
+    retry.addEventListener('click', () => { void load() })
+    els.empty.append(retry)
+  } else if (unpaired) {
     const button = element('button', undefined, t('打开互联设置', 'Open interconnect settings'))
     button.type = 'button'
     button.addEventListener('click', () => { api?.openSettings?.() })

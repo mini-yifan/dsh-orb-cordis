@@ -87,11 +87,20 @@ export interface OrbContext {
     register(route: {
       kind: 'prefix'
       path: string
-      handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>
+      auth?: 'anonymous' | 'required' | 'deny' | ((request: {
+        readonly headers: Headers | import('node:http').IncomingMessage['headers']
+        readonly method?: string | undefined
+        readonly url: URL
+      }) => 'anonymous' | 'required' | 'deny')
+      handler: (
+        req: import('node:http').IncomingMessage,
+        res: import('node:http').ServerResponse,
+        peer?: { readonly principal?: { readonly kind?: string } },
+      ) => Promise<void>
     }): () => void
   }
   readonly connection: {
-    authenticatedUrl(baseUrl: string): string
+    authenticatedUrl?(baseUrl: string): string
     admit?(request: import('node:http').IncomingMessage): { rejection?: number } | { peer?: unknown }
     isAuthenticated?(request: import('node:http').IncomingMessage): boolean
   }

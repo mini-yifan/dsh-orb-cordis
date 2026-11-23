@@ -296,4 +296,73 @@ describe('mesh bridge routes', () => {
 
     dispose()
   })
+
+  it('allows helper Mesh reads via route.auth and accepts owner peers when admit() throws on >=0.2.3', async () => {
+    const profile = join(root, 'profile-023')
+    mkdirSync(profile, { recursive: true })
+    const store = new ProfileStore(profile)
+    const mesh = new MockMeshService(() => 1_700_000_000_000)
+    const control = {
+      helperAuthorized: (token: string) => tokensMatch(token, 'helper-secret'),
+      takeJump: () => null,
+      confirmJump() {},
+      takeSettingsOpen: () => null,
+      confirmSettingsOpen() {},
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setObservationFrameEnabled() {},
+      async setBallEnabled() {},
+      updateState: () => EMPTY_UPDATE_STATE,
+      async checkUpdate() {},
+      installUpdate() {},
+      setAutoCheck() {},
+    } as unknown as OrbControl
+
+    let routeAuth: ((req: { headers: Headers | Record<string, string>; method?: string; url: URL }) => string) | string | undefined
+    let handler: ((req: IncomingMessage, res: ServerResponse, peer?: { principal?: { kind?: string } }) => Promise<void>) | undefined
+    const dispose = registerOrbRoutes({
+      ctx: {
+        webServer: {
+          register(route) {
+            routeAuth = route.auth
+            handler = route.handler
+            return () => { handler = undefined }
+          },
+        },
+        connection: {
+          admit() {
+            throw new Error('cannot get property "connection.authentication" without inject')
+          },
+        },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+      },
+      store,
+      tcc: new TccMonitor(),
+      control,
+      mesh,
+    })
+
+    assert.equal(typeof routeAuth, 'function')
+    assert.ok(handler)
+    const auth = routeAuth as (req: { headers: Headers | Record<string, string>; method?: string; url: URL }) => string
+    assert.equal(auth({ method: 'GET', url: new URL('http://127.0.0.1/.dsh-orb/mesh/status'), headers: { 'x-dsh-orb-helper': 'helper-secret' } }), 'anonymous')
+    assert.equal(auth({ method: 'GET', url: new URL('http://127.0.0.1/.dsh-orb/mesh/status'), headers: {} }), 'required')
+
+    const helperRes = response()
+    await handler(request('GET', '/.dsh-orb/mesh/status', undefined, { 'x-dsh-orb-helper': 'helper-secret' }), helperRes)
+    assert.equal(helperRes.status, 200)
+
+    const ownerRes = response()
+    await handler(request('GET', '/.dsh-orb/mesh/status'), ownerRes, { principal: { kind: 'owner' } })
+    assert.equal(ownerRes.status, 200)
+
+    const viewerRes = response()
+    await handler(request('GET', '/.dsh-orb/mesh/status'), viewerRes, { principal: { kind: 'viewer' } })
+    assert.equal(viewerRes.status, 403)
+
+    dispose()
+  })
 })
