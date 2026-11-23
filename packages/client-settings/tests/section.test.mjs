@@ -732,7 +732,7 @@ describe('settings section', () => {
     page.snapshot.helperError = ''
   })
 
-  it('shows the 0.2.0 release note once, with two ways to close it', async () => {
+  it('shows the 0.3.0 release note once, with two ways to close it', async () => {
     const note = { id: WHATS_NEW_VERSION, version: WHATS_NEW_VERSION }
     const cardOf = (view) => find(view, (node) => String(node.props?.className).includes('dsh-orb-set-whats-new'))[0]
     const said = (node) => {
@@ -753,11 +753,11 @@ describe('settings section', () => {
     assert.ok(card, 'the first open of the settings page shows the note')
     assert.equal(card.props.role, 'region')
     assert.equal(card.props['aria-labelledby'], 'dsh-orb-set-whats-new-title')
-    assert.match(said(card), /悬浮球 0\.2\.0 更新/)
-    assert.match(said(card), /Windows 首次安装修复/)
-    assert.match(said(card), /语音唤醒与输入/)
-    assert.match(said(card), /语音播报与插话/)
-    assert.match(said(card), /语音模型下载/)
+    assert.match(said(card), /悬浮球 0\.3\.0 更新/)
+    assert.match(said(card), /多设备互联/)
+    assert.match(said(card), /跨端双轨 Agent 协作/)
+    assert.match(said(card), /互联窗口与文件互传/)
+    assert.match(said(card), /后台桌面模式升级/)
     const known = find(card, (node) => node.type === 'button' && String(node.props?.className).includes('dsh-orb-set-whats-new-known'))[0]
     assert.equal(known.children[0], '知道了')
     known.props.onClick()
@@ -782,7 +782,8 @@ describe('settings section', () => {
     english.setLang('en')
     view = await loaded(english)
     const englishCard = cardOf(view)
-    assert.match(said(englishCard), /Floating ball 0\.2\.0 update/)
+    assert.match(said(englishCard), /Floating ball 0\.3\.0 update/)
+    assert.match(said(englishCard), /Multi-device Interconnect/)
     assert.match(said(englishCard), /Got it/)
 
     // Linux, a mismatched client copy, and an absent field all stay dark.

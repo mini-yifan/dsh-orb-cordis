@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { resolveConfig } from '../src/config.ts'
 import { actionText, denialText, failureText } from '../src/errors.ts'
-import { chooseWindow } from '../src/frame.ts'
 import { RefBook } from '../src/sessions.ts'
 import { agentSessionId } from '../src/sessions.ts'
 import type { SnapshotData } from '../src/protocol.ts'
@@ -10,13 +9,12 @@ import type { SnapshotData } from '../src/protocol.ts'
 test('config fills every default', () => {
   const resolved = resolveConfig()
   assert.equal(resolved.enabled, true)
-  assert.equal(resolved.frameHoldMs, 4_000)
   assert.equal(resolved.raiseMaxMs, 90_000)
   assert.equal(resolved.idleCloseMs, 600_000)
 })
 
 test('config rejects impossible values', () => {
-  assert.throws(() => resolveConfig({ frameHoldMs: 0 }), /frameHoldMs/)
+  assert.throws(() => resolveConfig({ raiseMaxMs: 0 }), /raiseMaxMs/)
   assert.throws(() => resolveConfig({ maxNodes: Number.NaN }), /maxNodes/)
 })
 
@@ -69,42 +67,6 @@ test('session ids are sanitized into the library charset', () => {
   assert.equal(agentSessionId(''), 'dsh_session')
 })
 
-const win = (id: string, title: string, width: number, height: number, x = 0, y = 0) => ({
-  id,
-  title,
-  appName: '微信',
-  pid: 1,
-  focused: false,
-  bounds: { x, y, width, height },
-})
-
-test('window choice skips menu-bar strips and tooltips', () => {
-  const picked = chooseWindow([
-    win('w-1', '微信', 1470, 33),
-    win('w-2', '微信', 100, 58),
-    win('w-3', '微信', 1470, 846),
-  ], {})
-  assert.equal(picked?.id, 'w-3')
-})
-
-test('window choice prefers the id the snapshot read', () => {
-  const picked = chooseWindow([
-    win('w-1', '微信', 1470, 846),
-    win('w-2', '文件预览.pdf', 1470, 832),
-  ], { windowId: 'w-2' })
-  assert.equal(picked?.id, 'w-2')
-})
-
-test('window choice falls back to the title, then the largest', () => {
-  const byTitle = chooseWindow([
-    win('w-1', '微信', 1470, 846),
-    win('w-2', '预览', 800, 600),
-  ], { windowId: 'missing', windowTitle: '预览' })
-  assert.equal(byTitle?.id, 'w-2')
-  const largest = chooseWindow([win('a', 'x', 800, 600), win('b', 'y', 1200, 700)], {})
-  assert.equal(largest?.id, 'b')
-})
-
 test('failure text surfaces structured error.details checks and occluder', () => {
   const text = failureText({
     code: 'TIMEOUT',
@@ -152,9 +114,4 @@ test('the ref book preserves depth, merges root drills, and registers find refs'
   )
   assert.equal(book.lookup('@s_find:e52')?.known, true)
   assert.equal(book.lookup('@s_find:e52')?.windowId, 'w-99')
-})
-
-test('window choice refuses when nothing is big enough to frame', () => {
-  assert.equal(chooseWindow([win('w-1', '微信', 1470, 33)], {}), undefined)
-  assert.equal(chooseWindow([], {}), undefined)
 })

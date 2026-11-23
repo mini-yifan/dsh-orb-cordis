@@ -86,14 +86,14 @@ window.__ModuleLoader__.load({
       runtimePreparingTitle: '正在下载悬浮球运行时',
       runtimePreparing: '首次使用需要下载约 124–150 MB 的运行时，完成后悬浮球会自动出现。下载被中断或长时间不动时，点「重新下载」立即接着下。',
       whatsNew: {
-        id: '0.2.0',
-        title: '悬浮球 0.2.0 更新',
-        lead: '这次更新带来语音能力，并修复 Windows 首次安装运行时下载失败的问题。语音默认关闭，可在本页开启。',
+        id: '0.3.0',
+        title: '悬浮球 0.3.0 更新',
+        lead: '这次更新正式带来跨设备「互联」能力与升级后的后台桌面模式，让电脑与 Android 手机连成一张可彼此协同的设备网络。',
         items: [
-          'Windows 首次安装修复：全新安装不再卡在「运行时下载完成却解压失败」；升级后重启即可，已经下载的部分不会重下。',
-          '语音唤醒与输入：喊「你好大肥鱼」唤醒，球回「我在呢」；固定且空闲时直接说话下指令。',
-          '语音播报与插话：回复可用本地音色或千问播报；播报中说「大肥鱼」可插话，说「退下吧」停止。',
-          '语音模型下载：唤醒模型约 9 MB（npm / npmmirror），本地播报模型约 197 MB（Hugging Face 镜像）；设置页可看进度。',
+          '多设备互联（Orb Mesh）：在「设置 → 互联」开启「加入互联」，通过邮箱验证码授权后即可把同一账号下的电脑与 Android 手机接入同一网络（默认走公网中转，跨网可用，服务端开源可自建）。',
+          '跨端双轨 Agent 协作：悬浮球不仅能调度本机后台 Agent，还能直接查看在线设备并向其他设备的后台 Agent 派发任务（如让电脑控制手机、或在手机端远程触发电脑任务）。',
+          '互联窗口与文件互传：点击「打开互联窗口」可按设备与工作区查看、发起或接续远程会话；后台任务生成的文件支持直接回传到发起设备。',
+          '后台桌面模式升级：新增「后台桌面模式」预设，优先使用增强辅助功能树精确操作窗口（无树窗口自动回退无阴影视觉），同时移除了后台窗口彩带框，操作更简洁安静。',
         ],
         dismiss: '知道了',
         close: '关闭更新公告',
@@ -416,14 +416,14 @@ window.__ModuleLoader__.load({
       runtimePreparingTitle: 'Downloading the floating-ball runtime',
       runtimePreparing: 'The first launch downloads a ~124–150 MB runtime, then the ball appears on its own. If the download was interrupted or looks stuck, Download again picks it up from where it stopped.',
       whatsNew: {
-        id: '0.2.0',
-        title: 'Floating ball 0.2.0 update',
-        lead: 'This release adds voice and fixes the Windows first-install runtime download failure. Voice is off by default; turn it on on this page.',
+        id: '0.3.0',
+        title: 'Floating ball 0.3.0 update',
+        lead: 'This release introduces multi-device Interconnect and an upgraded background desktop mode, linking your computers and Android phones into one collaborative workspace.',
         items: [
-          'Windows first-install fix: a fresh install no longer gets stuck after the runtime download; restart after upgrading — bytes already downloaded are kept.',
-          'Wake and talk: say “你好大肥鱼” to wake the ball (it replies “我在呢”); when pinned and idle, speak a command directly.',
-          'Spoken replies and interjection: hear replies through the local voice or Qwen; say “大肥鱼” to interject, “退下吧” to stop.',
-          'Voice model downloads: the ~9 MB wake model comes from npm/npmmirror; the ~197 MB local voice model comes from the Hugging Face mirror; progress is shown here.',
+          'Multi-device Interconnect (Orb Mesh): turn on “Join interconnect” in Settings → Interconnect and approve with an email code to link computers and Android phones under your account (relayed over the internet by default; self-hostable open-source relay).',
+          'Cross-device dual-track agents: the floating ball can inspect online peers and dispatch tasks directly to another device’s background agent, not just the local machine.',
+          'Interconnect window & file return: open the Interconnect window to browse, start, or continue sessions grouped by device and workspace, and receive files produced by remote background tasks.',
+          'Upgraded background desktop mode: the new Background Desktop preset acts through an enhanced accessibility tree first (with shadowless visual fallback) and removes the background window ribbon for a cleaner experience.',
         ],
         dismiss: 'Got it',
         close: 'Close update note',
@@ -1998,7 +1998,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The one-time 0.2.0 release note. The host decides whether this profile still needs it;
+     * The one-time release note. The host decides whether this profile still needs it;
      * the page owns the localized copy and only draws it when that copy names the same note.
      * Both the corner × and the "Got it" button go through the same dismiss route.
      */

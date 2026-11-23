@@ -26,7 +26,6 @@ import {
   screenLockOwner,
 } from './guard.ts'
 import { withScreenLock } from './gui-lock.ts'
-import { chooseWindow } from './frame.ts'
 import { chooseTarget, sameApp, windowLine } from './gui.ts'
 import { agentSessionId } from './sessions.ts'
 import { POLICY } from './ffi.ts'
@@ -424,40 +423,7 @@ export function registerDesktopTools(
     const focused = await cli<unknown>(['focus-window', '--window-id', windowId], signal)
     return focused.ok
   }
-  let holdTimer: NodeJS.Timeout | undefined
   const effects = new Map<string, EffectRecord>()
-
-  /**
-   * Draw the warm ribbon around the window this action touches, when the helper
-   * is available. The ribbon is a courtesy signal: it never blocks the action.
-   */
-  const showRibbon = async (
-    call: Call,
-    app: string,
-    target: { windowId?: string; windowTitle?: string } = {},
-  ): Promise<void> => {
-    const frame = ctx.get('backgroundFrame') as
-      | { show(bounds: { x: number; y: number; width: number; height: number }, label: string): Promise<void>; hide(): Promise<void> }
-      | undefined
-    if (frame === undefined) return
-    try {
-      const windows = await call.client.request<readonly import('./protocol.ts').WindowInfo[]>({
-        op: 'windows',
-        app,
-      })
-      const window = chooseWindow(windows, target)
-      if (window?.bounds === undefined) return
-      await frame.show(window.bounds, `后台操作中 · ${app}`)
-      if (holdTimer !== undefined) clearTimeout(holdTimer)
-      holdTimer = setTimeout(() => {
-        holdTimer = undefined
-        void frame.hide()
-      }, config.frameHoldMs)
-      holdTimer.unref()
-    } catch {
-      // No helper, no bounds, or the ribbon window is gone: the action still stands.
-    }
-  }
 
   /**
    * Click the exact screen center of a ref's live AX bounding box.
@@ -507,12 +473,6 @@ export function registerDesktopTools(
     }
     return { ok: true, cx, cy, scrolled }
   }
-
-  ctx.effect(() => () => {
-    if (holdTimer !== undefined) clearTimeout(holdTimer)
-    const frame = ctx.get('backgroundFrame') as { hide(): Promise<void> } | undefined
-    void frame?.hide()
-  })
 
   // ── desktop_inspect ────────────────────────────────────────────────────────
 
@@ -968,10 +928,6 @@ export function registerDesktopTools(
 
       try {
         await gate(call, known.app, config)
-        await showRibbon(call, known.app, {
-          ...known.windowId !== undefined ? { windowId: known.windowId } : {},
-          ...known.windowTitle !== undefined ? { windowTitle: known.windowTitle } : {},
-        })
 
         let data: unknown
         let escalated = false
