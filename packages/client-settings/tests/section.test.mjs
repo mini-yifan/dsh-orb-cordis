@@ -732,7 +732,7 @@ describe('settings section', () => {
     page.snapshot.helperError = ''
   })
 
-  it('shows the 0.3.0 release note once, with two ways to close it', async () => {
+  it('shows the 0.3.1 release note once, with two ways to close it', async () => {
     const note = { id: WHATS_NEW_VERSION, version: WHATS_NEW_VERSION }
     const cardOf = (view) => find(view, (node) => String(node.props?.className).includes('dsh-orb-set-whats-new'))[0]
     const said = (node) => {
@@ -753,7 +753,8 @@ describe('settings section', () => {
     assert.ok(card, 'the first open of the settings page shows the note')
     assert.equal(card.props.role, 'region')
     assert.equal(card.props['aria-labelledby'], 'dsh-orb-set-whats-new-title')
-    assert.match(said(card), /悬浮球 0\.3\.0 更新/)
+    assert.match(said(card), /悬浮球 0\.3\.1 更新/)
+    assert.match(said(card), /Harness 0\.2\.3\+ 路由鉴权兼容/)
     assert.match(said(card), /多设备互联/)
     assert.match(said(card), /跨端双轨 Agent 协作/)
     assert.match(said(card), /互联窗口与文件互传/)
@@ -782,7 +783,8 @@ describe('settings section', () => {
     english.setLang('en')
     view = await loaded(english)
     const englishCard = cardOf(view)
-    assert.match(said(englishCard), /Floating ball 0\.3\.0 update/)
+    assert.match(said(englishCard), /Floating ball 0\.3\.1 update/)
+    assert.match(said(englishCard), /Harness 0\.2\.3\+ route auth compatibility/)
     assert.match(said(englishCard), /Multi-device Interconnect/)
     assert.match(said(englishCard), /Got it/)
 

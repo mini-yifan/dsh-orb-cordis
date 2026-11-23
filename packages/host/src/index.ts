@@ -164,14 +164,16 @@ function stageNativeImages(): void {
 /** Print the loopback port. The authenticated URL contains credentials, so it is never logged. */
 function logWebPort(ctx: OrbContext): void {
   const port = ctx.webServer.port
-  try {
-    const authed = ctx.connection.authenticatedUrl(`http://127.0.0.1:${port}`)
-    const hostname = new URL(authed).hostname
-    if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '[::1]') {
-      console.error('dsh-orb: authenticated URL is not loopback')
+  if (typeof ctx.connection.authenticatedUrl === 'function') {
+    try {
+      const authed = ctx.connection.authenticatedUrl(`http://127.0.0.1:${port}`)
+      const hostname = new URL(authed).hostname
+      if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '[::1]') {
+        console.error('dsh-orb: authenticated URL is not loopback')
+      }
+    } catch {
+      console.error('dsh-orb: authenticated URL is unavailable')
     }
-  } catch {
-    console.error('dsh-orb: authenticated URL is unavailable')
   }
   console.error(`dsh-orb: host web port ${port}`)
 }

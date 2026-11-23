@@ -914,6 +914,90 @@ describe('settings routes', () => {
     assert.equal(unsupported.status, 404)
     disposeOld()
   })
+
+  it('supports Harness >=0.2.3-alpha.2 peer admission and helper auth policy without calling admit()', async () => {
+    const profile = join(root, 'profile-023')
+    mkdirSync(profile, { recursive: true })
+    const store = new ProfileStore(profile)
+    const base: OrbControl = {
+      helperAuthorized: (token) => tokensMatch(token, 'helper-secret'),
+      takeJump: () => null,
+      confirmJump() {},
+      takeSettingsOpen: () => null,
+      confirmSettingsOpen() {},
+      async publishChrome() {},
+      async setOverlayModel() {},
+      async setBackgroundModel() {},
+      async setSelectionEnabled() {},
+      async setMillifractionEnabled() {},
+      async setObservationFrameEnabled() {},
+      async setBallEnabled() {},
+      updateState: () => ({ ...emptyUpdate }),
+      async checkUpdate() {},
+      installUpdate() {},
+      setAutoCheck() {},
+    }
+
+    let registeredAuth: ((req: { headers: Headers | Record<string, string>; method?: string; url: URL }) => string) | string | undefined
+    let handler: ((req: IncomingMessage, res: ServerResponse, peer?: { principal?: { kind?: string } }) => Promise<void>) | undefined
+    let admitCalls = 0
+    const dispose = registerOrbRoutes({
+      ctx: {
+        webServer: {
+          register(route) {
+            registeredAuth = route.auth
+            handler = route.handler
+            return () => { handler = undefined }
+          },
+        },
+        connection: {
+          admit() {
+            admitCalls += 1
+            throw new Error('cannot get property "connection.authentication" without inject')
+          },
+        },
+        sessionController: { modelCatalog: () => ({ groups: [] }) },
+      },
+      store,
+      tcc: new TccMonitor(),
+      control: base,
+    })
+
+    assert.equal(typeof registeredAuth, 'function')
+    assert.ok(handler)
+    const auth = registeredAuth as (req: { headers: Headers | Record<string, string>; method?: string; url: URL }) => string
+
+    // Allowlisted helper endpoints accept `x-dsh-orb-helper` (both plain object and Fetch Headers).
+    assert.equal(auth({ method: 'GET', url: new URL('http://127.0.0.1/.dsh-orb/avatar?v=1'), headers: { 'x-dsh-orb-helper': 'helper-secret' } }), 'anonymous')
+    assert.equal(auth({ method: 'GET', url: new URL('http://127.0.0.1/.dsh-orb/attachment?id=x'), headers: new Headers({ 'x-dsh-orb-helper': 'helper-secret' }) }), 'anonymous')
+    assert.equal(auth({ method: 'GET', url: new URL('http://127.0.0.1/.dsh-orb/mesh/status'), headers: { 'x-dsh-orb-helper': 'helper-secret' } }), 'anonymous')
+    assert.equal(auth({ method: 'POST', url: new URL('http://127.0.0.1/.dsh-orb/mesh/pair'), headers: { 'x-dsh-orb-helper': 'helper-secret' } }), 'anonymous')
+
+    // Non-allowlisted paths, wrong methods, and missing/invalid tokens stay `required`.
+    assert.equal(auth({ method: 'POST', url: new URL('http://127.0.0.1/.dsh-orb/avatar'), headers: { 'x-dsh-orb-helper': 'helper-secret' } }), 'required')
+    assert.equal(auth({ method: 'GET', url: new URL('http://127.0.0.1/.dsh-orb/settings'), headers: { 'x-dsh-orb-helper': 'helper-secret' } }), 'required')
+    assert.equal(auth({ method: 'GET', url: new URL('http://127.0.0.1/.dsh-orb/mesh/status'), headers: { 'x-dsh-orb-helper': 'wrong' } }), 'required')
+    assert.equal(auth({ method: 'GET', url: new URL('http://127.0.0.1/.dsh-orb/mesh/status'), headers: {} }), 'required')
+
+    // When `webServer` passes an owner `peer`, `admit()` is skipped so missing `connection.authentication` never fails.
+    const settingsRes = response()
+    await handler(request('GET', '/.dsh-orb/settings'), settingsRes, { principal: { kind: 'owner' } })
+    assert.equal(settingsRes.status, 200)
+    assert.equal(admitCalls, 0)
+
+    const meshRes = response()
+    await handler(request('GET', '/.dsh-orb/mesh/status'), meshRes, { principal: { kind: 'owner' } })
+    assert.equal(meshRes.status, 200)
+    assert.equal(admitCalls, 0)
+
+    // Non-owner peers are rejected with 403.
+    const viewerRes = response()
+    await handler(request('GET', '/.dsh-orb/settings'), viewerRes, { principal: { kind: 'viewer' } })
+    assert.equal(viewerRes.status, 403)
+    assert.equal(admitCalls, 0)
+
+    dispose()
+  })
 })
 
 /** Update state a host without a checker answers, for tests that only exercise one route. */
