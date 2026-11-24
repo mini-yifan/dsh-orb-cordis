@@ -174,7 +174,7 @@ describe('floating ball drag wiring', () => {
   it('ends the gesture on every release path, including a lost capture and a window blur', () => {
     assert.match(code, /ball\.addEventListener\('lostpointercapture', \(\) => \{ void finishGesture\(\) \}\)/)
     assert.match(code, /window\.addEventListener\('blur', \(\) => \{\s*\n\s*if \(pointerHeld\) void finishGesture\(\)/)
-    assert.match(code, /if \(!skipDock\) applyDockedFrom\(await api\.dragEnd\(/)
+    assert.match(code, /if \(!skipDock\) \{[\s\S]*?applyDockedFrom\(await api\.dragEnd\(/)
   })
 
   it('applies the layout a release reports, so an open panel shows the side it now grew', () => {
